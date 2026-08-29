@@ -1,6 +1,7 @@
 export * from './config';
 export * from './nominatim';
 export * from './overpass';
+export * from './structures';
 export * from './poi-categories';
 export * from './gsi';
 export * from './plateau';

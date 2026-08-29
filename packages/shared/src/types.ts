@@ -209,3 +209,39 @@ export interface CitySummary {
   /** 初期カメラ高度 (m) */
   initialHeight: number;
 }
+
+
+/**
+ * 高架・橋梁などの立体構造物。
+ *
+ * PLATEAU の橋梁モデルは整備自治体が限られるため、
+ * OpenStreetMap の bridge / layer タグから組み立てる。
+ * 位置・形状・幅・上下関係は実データ、桁の厚みや橋脚の間隔は
+ * 種別ごとの標準的な寸法で補っている。
+ */
+export type StructureKind =
+  | 'rail-elevated'
+  | 'rail-bridge'
+  | 'road-elevated'
+  | 'road-bridge'
+  | 'footbridge';
+
+export interface ElevatedStructure {
+  id: string;
+  kind: StructureKind;
+  name?: string;
+  /** 中心線（OSM の実データ） */
+  path: LatLng[];
+  /** 幅 (m)。車線数・線路数から求めるか、種別ごとの標準値 */
+  width: number;
+  /** OSM の layer。上下関係の目安 */
+  layer: number;
+  /** 桁の厚み (m) */
+  deckThickness: number;
+  /** 地表からデッキ下端までの高さ (m) */
+  clearance: number;
+  /** 橋脚を立てる間隔 (m)。0 なら橋脚なし */
+  pierSpacing: number;
+  lanes?: number;
+  tracks?: number;
+}

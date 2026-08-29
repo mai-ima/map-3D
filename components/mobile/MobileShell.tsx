@@ -49,6 +49,8 @@ export interface MobileShellProps {
   optionalLayers: string[];
   poiCategories: string[];
   furnitureEnabled: boolean;
+  structuresEnabled: boolean;
+  structuresLoading: boolean;
   followRealTime: boolean;
   attributions: DataSource[];
   aiEnabled: boolean;
@@ -71,6 +73,7 @@ export interface MobileShellProps {
   onToggleLayer: (id: string) => void;
   onTogglePoi: (category: string) => void;
   onToggleFurniture: () => void;
+  onToggleStructures: () => void;
   onOpenAI: () => void;
 }
 
@@ -435,6 +438,9 @@ export default function MobileShell(props: MobileShellProps) {
                 ))}
                 <Chip active={props.furnitureEnabled} onClick={props.onToggleFurniture}>
                   街路樹・街灯
+                </Chip>
+                <Chip active={props.structuresEnabled} onClick={props.onToggleStructures}>
+                  {props.structuresLoading ? '高架を読み込み中…' : '高架・橋'}
                 </Chip>
               </ChipRow>
             </SheetSection>

@@ -25,6 +25,9 @@ export interface EnvironmentBarProps {
   onImageryChange: (id: string) => void;
   onTogglePoi: (category: string) => void;
   onToggleFurniture: () => void;
+  structuresEnabled: boolean;
+  structuresLoading: boolean;
+  onToggleStructures: () => void;
   onQualityChange: (choice: string) => void;
   /** PLATEAU の追加レイヤ（LOD3 詳細・橋梁・都市設備・植生） */
   optionalLayers: string[];
@@ -208,6 +211,19 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
             <Chip active={props.furnitureEnabled} onClick={props.onToggleFurniture}>
               {props.furnitureEnabled ? '表示中' : '表示する'}
             </Chip>
+          </Section>
+
+          <Section title="高架・橋（OSM の実在位置）">
+            <Chip active={props.structuresEnabled} onClick={props.onToggleStructures}>
+              {props.structuresLoading
+                ? '読み込み中…'
+                : props.structuresEnabled
+                  ? '表示中'
+                  : '表示する'}
+            </Chip>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-mist-500">
+              PLATEAU に橋梁モデルが無い地域でも、OSM の橋・高架から桁と橋脚を組み立てて表示します。
+            </p>
           </Section>
 
           <Section title="PLATEAU の追加レイヤ">

@@ -24,6 +24,7 @@ import {
   fetchPois,
   fetchRoute,
   fetchStreetFurniture,
+  fetchStructures,
 } from '@/lib/api';
 import AIPanel from './AIPanel';
 import AttributionPanel from './AttributionPanel';
@@ -61,6 +62,9 @@ export default function AppShell() {
   const [qualityLabel, setQualityLabel] = useState('自動判定中');
   const [qualityChoice, setQualityChoice] = useState('auto');
   const [optionalLayers, setOptionalLayers] = useState<string[]>([]);
+  // 高架・橋（OSM 由来の立体構造物）
+  const [structuresEnabled, setStructuresEnabled] = useState(false);
+  const [structuresLoading, setStructuresLoading] = useState(false);
   // iPhone などのタッチ端末では、片手で操作できるボトムシート主体の画面に切り替える
   const isMobile = useIsMobile();
 
@@ -271,6 +275,41 @@ export default function AppShell() {
     },
     [notify, poiCategories],
   );
+
+  const toggleStructures = useCallback(async () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    if (structuresEnabled) {
+      engine.clearElevatedStructures();
+      setStructuresEnabled(false);
+      return;
+    }
+
+    const bbox = engine.getViewBBox();
+    if (!bbox) {
+      notify('表示範囲を特定できませんでした。ズームインしてください。');
+      return;
+    }
+
+    setStructuresLoading(true);
+    try {
+      const res = await fetchStructures(bbox);
+      if (res.structures.length === 0) {
+        notify('この範囲に高架・橋のデータがありません');
+        return;
+      }
+      await engine.showElevatedStructures(res.structures, bbox.join(','));
+      setStructuresEnabled(true);
+      notify(`高架・橋を ${res.structures.length} 件表示しました`);
+    } catch (error) {
+      notify((error as Error).message ?? '高架データを取得できませんでした');
+    } finally {
+      setStructuresLoading(false);
+    }
+    // notify は再生成されない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structuresEnabled]);
 
   const toggleFurniture = useCallback(async () => {
     const engine = engineRef.current;
@@ -530,6 +569,9 @@ export default function AppShell() {
               onImageryChange={changeImagery}
               onTogglePoi={togglePoi}
               onToggleFurniture={toggleFurniture}
+              structuresEnabled={structuresEnabled}
+              structuresLoading={structuresLoading}
+              onToggleStructures={toggleStructures}
             />
           </div>
         </div>
@@ -575,6 +617,9 @@ export default function AppShell() {
           onToggleLayer={handleToggleLayer}
           onTogglePoi={togglePoi}
           onToggleFurniture={toggleFurniture}
+          structuresEnabled={structuresEnabled}
+          structuresLoading={structuresLoading}
+          onToggleStructures={toggleStructures}
           onOpenAI={() => setAiOpen((v) => !v)}
         />
       )}

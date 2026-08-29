@@ -4,6 +4,7 @@
  */
 
 import type {
+  ElevatedStructure,
   BuildingInfo,
   LatLng,
   Poi,
@@ -31,6 +32,13 @@ export function searchPlaces(query: string, near?: LatLng): Promise<{ results: S
   const params = new URLSearchParams({ q: query });
   if (near) params.set('near', `${near.lat},${near.lng}`);
   return getJson(`/api/search?${params.toString()}`);
+}
+
+/** 高架・橋梁の立体構造物（OSM 由来） */
+export function fetchStructures(
+  bbox: [number, number, number, number],
+): Promise<{ structures: ElevatedStructure[]; degraded: boolean }> {
+  return getJson(`/api/structures?bbox=${bbox.map((n) => n.toFixed(5)).join(',')}`);
 }
 
 export function fetchRoute(from: LatLng, to: LatLng, mode: TravelMode): Promise<Route> {

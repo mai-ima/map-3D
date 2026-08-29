@@ -6,7 +6,7 @@
  */
 
 import * as Cesium from 'cesium';
-import type { City, District, LatLng, Poi, Route } from '@ijm/shared';
+import type { City, District, ElevatedStructure, LatLng, Poi, Route } from '@ijm/shared';
 import { PLATEAU_TERRAIN_URL, bboxExpand, getDefaultCity } from '@ijm/shared';
 import { DEFAULT_IMAGERY_ID, GSI_IMAGERY, categoryIcon, getImagery } from '@ijm/gis';
 import {
@@ -15,6 +15,7 @@ import {
   type NavigationTickResult,
 } from '@ijm/navigation';
 import { BuildingLayerManager, type OptionalLayerId } from './buildings';
+import { ElevatedStructureLayer } from './elevated-structures';
 import { EnvironmentController, type WeatherKind } from './environment';
 import { RouteLayer } from './route-layer';
 import { StreetFurnitureLayer, type FurniturePoint } from './street-furniture';
@@ -134,6 +135,7 @@ export class MapEngine {
   readonly routeLayer: RouteLayer;
   readonly environment: EnvironmentController;
   readonly furniture: StreetFurnitureLayer;
+  readonly structures: ElevatedStructureLayer;
 
   private quality: QualitySettings;
   private qualityTier: QualityTier;
@@ -244,6 +246,7 @@ export class MapEngine {
     this.routeLayer = new RouteLayer(this.viewer);
     this.environment = new EnvironmentController(this.viewer, this.quality);
     this.furniture = new StreetFurnitureLayer(this.viewer, this.quality.maxFurniture);
+    this.structures = new ElevatedStructureLayer(this.viewer);
 
     this.watchdog = new PerformanceWatchdog(
       () => this.degradeQuality(),
@@ -391,6 +394,22 @@ export class MapEngine {
 
   isOptionalLayerEnabled(id: OptionalLayerId): boolean {
     return this.buildings.isLayerEnabled(id);
+  }
+
+  /**
+   * 高架・橋梁を立体で描く。
+   *
+   * PLATEAU の橋梁モデルが無い地域では、街の骨格である高架がまったく見えず
+   * 道路が地面に張り付いたままになる。OSM の bridge / layer から補う。
+   */
+  async showElevatedStructures(structures: ElevatedStructure[], key: string): Promise<void> {
+    await this.structures.render(structures, key);
+    this.requestRender();
+  }
+
+  clearElevatedStructures(): void {
+    this.structures.clear();
+    this.requestRender();
   }
 
   /** 端末判定による既定のティア（手動指定から「自動」に戻すときに使う） */
@@ -992,6 +1011,7 @@ export class MapEngine {
     this.removeContextListeners = null;
     this.removeMemoryMonitor?.();
     this.removeMemoryMonitor = null;
+    this.structures.clear();
     this.environment.destroy();
     this.furniture.clear();
     this.buildings.unload();
