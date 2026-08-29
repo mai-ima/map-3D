@@ -5,6 +5,9 @@ import type { City } from '@ijm/shared';
 import type { MapEngine } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 
+/** セーフモードでの開き直しを 1 回に制限するためのキー */
+const SAFE_RETRY_KEY = 'ijm:safe-retry';
+
 export interface MapCanvasProps {
   city: City;
   onReady: (engine: MapEngine) => void;
@@ -37,6 +40,33 @@ export default function MapCanvas({
     const container = containerRef.current;
     if (!container) return;
 
+    /**
+     * 一度だけセーフモードで開き直す。
+     *
+     * iOS 18.2 以降、描画コマンドを出しすぎると WebKit が WebGL コンテキストを破棄する。
+     * その状態のまま置いておくと画面が固まったように見えるだけなので、
+     * 軽い設定で自動的に開き直して「とりあえず表示できる」状態にする。
+     * sessionStorage で 1 回に制限し、再読み込みの繰り返しを防ぐ。
+     */
+    const retryInSafeMode = (): boolean => {
+      try {
+        if (window.sessionStorage.getItem(SAFE_RETRY_KEY)) return false;
+        window.sessionStorage.setItem(SAFE_RETRY_KEY, '1');
+      } catch {
+        // プライベートブラウズなどで sessionStorage が使えない場合は繰り返しを防げないので、
+        // 自動での開き直しは行わない
+        return false;
+      }
+      const url = new URL(window.location.href);
+      url.searchParams.set('safe', '1');
+      window.location.replace(url.toString());
+      return true;
+    };
+
+    // ?safe=1 は最小構成で起動する。
+    // 端末や GPU ドライバの相性でどうしても表示できないときの逃げ道。
+    const safeMode = new URLSearchParams(window.location.search).get('safe') === '1';
+
     (async () => {
       try {
         // Cesium の静的アセット（Workers / Assets / Widgets）の配信元
@@ -44,10 +74,6 @@ export default function MapCanvas({
         await import('cesium/Build/Cesium/Widgets/widgets.css');
         const { MapEngine } = await import('@ijm/map-engine');
         if (cancelled) return;
-
-        // ?safe=1 は最小構成で起動する。
-        // 端末や GPU ドライバの相性でどうしても表示できないときの逃げ道。
-        const safeMode = new URLSearchParams(window.location.search).get('safe') === '1';
 
         const engine = new MapEngine({
           container,
@@ -61,7 +87,9 @@ export default function MapCanvas({
             setNotice('メモリ使用量が多いため、描画品質を自動で調整しました');
             window.setTimeout(() => setNotice(null), 6000);
           },
-          onContextLost: () => setContextLost(true),
+          onContextLost: () => {
+            if (!retryInSafeMode()) setContextLost(true);
+          },
           onContextRestored: () => setContextLost(false),
         });
         engineRef.current = engine;
@@ -69,12 +97,13 @@ export default function MapCanvas({
         setLoading(false);
       } catch (error) {
         console.error(error);
-        if (!cancelled) {
-          onError(
-            `3D エンジンの初期化に失敗しました: ${(error as Error).message ?? '不明なエラー'}`,
-          );
-          setLoading(false);
-        }
+        if (cancelled) return;
+        // 初期化そのものに失敗した場合も、軽い設定なら通ることがある
+        if (!safeMode && retryInSafeMode()) return;
+        onError(
+          `3D エンジンの初期化に失敗しました: ${(error as Error).message ?? '不明なエラー'}`,
+        );
+        setLoading(false);
       }
     })();
 

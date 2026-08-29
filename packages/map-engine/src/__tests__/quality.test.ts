@@ -35,6 +35,23 @@ test('全プリセットが Cesium 既定より高精細で、かつ現実的な
   }
 });
 
+test('iOS プリセットは Retina を保ちつつ描画パスを増やさない', () => {
+  const ios = getQualitySettings('ios-high');
+  // 見た目の精細さの要である Retina 解像度は維持する
+  assert.equal(ios.resolutionScale, 2.0);
+  assert.ok(ios.screenSpaceError <= 12);
+
+  // iOS 18.2 以降、1 フレームの描画コマンドが多すぎると WebKit が
+  // WebGL コンテキストを破棄する。パスを増やす設定は既定で入れない。
+  // https://bugs.webkit.org/show_bug.cgi?id=290752
+  assert.equal(ios.msaaSamples, 1, 'MSAA は解決パスを増やす');
+  assert.equal(ios.hdr, false, 'HDR は浮動小数点バッファのパスを増やす');
+  assert.equal(ios.ambientOcclusion, false);
+  assert.equal(ios.bloom, false);
+  // ポストプロセスを切るぶん、輪郭は FXAA で補う
+  assert.equal(ios.fxaa, true);
+});
+
 test('iOS プリセットはデスクトップよりメモリ予算が小さい', () => {
   const ios = getQualitySettings('ios-high');
   const high = getQualitySettings('high');

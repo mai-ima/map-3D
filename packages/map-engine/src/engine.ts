@@ -125,6 +125,7 @@ export class MapEngine {
   private memoryReliefStep = 0;
   private removeContextListeners: (() => void) | null = null;
   private removeMemoryMonitor: (() => void) | null = null;
+  private removeCommandFlush: (() => void) | null = null;
   private lastMemoryCheck = 0;
   private lastAdaptiveSse = 0;
   private fps = 0;
@@ -233,6 +234,7 @@ export class MapEngine {
     );
 
     this.setupContextLossHandlers();
+    this.setupCommandBufferFlush();
     this.setupMemoryMonitor();
     this.setupInteractionHandlers();
     void this.initialize(options);
@@ -448,6 +450,40 @@ export class MapEngine {
       `[map-engine] メモリ使用量が上限に近づいたため描画負荷を下げました (段階 ${this.memoryReliefStep}/5, タイル ${(report.tileBytes / 1024 / 1024).toFixed(0)}MB)`,
     );
     this.requestRender();
+  }
+
+  /**
+   * iOS では毎フレーム WebGL のコマンドバッファを明示的に flush する。
+   *
+   * iOS 18.2 以降、1 フレームで GPU に大量の描画コマンドを投入すると
+   * Metal 側で kIOGPUCommandBufferCallbackErrorHang が発生し、
+   * WebKit が WebGL コンテキストを破棄する（＝ページが落ちる）。
+   * 以前はこのカーネルエラーが無視されていたため表面化していなかった。
+   *
+   * WebKit 側の回避策は「flush() を呼んでコマンドバッファを分割すること」。
+   * WebKit/ANGLE は作業量を判断できないため自動では分割しない。
+   *
+   * 参考: https://bugs.webkit.org/show_bug.cgi?id=290752
+   */
+  private setupCommandBufferFlush(): void {
+    if (!this.device.isIOS) return;
+
+    // Cesium が使っているのと同じコンテキストが返る
+    // （同じ canvas に対する getContext は既存のものを返す仕様）
+    const canvas = this.viewer.scene.canvas;
+    const gl =
+      (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ??
+      (canvas.getContext('webgl') as WebGLRenderingContext | null);
+    if (!gl) return;
+
+    const remove = this.viewer.scene.postRender.addEventListener(() => {
+      try {
+        gl.flush();
+      } catch {
+        /* コンテキストが失われている場合は何もしない */
+      }
+    });
+    this.removeCommandFlush = remove;
   }
 
   /**
@@ -924,6 +960,8 @@ export class MapEngine {
     this.removeContextListeners = null;
     this.removeMemoryMonitor?.();
     this.removeMemoryMonitor = null;
+    this.removeCommandFlush?.();
+    this.removeCommandFlush = null;
     this.environment.destroy();
     this.furniture.clear();
     this.buildings.unload();

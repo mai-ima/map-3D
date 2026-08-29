@@ -323,3 +323,37 @@ Root Directory を `apps/web` のようなサブディレクトリに設定す�
 → 都市レジストリ（`packages/shared/src/cities.ts`）にエントリを足すだけで拡張できる設計にしてあるため、
    整備都市の増加にはそのまま追随できる。追加時は `npm run validate:cities` で
    実際に配信されているか（HTTP 200 かつタイルセットが空でないか）を確認すること。
+
+
+---
+
+## iOS / WebKit の WebGL 制約（2026-08-29 調査）
+
+iPhone でページを開いた直後に落ちる件を調べた結果、CesiumJS 側ではなく
+**WebKit（iOS Safari）の WebGL 実装に起因する既知の問題**が確認できた。
+iOS 版の Chrome・Firefox も中身は WebKit なので、同じ制約を受ける。
+
+### 症状と原因
+
+| 項目 | 内容 |
+| --- | --- |
+| 症状 | 3D シーンの初期化直後に WebGL コンテキストが失われ、ページが落ちる |
+| 原因 | 1 フレームで GPU に大量の描画コマンドを投入すると、Metal 側で `kIOGPUCommandBufferCallbackErrorHang` が発生する |
+| 経緯 | 以前はこのカーネルエラーが無視されていた。WebKit の修正（r257584）以降は正しくコンテキスト喪失として扱われるため、表面化した |
+| 影響 | iOS 18.2 以降。iPad 9th/Pro、iPhone SE/11/12/XR など広範囲で報告。iOS 26 では改善が報告されている |
+| WebKit の回答 | 「`WebGLRenderingContext.flush()` を呼んでコマンドバッファを分割せよ」。WebKit/ANGLE は作業量を判断できないため自動分割はしない |
+
+- WebKit Bug 290752: https://bugs.webkit.org/show_bug.cgi?id=290752
+- Cesium Community「Crashing on iOS 18.2 and 18.3 on specific devices」: https://community.cesium.com/t/crashing-on-ios-18-2-and-18-3-on-specific-devices/39615
+- Cesium Community「WebGL issue constructing CesiumWidget - iOS 18.6」: https://community.cesium.com/t/webgl-issue-constructing-cesiumwidget-ios-18-6/43520
+  （`aliasedLineWidthRange[0]` で初期化に失敗する事例。OS 更新で解消）
+
+### 本アプリでの対応
+
+1. **毎フレーム `gl.flush()`**（iOS のみ）。WebKit 推奨の回避策そのもの
+2. **iOS 既定でポストプロセスを外す**。MSAA・HDR・環境光遮蔽・ブルームは
+   1 パスごとに描画コマンドを積み増すため、この上限に直接効く。
+   Retina では 1 画素が小さく寄与も見えにくいので、失うものが少ない
+3. **Retina 解像度（`resolutionScale` 2.0）は維持**。見た目の精細さはここが効くので、
+   品質の要は落としていない。ポストプロセスは「表示設定 → 描画品質 → 高品質」で有効にできる
+4. **コンテキスト喪失時は自動でセーフモードに開き直す**（`sessionStorage` で 1 回に制限）

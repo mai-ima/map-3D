@@ -101,8 +101,21 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     label: '高品質（デスクトップ）',
   },
   'ios-high': {
-    // iPhone 17 世代を想定。Retina の精細さは活かすが、iOS Safari のメモリ上限が
-    // デスクトップよりずっと低いため、キャッシュと描画ピクセル数は明確に制限する。
+    /**
+     * iPhone 向け。Retina の精細さ（resolutionScale 2.0）は維持する。
+     * 見た目の精細さはここが効くので、品質の要は落としていない。
+     *
+     * 一方 MSAA・HDR・環境光遮蔽・ブルームは既定で切っている。理由は 2 つ。
+     *
+     * 1. iOS 18.2 以降、1 フレームで GPU に大量の描画コマンドを投入すると
+     *    Metal 側で kIOGPUCommandBufferCallbackErrorHang が発生し、WebKit が
+     *    WebGL コンテキストを破棄する（＝ページが落ちる）。
+     *    ポストプロセスは 1 パスごとに描画コマンドを積み増すため、直接この上限に効く。
+     *    参考: https://bugs.webkit.org/show_bug.cgi?id=290752
+     * 2. Retina では 1 画素が小さく、MSAA やブルームの寄与が元々見えにくい。
+     *
+     * 「表示設定 → 描画品質 → 高品質」を選べば、これらは有効になる。
+     */
     tier: 'ios-high',
     viewDistance: 9000,
     globeScreenSpaceError: 2.5,
@@ -111,16 +124,16 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     farScreenSpaceError: 56,
     cacheBytes: 160 * 1024 * 1024,
     maximumCacheOverflowBytes: 48 * 1024 * 1024,
-    msaaSamples: 2,
+    msaaSamples: 1,
     resolutionScale: 2.0,
     maxDrawPixels: 2_600_000,
     shadows: true,
     shadowDistance: 1500,
     softShadows: true,
-    ambientOcclusion: true,
-    bloom: true,
-    fxaa: false,
-    hdr: true,
+    ambientOcclusion: false,
+    bloom: false,
+    fxaa: true,
+    hdr: false,
     streetFurniture: true,
     maxFurniture: 1200,
     useFarTileset: true,
