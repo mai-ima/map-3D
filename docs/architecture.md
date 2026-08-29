@@ -456,8 +456,17 @@ JS ヒープ（`performance.memory`、Chromium 系のみ）。逼迫時は影響
 - 3D Tiles: `cullWithChildrenBounds`, `cullRequestsWhileMoving`, `preloadWhenHidden:false`,
   `preferLeaves`（近景のみ）, `dynamicScreenSpaceError`, `foveatedScreenSpaceError`。
   `skipLevelOfDetail` は **無効**（有効にすると一時的に高精細タイルを大量に抱えてメモリが跳ねる）
-- **地理的オンデマンド**: 都市レジストリの bbox 単位でタイルセットを attach/detach。
+- **地理的オンデマンド**（`/api/tileset`）: PLATEAU の配信 URL が指す tileset.json は
+  **都道府県まるごと**で、root の children に各市区町村の tileset.json が絶対 URL で並ぶ。
+  refine が ADD なので、そのまま読み込ませると視界に入る全市区町村を一斉に展開する。
+  東京都は 62 市区町村あり、開いた直後に大量のリクエストとメモリ確保が起きてタブが落ちる。
+  そこで BFF 側で bbox と交差する子だけを残してから配信する。
+  東京都心での実測: 絞らない場合 62 → 近景 3km 半径で 8、遠景 7km 半径で約 18。
+  カメラが読み込み済み範囲から出そうになったら、近景だけ新しい範囲で取り直して差し替える
+  （準備ができてから入れ替えるので建物が消える瞬間はない）。
   都市を切り替えたら前の都市を破棄して GPU メモリを解放する。**起動時に日本全国は読まない**
+- 遠景 LOD1 は近景の 2 秒後に読み込む。同時に走らせると開いた直後に通信とメモリ確保が集中する
+- `?safe=1` で最小構成（軽量ティア）起動。GPU ドライバとの相性で表示できないときの逃げ道
 - 地形側も `globe.maximumScreenSpaceError` / `tileCacheSize` / `preloadSiblings:false` で制限
 - `requestRenderMode: true`（静止時）。ナビ中・アニメーション中のみ連続描画
 - POI/Overpass 結果は BFF 側で bbox+category キーのキャッシュ + `s-maxage` 付きレスポンス

@@ -7,9 +7,26 @@
  */
 
 import * as Cesium from 'cesium';
-import type { City } from '@ijm/shared';
-import { cityTilesetUrls } from '@ijm/shared';
+import type { BBox, City, LatLng } from '@ijm/shared';
+import { bboxAround, bboxIntersects } from '@ijm/shared';
 import type { QualitySettings } from './quality';
+
+/**
+ * tileset.json の取得先。
+ *
+ * PLATEAU の配信 URL を直接読むと、都道府県まるごとの tileset が返り、
+ * 視界に入る全市区町村の LOD2 を一斉に展開してしまう（東京都なら 23 区分）。
+ * 開いた直後に数千リクエストと大量のメモリ確保が起きるため、
+ * BFF (/api/tileset) で必要な範囲の子だけに絞ってから読み込む。
+ */
+function tilesetUrl(city: City, lod: 'near' | 'far', bbox: BBox): string {
+  const params = new URLSearchParams({
+    city: city.id,
+    lod,
+    bbox: bbox.map((n) => n.toFixed(4)).join(','),
+  });
+  return `/api/tileset?${params.toString()}`;
+}
 
 export interface LoadedCityTilesets {
   city: City;
@@ -40,8 +57,25 @@ function farTilesetStyle(): Cesium.Cesium3DTileStyle {
   });
 }
 
+/**
+ * 近景 LOD2 を読み込む範囲（カメラ中心からの半径 m）。
+ *
+ * PLATEAU の最小配信単位は市区町村なので、半径を小さくしても
+ * 読み込む tileset の数は一定以下にならない。東京都心の実測では
+ * 2km で 7 区、3km で 8 区、4km で 10 区（絞らない場合は 62 市区町村）。
+ * 移動追従があるため、3km で十分カバーできる。
+ */
+const NEAR_RADIUS_M = 3000;
+/** 遠景 LOD1 の範囲。テクスチャを持たないぶん広く取れる（実測 7km で約 18 区） */
+const FAR_RADIUS_M = 7000;
+/** 読み込み済み範囲の縁からこれだけ内側に入ったら、範囲を取り直す */
+const REFRESH_MARGIN_M = 1000;
+
 export class BuildingLayerManager {
   private loaded: LoadedCityTilesets | null = null;
+  /** 近景タイルセットが現在カバーしている範囲 */
+  private activeBBox: BBox | null = null;
+  private refreshing = false;
   /** 透過中の feature と元の色 */
   private dimmed = new Map<Cesium.Cesium3DTileFeature, Cesium.Color>();
 
@@ -94,29 +128,55 @@ export class BuildingLayerManager {
 
     this.unload();
 
-    const urls = cityTilesetUrls(city);
-    const near = await Cesium.Cesium3DTileset.fromUrl(urls.near, this.tilesetOptions(false));
+    // 起動直後はカメラ周辺だけを読む。カメラが離れたら refreshForCamera が読み直す
+    this.activeBBox = this.clampToCity(city, bboxAround(city.center, NEAR_RADIUS_M));
+    const near = await Cesium.Cesium3DTileset.fromUrl(
+      tilesetUrl(city, 'near', this.activeBBox),
+      this.tilesetOptions(false),
+    );
     near.shadows = this.quality.shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
     // 近景にはスタイルを当てない = PLATEAU の実写テクスチャの色をそのまま出す
     this.applyRealisticLighting(near);
     this.viewer.scene.primitives.add(near);
 
-    let far: Cesium.Cesium3DTileset | undefined;
-    if (urls.far && this.quality.useFarTileset) {
-      try {
-        far = await Cesium.Cesium3DTileset.fromUrl(urls.far, this.tilesetOptions(true));
-        far.style = farTilesetStyle();
-        far.shadows = Cesium.ShadowMode.DISABLED;
-        this.applyRealisticLighting(far);
-        this.viewer.scene.primitives.add(far);
-      } catch {
-        // 遠景が無くても近景だけで成立する
-        far = undefined;
-      }
+    this.loaded = { city, near };
+
+    // 遠景は近景の表示が始まってから読む。
+    // 同時に読むと開いた直後のリクエストとメモリ確保が集中し、
+    // 端末によってはタブごと落ちる。近くから順に見えてくる方が体感も良い。
+    if (city.far && this.quality.useFarTileset) {
+      void this.loadFarTileset(city);
     }
 
-    this.loaded = { city, near, far };
     return this.loaded;
+  }
+
+  /** 遠景 LOD1 を後追いで読み込む（失敗しても近景だけで成立する） */
+  private async loadFarTileset(city: City): Promise<void> {
+    try {
+      // 近景のタイル取得が一段落してから始める。
+      // 同時に走らせると開いた直後に通信とメモリ確保が集中する
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (!this.loaded || this.loaded.city.id !== city.id) return;
+
+      const bbox = this.clampToCity(city, bboxAround(city.center, FAR_RADIUS_M));
+      const far = await Cesium.Cesium3DTileset.fromUrl(
+        tilesetUrl(city, 'far', bbox),
+        this.tilesetOptions(true),
+      );
+      // 読み込み中に都市が切り替わっていたら捨てる
+      if (!this.loaded || this.loaded.city.id !== city.id || this.loaded.far) {
+        far.destroy();
+        return;
+      }
+      far.style = farTilesetStyle();
+      far.shadows = Cesium.ShadowMode.DISABLED;
+      this.applyRealisticLighting(far);
+      this.viewer.scene.primitives.add(far);
+      this.loaded = { ...this.loaded, far };
+    } catch {
+      // 遠景が無くても近景だけで成立する
+    }
   }
 
   /**
@@ -138,11 +198,75 @@ export class BuildingLayerManager {
   }
 
   unload(): void {
+    this.activeBBox = null;
     if (!this.loaded) return;
     this.restoreAll();
     this.viewer.scene.primitives.remove(this.loaded.near);
     if (this.loaded.far) this.viewer.scene.primitives.remove(this.loaded.far);
     this.loaded = null;
+  }
+
+  /** 範囲が都市の bbox をはみ出さないように収める */
+  private clampToCity(city: City, bbox: BBox): BBox {
+    const [cMinLng, cMinLat, cMaxLng, cMaxLat] = city.bbox;
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+    return [
+      Math.max(minLng, cMinLng),
+      Math.max(minLat, cMinLat),
+      Math.min(maxLng, cMaxLng),
+      Math.min(maxLat, cMaxLat),
+    ];
+  }
+
+  /**
+   * カメラが読み込み済み範囲から出そうなら、近景タイルセットを取り直す。
+   *
+   * 一度に読むのはカメラ周辺だけなので、移動に追従して読み直す必要がある。
+   * 新しいタイルセットの準備ができてから差し替えるので、建物が消える瞬間はない。
+   */
+  async refreshForCamera(center: LatLng): Promise<boolean> {
+    if (!this.loaded || !this.activeBBox || this.refreshing) return false;
+
+    const inner = bboxAround(center, REFRESH_MARGIN_M);
+    const [aMinLng, aMinLat, aMaxLng, aMaxLat] = this.activeBBox;
+    const stillInside =
+      inner[0] >= aMinLng && inner[1] >= aMinLat && inner[2] <= aMaxLng && inner[3] <= aMaxLat;
+    if (stillInside) return false;
+
+    const city = this.loaded.city;
+    const next = this.clampToCity(city, bboxAround(center, NEAR_RADIUS_M));
+    // 都市の外に出た場合は読み直さない（都市の切り替えは loadCity が担当する）
+    if (!bboxIntersects(next, city.bbox)) return false;
+
+    this.refreshing = true;
+    try {
+      const tileset = await Cesium.Cesium3DTileset.fromUrl(
+        tilesetUrl(city, 'near', next),
+        this.tilesetOptions(false),
+      );
+      if (!this.loaded || this.loaded.city.id !== city.id) {
+        // 読み込み中に都市が切り替わっていたら破棄する
+        tileset.destroy();
+        return false;
+      }
+      tileset.shadows = this.quality.shadows
+        ? Cesium.ShadowMode.ENABLED
+        : Cesium.ShadowMode.DISABLED;
+      this.applyRealisticLighting(tileset);
+      this.viewer.scene.primitives.add(tileset);
+
+      const previous = this.loaded.near;
+      this.loaded = { ...this.loaded, near: tileset };
+      this.activeBBox = next;
+      this.restoreAll();
+      this.viewer.scene.primitives.remove(previous);
+      return true;
+    } catch {
+      // 取り直しに失敗しても、今表示しているものはそのまま使える
+      return false;
+    } finally {
+      this.refreshing = false;
+    }
   }
 
   /** 近景タイルセットの精細度だけを差し替える（カメラ高度に応じた制御用） */

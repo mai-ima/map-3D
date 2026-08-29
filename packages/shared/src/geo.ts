@@ -141,6 +141,20 @@ export function bboxContains(bbox: BBox, p: LatLng): boolean {
   return p.lng >= bbox[0] && p.lat >= bbox[1] && p.lng <= bbox[2] && p.lat <= bbox[3];
 }
 
+/** 2 つの bbox が重なるか（辺で接する場合も重なりとみなす） */
+export function bboxIntersects(a: BBox, b: BBox): boolean {
+  const [aMinLng, aMinLat, aMaxLng, aMaxLat] = a;
+  const [bMinLng, bMinLat, bMaxLng, bMaxLat] = b;
+  return aMinLng <= bMaxLng && aMaxLng >= bMinLng && aMinLat <= bMaxLat && aMaxLat >= bMinLat;
+}
+
+/** 中心から指定距離の正方形 bbox を作る */
+export function bboxAround(center: LatLng, meters: number): BBox {
+  const dLat = meters / 111_320;
+  const dLng = meters / (111_320 * Math.cos((center.lat * Math.PI) / 180) || 1);
+  return [center.lng - dLng, center.lat - dLat, center.lng + dLng, center.lat + dLat];
+}
+
 export function bboxCenter(bbox: BBox): LatLng {
   return { lng: (bbox[0] + bbox[2]) / 2, lat: (bbox[1] + bbox[3]) / 2 };
 }

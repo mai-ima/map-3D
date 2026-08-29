@@ -45,9 +45,14 @@ export default function MapCanvas({
         const { MapEngine } = await import('@ijm/map-engine');
         if (cancelled) return;
 
+        // ?safe=1 は最小構成で起動する。
+        // 端末や GPU ドライバの相性でどうしても表示できないときの逃げ道。
+        const safeMode = new URLSearchParams(window.location.search).get('safe') === '1';
+
         const engine = new MapEngine({
           container,
           city,
+          qualityTier: safeMode ? 'low' : undefined,
           onNavigationTick,
           onCameraInteraction,
           // メモリが逼迫すると、放置した場合はタブごとクラッシュする。

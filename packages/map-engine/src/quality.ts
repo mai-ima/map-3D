@@ -55,6 +55,7 @@ export interface QualitySettings {
    * cacheBytes は「現在の視界に不要なタイル」しか切り詰めないため、
    * 視界そのものを絞らないと読み込み量は減らせない。
    * 遠方は霧で自然に減衰させるので、見た目の違和感は出ない。
+   * 遠景タイルセットの読み込み範囲（半径 7km）と揃えておく。
    */
   viewDistance: number;
   label: string;
@@ -74,7 +75,7 @@ export interface QualitySettings {
 const PRESETS: Record<QualityTier, QualitySettings> = {
   high: {
     tier: 'high',
-    viewDistance: 16000,
+    viewDistance: 10000,
     globeScreenSpaceError: 2.0,
     globeTileCacheSize: 260,
     // 建物のディテールを優先しつつ、タイル数が発散しない範囲に収める
@@ -103,7 +104,7 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     // iPhone 17 世代を想定。Retina の精細さは活かすが、iOS Safari のメモリ上限が
     // デスクトップよりずっと低いため、キャッシュと描画ピクセル数は明確に制限する。
     tier: 'ios-high',
-    viewDistance: 12000,
+    viewDistance: 9000,
     globeScreenSpaceError: 2.5,
     globeTileCacheSize: 160,
     screenSpaceError: 12,
@@ -127,7 +128,7 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
   },
   balanced: {
     tier: 'balanced',
-    viewDistance: 9000,
+    viewDistance: 8000,
     globeScreenSpaceError: 3.0,
     globeTileCacheSize: 140,
     screenSpaceError: 18,

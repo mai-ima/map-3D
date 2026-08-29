@@ -466,6 +466,7 @@ export class MapEngine {
       if (now - this.lastMemoryCheck < 500) return;
       this.lastMemoryCheck = now;
       this.updateAdaptiveDetail();
+      this.followCameraForBuildings();
       this.memoryWatchdog.check(this.buildings.totalMemoryUsageInBytes, now);
     });
     this.removeMemoryMonitor = remove;
@@ -491,6 +492,16 @@ export class MapEngine {
     if (Math.abs(target - this.lastAdaptiveSse) < 1) return;
     this.lastAdaptiveSse = target;
     this.buildings.setNearScreenSpaceError(target);
+  }
+
+  /**
+   * カメラの移動に合わせて、近景の建物データの読み込み範囲を追従させる。
+   * 一度に読むのはカメラ周辺だけなので、移動したら読み直す必要がある。
+   */
+  private followCameraForBuildings(): void {
+    const center = this.getViewCenter();
+    if (!center) return;
+    void this.buildings.refreshForCamera(center);
   }
 
   /**
