@@ -40,6 +40,14 @@ import { useIsMobile } from './mobile/useIsMobile';
 
 const MapCanvas = dynamic(() => import('./MapCanvas'), { ssr: false });
 
+/**
+ * 経路を外れた状態がこれだけ続いたら再検索する。
+ * 一瞬の測位のぶれで再検索すると案内が落ち着かない。
+ */
+const OFF_ROUTE_GRACE_MS = 4000;
+/** 再検索の最小間隔。連続して引き直さないための間 */
+const REROUTE_COOLDOWN_MS = 15000;
+
 export default function AppShell() {
   const engineRef = useRef<MapEngine | null>(null);
   const [engineReady, setEngineReady] = useState(false);
@@ -54,6 +62,13 @@ export default function AppShell() {
 
   const [tick, setTick] = useState<NavigationTickResult | null>(null);
   const [navigating, setNavigating] = useState(false);
+  const [rerouting, setRerouting] = useState(false);
+  // tick ハンドラは再生成しないので、最新の目的地と移動手段は ref で参照する
+  const destinationRef = useRef<PlacePoint | null>(null);
+  const modeRef = useRef<TravelMode>('walk');
+  /** 経路を外れ始めた時刻。一定時間続いたら再検索する */
+  const offRouteSinceRef = useRef<number | null>(null);
+  const lastRerouteAtRef = useRef(0);
 
   const [hour, setHour] = useState(12);
   const [followRealTime, setFollowRealTime] = useState(false);
@@ -111,7 +126,30 @@ export default function AppShell() {
       }
     }
 
-    if (result.progress.arrived) setNavigating(false);
+    if (result.progress.arrived) {
+      setNavigating(false);
+      offRouteSinceRef.current = null;
+      return;
+    }
+
+    // 自動リルート。
+    // 一瞬の測位のぶれで再検索すると案内が落ち着かないので、
+    // 「外れた状態が続いていること」を条件にする。
+    if (result.progress.offRoute) {
+      const now = Date.now();
+      offRouteSinceRef.current ??= now;
+      const offFor = now - offRouteSinceRef.current;
+      const sinceLast = now - lastRerouteAtRef.current;
+      if (offFor >= OFF_ROUTE_GRACE_MS && sinceLast >= REROUTE_COOLDOWN_MS) {
+        lastRerouteAtRef.current = now;
+        offRouteSinceRef.current = null;
+        void rerouteFromCurrent(result.progress.rawPosition);
+      }
+    } else {
+      offRouteSinceRef.current = null;
+    }
+    // rerouteFromCurrent は再生成されない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleReady = useCallback(
@@ -159,6 +197,14 @@ export default function AppShell() {
     [],
   );
 
+  useEffect(() => {
+    destinationRef.current = destination;
+  }, [destination]);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
   const handleQualityChange = useCallback((choice: string) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -202,9 +248,46 @@ export default function AppShell() {
     setNavigating(true);
   }, [route]);
 
+  /**
+   * 現在地から目的地へ経路を引き直す。
+   *
+   * 曲がり損ねたときに元の経路へ戻そうとし続けるより、
+   * 今いる場所からの最短を出し直す方が実用的。
+   * 再検索中も案内は止めず、新しい経路が出てから切り替える。
+   */
+  const rerouteFromCurrent = useCallback(
+    async (from: LatLng) => {
+      const engine = engineRef.current;
+      const to = destinationRef.current;
+      if (!engine || !to) return;
+
+      setRerouting(true);
+      try {
+        const next = await fetchRoute(from, to.position, modeRef.current);
+        // 再検索中に案内が終わっていたら捨てる
+        if (!engine.isNavigating) return;
+        setRoute(next);
+        engine.showRoute(next);
+        spokenRef.current = null;
+        engine.startNavigation(next, { useRealPosition: false });
+        notify('経路を再検索しました');
+      } catch {
+        // 再検索に失敗しても、元の経路の案内は続いている
+        notify('経路を再検索できませんでした');
+      } finally {
+        setRerouting(false);
+      }
+    },
+    // notify は再生成されない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   const stopNavigation = useCallback(() => {
     engineRef.current?.stopNavigation();
     setNavigating(false);
+    setRerouting(false);
+    offRouteSinceRef.current = null;
     setTick(null);
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -571,6 +654,7 @@ export default function AppShell() {
       {navigating && (
         <NextTurnPanel
           tick={tick}
+          rerouting={rerouting}
           onStop={stopNavigation}
           onResumeFollow={() => engineRef.current?.resumeFollow()}
         />

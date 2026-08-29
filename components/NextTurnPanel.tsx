@@ -1,11 +1,19 @@
 'use client';
 
 import type { NavigationTickResult } from '@ijm/navigation';
-import { formatDistance, formatDuration, maneuverIcon, maneuverLabel } from '@ijm/navigation';
+import {
+  formatDistance,
+  formatDuration,
+  formatEta,
+  maneuverIcon,
+  maneuverLabel,
+} from '@ijm/navigation';
 import { Icon } from '@ijm/ui';
 
 export interface NextTurnPanelProps {
   tick: NavigationTickResult | null;
+  /** 経路を外れて再検索している最中か */
+  rerouting?: boolean;
   onStop: () => void;
   onResumeFollow: () => void;
 }
@@ -23,7 +31,12 @@ const STATE_LABELS: Record<string, string> = {
  * 画面上部の案内パネル（Immersive Navigation の主表示）。
  * 「次に何をするか」だけを大きく出し、残りは補助情報として小さく置く。
  */
-export default function NextTurnPanel({ tick, onStop, onResumeFollow }: NextTurnPanelProps) {
+export default function NextTurnPanel({
+  tick,
+  rerouting,
+  onStop,
+  onResumeFollow,
+}: NextTurnPanelProps) {
   if (!tick) return null;
 
   const { outlook, progress, camera } = tick;
@@ -33,6 +46,13 @@ export default function NextTurnPanel({ tick, onStop, onResumeFollow }: NextTurn
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-3 safe-top">
       <div className="glass pointer-events-auto w-full max-w-[560px] rounded-[18px] px-4 py-3">
+        {rerouting && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg bg-turn-500/12 px-2.5 py-1.5 text-[12px] text-turn-400">
+            <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-turn-400/30 border-t-turn-400" />
+            経路を再検索しています
+          </div>
+        )}
+
         <div className="flex items-center gap-4">
           <div
             className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl ${
@@ -79,8 +99,12 @@ export default function NextTurnPanel({ tick, onStop, onResumeFollow }: NextTurn
         </div>
 
         <div className="mt-3 flex items-center gap-3 border-t border-white/8 pt-2.5 text-[12px] text-mist-500">
+          {/* 到着予想時刻。約束の時間に間に合うかを判断できるよう、残り時間より先に出す */}
+          <span className="tabular-nums font-medium text-mist-200">
+            {formatEta(progress.remainingDuration)} 着
+          </span>
           <span className="tabular-nums">残り {formatDistance(progress.remainingDistance)}</span>
-          <span className="tabular-nums">約 {formatDuration(progress.remainingDuration)}</span>
+          <span className="tabular-nums">{formatDuration(progress.remainingDuration)}</span>
           <span className="tabular-nums">{(progress.speed * 3.6).toFixed(0)} km/h</span>
           <span className="ml-auto flex items-center gap-2">
             <span

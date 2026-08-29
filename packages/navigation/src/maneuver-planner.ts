@@ -168,6 +168,29 @@ export function formatDistance(meters: number): string {
 }
 
 /** 所要時間の日本語表記 */
+/**
+ * 到着予想時刻。
+ *
+ * カーナビで最もよく見られる情報。「あと 23 分」より
+ * 「14:35 着」の方が、約束の時間に間に合うかを判断しやすい。
+ * 日付をまたぐ場合は「翌 01:20」のように示す。
+ */
+export function formatEta(remainingSeconds: number, now = new Date()): string {
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds < 0) return '';
+  const eta = new Date(now.getTime() + remainingSeconds * 1000);
+  const hh = String(eta.getHours()).padStart(2, '0');
+  const mm = String(eta.getMinutes()).padStart(2, '0');
+
+  const dayDiff = Math.floor(
+    (new Date(eta.getFullYear(), eta.getMonth(), eta.getDate()).getTime() -
+      new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) /
+      86_400_000,
+  );
+  if (dayDiff === 1) return `翌 ${hh}:${mm}`;
+  if (dayDiff > 1) return `${dayDiff}日後 ${hh}:${mm}`;
+  return `${hh}:${mm}`;
+}
+
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds)) return '';
   const mins = Math.round(seconds / 60);

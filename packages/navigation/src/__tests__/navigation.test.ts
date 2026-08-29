@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Route } from '@ijm/shared';
 import { cumulativeDistances } from '@ijm/shared';
-import { ManeuverPlanner, formatDistance } from '../maneuver-planner';
+import { ManeuverPlanner, formatDistance, formatEta } from '../maneuver-planner';
 import { CAMERA_PROFILES, NavigationCamera, scaleProfile } from '../navigation-camera';
 import { RouteFollower } from '../route-follower';
 import { NavigationSession } from '../session';
@@ -229,4 +229,36 @@ test('移動手段に応じてカメラの視点が変わる', () => {
       assert.ok(p.range > 0, `${mode}/${state}: 追従距離が不正`);
     }
   }
+});
+
+test('到着予想時刻を出す', () => {
+  const now = new Date('2026-08-29T14:12:00');
+
+  // 23 分後に着く
+  assert.equal(formatEta(23 * 60, now), '14:35');
+  // 0 秒なら今の時刻
+  assert.equal(formatEta(0, now), '14:12');
+  // 日付をまたぐ場合は「翌」を付ける（何時に着くのか分からなくなるため）
+  assert.equal(formatEta(12 * 3600, now), '翌 02:12');
+  assert.equal(formatEta(48 * 3600, now), '2日後 14:12');
+
+  // 値が取れない場合は何も出さない
+  assert.equal(formatEta(Number.NaN, now), '');
+  assert.equal(formatEta(-1, now), '');
+});
+
+test('経路の逸脱を検知する', () => {
+  // 逸脱の検知は自動リルートの起点になる。
+  // 一瞬のぶれで再検索しないよう、UI 側では「外れた状態が続くこと」も条件にしている。
+  const route = makeRoute();
+  const follower = new RouteFollower(route, { offRouteThreshold: 25 });
+
+  // 経路上（東向きの直線区間）を進んでいる間は逸脱しない
+  const onRoute = follower.update({ lat: 35.68, lng: 139.7611 });
+  assert.equal(onRoute.offRoute, false);
+
+  // 経路から南へ大きく離れたら逸脱と判定する
+  const offRoute = follower.update({ lat: 35.6795, lng: 139.7611 });
+  assert.equal(offRoute.offRoute, true, `逸脱距離 ${offRoute.offRouteDistance}m`);
+  assert.ok(offRoute.offRouteDistance > 25);
 });
