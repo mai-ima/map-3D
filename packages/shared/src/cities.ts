@@ -240,6 +240,93 @@ export const CITIES: readonly City[] = [
       { id: 'sannomiya', name: '三宮', center: { lat: 34.6947, lng: 135.1959 }, height: 800 },
     ],
   },
+  {
+    /**
+     * 浜松市（旧中区）。
+     *
+     * 浜松市は datacatalog の `{市区町村コード}-bldg-{lod}` 形式ではまとめ配信されておらず、
+     * 区ごとに個別の tileset.json が配信されている（PLATEAU の GraphQL API から取得できる）。
+     * そのため URL を直接指定している。取得方法は npm run survey:city -- 22130 を参照。
+     *
+     * 単一区のデータセットなので、東京のように市区町村単位で絞り込む必要がなく、
+     * 読み込むタイル量も桁違いに少ない。
+     *
+     * 旧中区は 2024 年 1 月の区再編で中央区に統合されたが、
+     * PLATEAU のデータは再編前の区割り（22131 naka-ku）で整備されている。
+     */
+    id: 'hamamatsu',
+    name: '浜松（中区）',
+    nameEn: 'Hamamatsu',
+    prefectureCode: '22',
+    cityCodes: ['22131'],
+    // 浜松駅（OpenStreetMap の実測値）
+    center: { lat: 34.704715, lng: 137.734228 },
+    // 旧中区の 3D Tiles が実際にカバーする範囲（tileset.json の boundingVolume より）
+    bbox: [137.68085, 34.68036, 137.76112, 34.78313],
+    near: {
+      area: '22131',
+      lod: 'lod2',
+      url: 'https://assets.cms.plateau.reearth.io/assets/8e/e64279-974c-4b98-861d-1d2fa7c6a327/22130_hamamatsu-shi_city_2023_citygml_2_op_bldg_3dtiles_22131_naka-ku_lod2/tileset.json',
+    },
+    far: {
+      area: '22131',
+      lod: 'lod1',
+      url: 'https://assets.cms.plateau.reearth.io/assets/8d/01deb7-3c29-4faf-9d15-818d79158d52/22130_hamamatsu-shi_city_2023_citygml_2_op_bldg_3dtiles_22131_naka-ku_lod1/tileset.json',
+    },
+    // 市街地が平坦で見晴らしがよいため、東京より低い高度から始める
+    initialHeight: 1100,
+    districts: [
+      {
+        id: 'hamamatsu-station',
+        name: '浜松駅',
+        center: { lat: 34.704715, lng: 137.734228 },
+        height: 550,
+        heading: 315,
+        description: '新幹線が停まる市の玄関口。北口に駅前広場が広がる',
+      },
+      {
+        id: 'act-city',
+        name: 'アクトシティ',
+        center: { lat: 34.70611, lng: 137.736585 },
+        height: 520,
+        heading: 200,
+        description: '高さ 212m のアクトタワー。市内で最も高い建物',
+      },
+      {
+        id: 'kajimachi',
+        name: '鍛冶町・ザザシティ',
+        center: { lat: 34.70458, lng: 137.728678 },
+        height: 450,
+        heading: 45,
+        description: '駅前から続く中心市街地',
+      },
+      {
+        id: 'entetsu',
+        name: '遠鉄百貨店',
+        center: { lat: 34.703791, lng: 137.733152 },
+        height: 430,
+        heading: 340,
+        description: '浜松駅北口に隣接する百貨店',
+      },
+      {
+        id: 'city-hall',
+        name: '浜松市役所',
+        center: { lat: 34.710907, lng: 137.726325 },
+        height: 600,
+        heading: 160,
+      },
+      {
+        id: 'hamamatsu-castle',
+        name: '浜松城公園',
+        center: { lat: 34.712221, lng: 137.724196 },
+        height: 500,
+        heading: 120,
+        description: '徳川家康が築いた浜松城の跡地',
+      },
+    ],
+    notes:
+      '旧中区の建築物モデル（LOD2・テクスチャ付き）を区単位で読み込む。単一区のため読み込み量が少なく、動作が軽い。',
+  },
 ];
 
 export const DEFAULT_CITY_ID = 'tokyo';

@@ -74,6 +74,18 @@ export interface PlateauTilesetSpec {
   /** テクスチャ無し版を使う（LOD1 は元々テクスチャを持たないので指定しない） */
   notexture?: boolean;
   year?: string;
+  /**
+   * 配信 URL を直接指定する。
+   *
+   * datacatalog の `{area}-{feature}-{lod}` 形式でまとめて配信されていない都市がある。
+   * 例えば浜松市は市区町村コード単位のまとめ配信が無く、区ごとに個別の
+   * tileset.json が配信されている（GraphQL API から取得できる）。
+   * その場合はここに URL を直接書く。
+   *
+   * URL 指定のデータセットは既に単一の区・単一の地物に絞られているため、
+   * BFF 側での市区町村フィルタは行わない。
+   */
+  url?: string;
 }
 
 export function plateauDatasetId(spec: PlateauTilesetSpec): string {
@@ -87,7 +99,13 @@ export function plateauDatasetId(spec: PlateauTilesetSpec): string {
 }
 
 export function plateauTilesetUrl(spec: PlateauTilesetSpec): string {
+  if (spec.url) return spec.url;
   return `${PLATEAU_3DTILES_BASE}/${plateauDatasetId(spec)}/tileset.json`;
+}
+
+/** 直接 URL 指定のデータセットか（BFF での市区町村フィルタが不要なもの） */
+export function isDirectTileset(spec: PlateauTilesetSpec): boolean {
+  return Boolean(spec.url);
 }
 
 /**
@@ -102,6 +120,10 @@ export function plateauTilesetUrl(spec: PlateauTilesetSpec): string {
  *   ベースと同じものを二重に読み込むことになるため、下限を指定する。
  */
 export function lodFallbackChain(spec: PlateauTilesetSpec, minLevel = 1): PlateauTilesetSpec[] {
+  // URL を直接指定している場合、その URL が指すのは特定 LOD の実体そのもの。
+  // LOD を差し替えても別の URL にはならないので、フォールバックは行わない。
+  if (spec.url) return [spec];
+
   const level = LOD_LEVEL[spec.lod];
   const exact: PlateauLod[] = ['lod1', 'lod2', 'lod3', 'lod4'];
   const chain: PlateauTilesetSpec[] = [spec];

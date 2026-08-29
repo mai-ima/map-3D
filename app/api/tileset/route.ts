@@ -3,6 +3,7 @@ import type { BBox } from '@ijm/shared';
 import {
   bboxIntersects,
   getCity,
+  isDirectTileset,
   lodFallbackChain,
   plateauDatasetId,
   plateauTilesetUrl,
@@ -69,6 +70,30 @@ function parseBBox(value: string | null): BBox | null {
 }
 
 /**
+ * タイル内の相対 URI を、上流の tileset.json を基準に絶対 URL へ書き換える。
+ *
+ * この API は tileset.json を自分のオリジンから配信するため、中身の URI が
+ * 相対のままだと `/api/data/xxx.b3dm` のように自分のオリジン基準で
+ * 解決されてしまい、タイル本体が 404 になる。
+ *
+ * 東京都のように子が絶対 URL で書かれているデータセットもあれば、
+ * 浜松市のように相対 URI（data/data239.b3dm）で書かれているものもある。
+ */
+function absolutizeUris(tile: Tile, baseUrl: string): Tile {
+  const content = tile.content?.uri
+    ? { ...tile.content, uri: new URL(tile.content.uri, baseUrl).toString() }
+    : tile.content;
+
+  const children = tile.children?.map((child) => absolutizeUris(child, baseUrl));
+
+  return {
+    ...tile,
+    ...(content ? { content } : {}),
+    ...(children ? { children } : {}),
+  };
+}
+
+/**
  * bbox と交差しない子を落とす。
  * boundingVolume が region でない子は判定できないので、安全側に倒して残す。
  */
@@ -89,14 +114,17 @@ function filterChildren(root: Tile, bbox: BBox): { root: Tile; kept: number; tot
 }
 
 async function fetchTileset(spec: PlateauTilesetSpec): Promise<Tileset | null> {
-  const res = await fetch(plateauTilesetUrl(spec), {
+  const upstream = plateauTilesetUrl(spec);
+  const res = await fetch(upstream, {
     headers: { Accept: 'application/json' },
     // 上流の更新頻度は日次程度なので、エッジで長めに保持してよい
     next: { revalidate: 3600 },
   });
   if (!res.ok) return null;
   const tileset = (await res.json()) as Tileset;
-  return tileset.root ? tileset : null;
+  if (!tileset.root) return null;
+  // タイル本体は配信元から直接取得させる（この API が扱うのは tileset.json だけ）
+  return { ...tileset, root: absolutizeUris(tileset.root, upstream) };
 }
 
 /**
@@ -114,6 +142,14 @@ async function resolveTileset(
   for (const candidate of lodFallbackChain(spec, minLevel)) {
     const tileset = await fetchTileset(candidate);
     if (!tileset?.root) continue;
+
+    // URL 直接指定のデータセットは既に単一の区に絞られている。
+    // その children は地理的な四分木なので、絞り込むと穴が開いてしまう。
+    if (isDirectTileset(candidate)) {
+      const total = tileset.root.children?.length ?? 0;
+      return { tileset, root: tileset.root, spec: candidate, kept: total, total };
+    }
+
     const { root, kept, total } = filterChildren(tileset.root, bbox);
     if (kept > 0) return { tileset, root, spec: candidate, kept, total };
   }
@@ -179,7 +215,9 @@ export async function GET(request: Request) {
           'Cache-Control': 'public, max-age=600, s-maxage=86400, stale-while-revalidate=86400',
           // 何件に絞ったか・どの LOD が採用されたかを確認できるようにしておく
           'X-Tileset-Children': `${resolved.kept}/${resolved.total}`,
-          'X-Tileset-Dataset': plateauDatasetId(resolved.spec),
+          'X-Tileset-Dataset': resolved.spec.url
+            ? resolved.spec.url.split('/').slice(-2, -1)[0]
+            : plateauDatasetId(resolved.spec),
           'X-Tileset-Lod': resolved.spec.lod,
         },
       },
