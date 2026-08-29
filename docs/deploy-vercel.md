@@ -21,6 +21,21 @@ Vercel は **Root Directory にある `package.json`** を見て Next.js を検�
 本リポジトリは以前アプリを `apps/web/` に置いていたため、Root Directory を `/` のままにすると
 このエラーになりました。**現在はアプリをリポジトリ直下に移してあるので、Root Directory は `/`（既定）が正解です。**
 
+### なぜサブディレクトリ構成をやめたか（公式仕様の裏付け）
+
+Vercel の公式ドキュメントには、Root Directory についてこう書かれています。
+
+> Your app will not be able to access files outside of that directory.
+> You also cannot use `..` to move up a level.
+> （そのディレクトリ外のファイルにはアクセスできない。`..` で上の階層へ移動することもできない）
+> — [Configuring a Build / Root Directory](https://vercel.com/docs/builds/configure-a-build#root-directory)
+
+つまり Root Directory を `apps/web` にすると、**`packages/*` や `scripts/` を参照できず、
+`cd ../.. && npm install` のような回避策も仕様上できません**。
+npm workspaces のモノレポでは、この制約のせいで install 自体が成立しなくなります。
+
+そのため本リポジトリは **Next.js アプリをリポジトリ直下に置き、Root Directory を使わない**構成にしています。
+
 ### 既存プロジェクトを直す手順
 
 Project → **Settings → Build and Deployment → Root Directory** を確認してください。
@@ -95,6 +110,21 @@ map-3d/
 - `packages/*` は `next.config.ts` の `transpilePackages` で TypeScript のまま取り込まれるため、
   事前ビルドは不要です。
 - `maxDuration` はプランごとに上限があります。超えるとデプロイが弾かれるので、その場合は値を下げてください。
+
+### Node.js のバージョン
+
+`package.json` の `engines.node` と `.nvmrc` で **Node 22 以上**を指定しています。
+
+Vercel は 2026 年 10 月 1 日に **Node.js 20 を非推奨**にする予定のため
+（[Supported Node.js versions](https://vercel.com/docs/functions/runtimes/node-js/node-js-versions)）、
+20 系が選ばれないようにしてあります。ダッシュボードの
+**Settings → Build and Deployment → Node.js Version** が 20.x のままなら 22.x 以上へ変更してください。
+
+### maxDuration の上限
+
+Fluid compute 有効時の上限は Hobby で 300 秒、Pro / Enterprise で 800 秒です
+（[Vercel Functions Limits](https://vercel.com/docs/functions/limitations)）。
+本リポジトリの設定は最大 60 秒なので、**どのプランでもそのまま通ります**。
 
 ---
 

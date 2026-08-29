@@ -5,7 +5,7 @@
   "description": "オープンデータで日本の実在都市をリアルタイム3D空間として再現し、AIと自然なカメラワークでナビゲーションできるオープンソース地図",
   "license": "MIT",
   "engines": {
-    "node": ">=20.9"
+    "node": ">=22"
   },
   "scripts": {
     "predev": "node scripts/copy-cesium-assets.mjs",

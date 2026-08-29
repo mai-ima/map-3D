@@ -246,3 +246,80 @@ iOS（iPhone 17 想定）についての方針:
 4. PostGIS は必須ではなく、セルフホスト時の道路ネットワーク/POI 永続層として使う。**Vercel デモは PostGIS 無しで完動**させる。
 5. Overpass は公開エンドポイントの可用性が読めないため、**エンドポイント差し替え + 失敗時のグレースフルデグレード**を必ず入れる。
 6. すべてのデータ表示に**出典表示 UI を実装**する（OSM / PLATEAU / 国土地理院 / Mapterhorn / Valhalla）。
+
+---
+
+## 14. 追加調査（2026-08-29 実施）— デプロイと最新動向
+
+### Vercel のフレームワーク検出と Root Directory
+
+| 項目 | 内容 |
+| --- | --- |
+| 公式 URL | https://vercel.com/docs/builds/configure-a-build |
+| 検出方法 | **Root Directory にある `package.json` の `dependencies` / `devDependencies` に `next` があるか**で判定する |
+| Build Command | 既定で `package.json` の `build` スクリプトが使われる（無ければ `next build`）。→ `prebuild` フックも実行される |
+| Install Command | `devDependencies` を含めてインストールする。インストール先は Root Directory |
+
+**設計に直結した重要な制約**（公式ドキュメントの原文）:
+
+> Your app will not be able to access files outside of that directory.
+> You also cannot use `..` to move up a level.
+
+Root Directory を `apps/web` のようなサブディレクトリに設定すると、
+**その外にある `packages/*` や `scripts/` を参照できず、`cd ../..` による回避もできない。**
+
+→ npm workspaces のモノレポでアプリをサブディレクトリに置く構成は、
+   この制約と正面衝突する。本プロジェクトが **Next.js アプリをリポジトリ直下に置き、
+   `packages/*` を `file:` 依存で参照する**構成にした理由がこれ。
+
+### Vercel の Node.js バージョン
+
+| 項目 | 内容 |
+| --- | --- |
+| 公式 URL | https://vercel.com/docs/functions/runtimes/node-js/node-js-versions |
+| サポート | 24.x / 22.x / 20.x |
+| 既定 | 新規プロジェクトは利用可能な最新 LTS |
+| 注意 | **Node.js 20 は 2026-10-01 に非推奨化**（Node 20 の EOL 2026-04-30 の 5 か月後） |
+
+→ `engines.node` を `>=22` に、`.nvmrc` を `22` にして 20 系が選ばれないようにした。
+
+### Vercel Functions の実行時間上限
+
+| プラン | Fluid compute 有効時の上限 |
+| --- | --- |
+| Hobby | 300 秒 |
+| Pro / Enterprise | 800 秒（1800 秒はベータ） |
+
+公式 URL: https://vercel.com/docs/functions/limitations
+
+→ 本アプリの設定は最大 60 秒（AI）なので、どのプランでも上限に触れない。
+
+### CesiumJS の最新版
+
+2026-08-29 時点の最新は **1.144.0**（本プロジェクトが固定しているバージョン）。
+1.143 で `KHR_meshopt_compression` glTF 拡張に対応。1.145 は未リリース。
+
+公式 URL: https://github.com/CesiumGS/cesium/releases
+
+### Next.js の最新動向
+
+- **Next.js 16 から Turbopack が既定のバンドラ**（本プロジェクトもそのまま使用）
+- 16.3 系では開発時のメモリ使用量削減とビルド高速化、Instant Navigations が追加
+- 16 で Build Adapters API が追加され、ホスティング事業者側の統合が容易に
+
+公式 URL: https://nextjs.org/blog
+
+### PLATEAU の整備状況（PLATEAU ビジョン 2026）
+
+| 項目 | 内容 |
+| --- | --- |
+| 2025 年度末時点 | **329 都市**の 3D 都市モデルを整備済み |
+| 2027 年度末目標 | 500 都市 |
+| 2032 年度末目標 | 更新率 100%、デジタルツイン実装都市 100% |
+| 技術動向 | 衛星データ・スマホ画像と AI による「3D 都市モデル自動作成」「テクスチャ自動付与」の開発が進行 |
+
+出典: 国土交通省 PLATEAU（https://www.mlit.go.jp/plateau/）、PLATEAU ビジョン 2026 の報道
+
+→ 都市レジストリ（`packages/shared/src/cities.ts`）にエントリを足すだけで拡張できる設計にしてあるため、
+   整備都市の増加にはそのまま追随できる。追加時は `npm run validate:cities` で
+   実際に配信されているか（HTTP 200 かつタイルセットが空でないか）を確認すること。
