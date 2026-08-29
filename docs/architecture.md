@@ -11,7 +11,7 @@
                         ┌──────────────────────────────────────────┐
                         │  Browser (PC / iPhone Safari)            │
                         │                                          │
-  ユーザー操作 ───────► │  apps/web (Next.js App Router)           │
+  ユーザー操作 ───────► │  Next.js App Router（リポジトリ直下）      │
                         │   ├─ UI Layer (React / Tailwind)         │
                         │   │    SearchBar / NextTurnPanel /       │
                         │   │    TimeOfDay / AttributionPanel      │
@@ -92,33 +92,36 @@ PLATEAU 3D Tiles (建物)     ──► Cesium3DTileset            ──┘
 
 ```
 immersive-japan-map/
+├── app/                         Next.js App Router（Vercel のデプロイ対象）
+│   ├── page.tsx                         メイン画面
+│   ├── layout.tsx
+│   └── api/
+│       ├── route/route.ts               経路探索
+│       ├── search/route.ts              地名検索
+│       ├── poi/route.ts                 周辺検索
+│       ├── building/route.ts            建物情報
+│       ├── furniture/route.ts           街路樹・街灯の実在位置
+│       ├── config/route.ts              公開設定の配信
+│       └── ai/chat/route.ts             AI Tool Calling
+├── components/                  画面固有 React コンポーネント
+├── lib/                         BFF クライアント・スタブ
+├── public/                      Cesium の静的アセット（prebuild で生成）
 ├── apps/
-│   ├── web/                     Next.js（Vercel のルート）
-│   │   ├── app/
-│   │   │   ├── page.tsx                 メイン画面
-│   │   │   ├── layout.tsx
-│   │   │   └── api/
-│   │   │       ├── route/route.ts       経路探索
-│   │   │       ├── search/route.ts      地名・POI 検索
-│   │   │       ├── poi/route.ts         周辺検索
-│   │   │       ├── building/route.ts    建物情報
-│   │   │       ├── config/route.ts      公開設定の配信
-│   │   │       └── ai/chat/route.ts     AI Tool Calling
-│   │   ├── components/          画面固有 React コンポーネント
-│   │   └── next.config.ts
 │   └── api/                     セルフホスト用スタンドアロン API (node:http)
 ├── packages/
-│   ├── shared/                  型・座標系・幾何・都市レジストリ・定数
+│   ├── shared/                  型・座標系・幾何・都市レジストリ・アイコン形状
 │   ├── gis/                     Overpass / Nominatim / PLATEAU / GSI クライアント
 │   ├── routing/                 RouteProvider 抽象 + Valhalla / OSRM 実装
 │   ├── navigation/              NavigationCamera 状態機械・RouteFollower（Cesium 非依存）
 │   ├── map-engine/              Cesium ラッパ（シーン構築・レイヤ・品質・時間・天候）
 │   ├── ai/                      AIProvider 抽象 + GeoTool 定義・実行器
-│   └── ui/                      共有 UI プリミティブ
-├── data/                        osm/ plateau/ terrain/ tiles/（.gitignore、取得先の README のみ）
+│   └── ui/                      共有 UI プリミティブ・SVG アイコン
+├── data/                        osm/ plateau/ terrain/ tiles/（.gitignore）
 ├── scripts/                     import-osm / convert-plateau / generate-tiles / preprocessing
 ├── docker/                      Dockerfile 群 + docker-compose.yml
-├── docs/                        research.md / architecture.md / data-pipeline.md / licenses.md
+├── docs/                        research.md / architecture.md / data-pipeline.md /
+│                                deploy-vercel.md / licenses.md
+├── next.config.ts / vercel.json / tsconfig.json
 └── README.md
 ```
 
@@ -131,7 +134,7 @@ shared ← gis ← routing
    ↑
 map-engine (Cesium はここだけ) ,  ai ,  ui
                       ↑
-                  apps/web
+                  app/ (Next.js)
 ```
 
 `navigation` は **Cesium に依存しない**（純粋な数学と状態機械）。
@@ -208,7 +211,7 @@ UI 実装: 画面右下に常時「データ出典」ボタン、タップで全
 
 ## 7. API 設計
 
-すべて `apps/web/app/api/**`（Vercel）と `apps/api`（セルフホスト）で**同一のハンドラ実装を共有**する。
+すべて `app/api/**`（Vercel）と `apps/api`（セルフホスト）で**同一のハンドラ実装を共有**する。
 
 ### `GET /api/route`
 ```jsonc
@@ -424,7 +427,7 @@ iOS (iPhone 15/16/17 世代)     → tier "ios-high" : SSE 10, msaa 4, resolutio
 | R5 | iPhone の熱・電力による性能低下 | ナビ中のカクつき | 品質は落とさない方針のため、代わりに `requestRenderMode` の徹底、遠景タイルセットの detach、影の距離制限で対処 |
 | R6 | LOD2 テクスチャ付きタイルの重さ | 初回表示が遅い | LOD1 を先に出して LOD2 を追いロード（progressive）。`notexture` バリアントを遠景に使用 |
 | R7 | Vercel の実行時間・サイズ制限 | AI/ルート API のタイムアウト | Route Handler は軽量（外部委譲のみ）。`maxDuration` を設定。重い処理は `apps/api` 側へ |
-| R11 | モノレポと Vercel のフレームワーク検出 | `No Next.js version detected` でデプロイ不能 | Root Directory を `apps/web` にする（Vercel は Root Directory の package.json を見る）。ビルド設定は `apps/web/vercel.json` に置き、install/build はリポジトリのルートで実行してワークスペース依存を解決する。詳細は [deploy-vercel.md](./deploy-vercel.md) |
+| R11 | モノレポと Vercel のフレームワーク検出 | `No Next.js version detected` でデプロイ不能 | Vercel は Root Directory の package.json を見るため、**Next.js アプリをリポジトリ直下に置く**ことで既定設定のままデプロイできるようにした。共有ロジックは `packages/*`（npm workspaces + transpilePackages）。詳細は [deploy-vercel.md](./deploy-vercel.md) |
 | R8 | Cesium のバンドルサイズ | 初期ロードが遅い | `dynamic(() => …, {ssr:false})` で分割、Cesium 静的アセットは `public/cesium` から配信、`CESIUM_BASE_URL` を明示 |
 | R9 | LLM が座標を捏造する | 誤った場所を表示 | 座標は必ずツール経由。system プロンプトで禁止し、ツール結果に無い座標を含む UI コマンドは BFF 側で破棄 |
 | R10 | ライセンス表示漏れ | 規約違反 | 出典はデータソース定義に属性として持たせ、UI が**自動列挙**する（追加時に書き忘れない構造） |

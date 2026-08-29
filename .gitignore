@@ -21,8 +21,8 @@ data/tiles/*
 data/icon-preview.html
 !data/**/.gitkeep
 
-# Cesium の静的アセット（postinstall で node_modules からコピーされる）
-apps/web/public/cesium/
+# Cesium の静的アセット（prebuild で node_modules からコピーされる）
+public/cesium/
 
 # Valhalla のタイル
 docker/valhalla_tiles/
@@ -31,3 +31,6 @@ docker/valhalla_tiles/
 *.log
 coverage/
 .vercel
+
+# Next.js が自動生成
+next-env.d.ts

@@ -1,72 +1,82 @@
 # Vercel へのデプロイ
 
-## 結論（これだけ守れば動く）
+## 結論
 
-**Vercel のプロジェクト設定で Root Directory を `apps/web` にする。** 他の設定は不要です。
+**インポートして Deploy を押すだけです。Root Directory は既定（リポジトリ直下 `/`）のまま変更しないでください。**
 
----
-
-## なぜ「No Next.js version detected」が出るのか
-
-Vercel は **Root Directory にある `package.json`** を見て、そこに `next` があるかどうかで
-Next.js プロジェクトだと判定します。
-
-本リポジトリはモノレポで、`next` は `apps/web/package.json` にしかありません。
-
-```
-map-3d/
-├── package.json          ← Root Directory を「/」にすると Vercel はこれを見る（next が無い）
-└── apps/
-    └── web/
-        └── package.json  ← next はここにある
-```
-
-そのため Root Directory を既定の `/`（リポジトリ直下）のままインポートすると、
-
-> No Next.js version detected. Make sure your package.json has "next" in either "dependencies" or "devDependencies".
-
-というエラーになります。**Root Directory を `apps/web` にすれば解決します。**
-
-`outputDirectory` で `apps/web/.next` を指す方法は Next.js プリセットでは当てにできないため、
-そのやり方は採用していません（リポジトリ直下の `vercel.json` は削除済みです）。
+Next.js アプリはリポジトリ直下にあり、`package.json` に `next` が入っているので、
+Vercel の自動検出がそのまま通ります。
 
 ---
 
-## 手順（ダッシュボード）
+## 「Next.jsのバージョンが検出されませんでした」への対処
+
+> Next.jsのバージョンが検出されませんでした。package.json ファイルの「dependencies」または
+> 「devDependencies」に「next」が含まれていることを確認してください。また、ルートディレクトリの
+> 設定が package.json ファイルのあるディレクトリと一致していることを確認してください。
+
+Vercel は **Root Directory にある `package.json`** を見て Next.js を検出します。
+このエラーは「Root Directory に指定した場所に `next` を持つ `package.json` が無い」という意味です。
+
+本リポジトリは以前アプリを `apps/web/` に置いていたため、Root Directory を `/` のままにすると
+このエラーになりました。**現在はアプリをリポジトリ直下に移してあるので、Root Directory は `/`（既定）が正解です。**
+
+### 既存プロジェクトを直す手順
+
+Project → **Settings → Build and Deployment → Root Directory** を確認してください。
+
+| 現在の値 | 対処 |
+| --- | --- |
+| `apps/web`（以前の案内で設定した場合） | **空欄に戻す**（＝リポジトリ直下）。保存して Redeploy |
+| 空欄 / `.` / `/` | そのままで OK。最新コミットで Redeploy |
+
+Redeploy は **Deployments → 右上の … → Redeploy** から。ビルドキャッシュが残っていて挙動が変な場合は
+「Use existing Build Cache」のチェックを外してください。
+
+---
+
+## 手順（新規インポート）
 
 1. Vercel で **Add New → Project** から本リポジトリをインポート
-2. **Root Directory** の `Edit` を押し、`apps/web` を選択
-   - 「Include source files outside of the Root Directory in the Build Step」は **ON のまま**にする
-     （`packages/*` と `scripts/` を参照するため）
-3. Framework Preset が **Next.js** になっていることを確認（自動で入ります）
-4. Build / Install コマンドは触らない（`apps/web/vercel.json` の設定が使われます）
-5. 環境変数は任意（後述）。設定しなくても地図・経路・検索は動きます
-6. **Deploy**
+2. Framework Preset が **Next.js** になっていることを確認（自動で入ります）
+3. **Root Directory は触らない**
+4. 環境変数は任意（後述）。設定しなくても地図・経路・検索は動きます
+5. **Deploy**
 
-### 既にインポート済みのプロジェクトを直す場合
-
-Project → **Settings → Build and Deployment → Root Directory** を `apps/web` に変更して、
-**Redeploy**（キャッシュを使わない再デプロイ）を実行してください。
-
-## 手順（Vercel CLI）
+### Vercel CLI の場合
 
 ```bash
 npm i -g vercel
-cd apps/web        # ここが Root Directory になる
+cd map-3d          # リポジトリ直下
 vercel link
 vercel --prod
 ```
 
 ---
 
-## リポジトリ側の設定（`apps/web/vercel.json`）
+## リポジトリ側の構成
+
+```
+map-3d/
+├── package.json        ← next / react を含む（Vercel はこれを見る）
+├── next.config.ts
+├── vercel.json
+├── app/                ← App Router（画面 + API Route Handlers）
+├── components/
+├── lib/
+├── public/             ← prebuild で public/cesium が生成される
+├── packages/           ← 共有ロジック（npm workspaces）
+└── apps/api/           ← セルフホスト用 API（Vercel では使わない）
+```
+
+`vercel.json`:
 
 ```jsonc
 {
   "framework": "nextjs",
-  "installCommand": "cd ../.. && npm install",              // ワークスペース全体を root で install
-  "buildCommand": "cd ../.. && npm run build --workspace @ijm/web",
-  "regions": ["hnd1"],                                       // 東京リージョン
+  "installCommand": "npm install",   // workspaces も同時に install される
+  "buildCommand": "npm run build",   // prebuild → Cesium アセットのコピー → next build
+  "regions": ["hnd1"],               // 東京リージョン
   "functions": {
     "app/api/ai/chat/route.ts": { "maxDuration": 60 },
     "app/api/route/route.ts": { "maxDuration": 30 },
@@ -79,22 +89,12 @@ vercel --prod
 
 ポイント:
 
-- **`installCommand` はリポジトリのルートで `npm install` する。**
-  `@ijm/shared` などのワークスペース依存は、ルートで install しないと解決できません
-  （`apps/web` の中だけで install すると npm がレジストリに `@ijm/shared` を探しに行って失敗します）。
-- **`buildCommand` もルートから `--workspace` 付きで実行する。**
-  `prebuild` が走り、CesiumJS の静的アセット（Workers / Assets / Widgets / ThirdParty）が
-  `apps/web/public/cesium` にコピーされます。これが無いと 3D が真っ黒になります。
-- `functions` のパスは **Root Directory からの相対パス**です（`apps/web/` を付けない）。
-- `maxDuration` はプランごとに上限があります。上限を超えるとデプロイが弾かれるので、
-  その場合は値を下げてください。
-
-`apps/web/next.config.ts` 側では次の 2 つがモノレポ対応に効いています。
-
-- `transpilePackages`: `packages/*` の TypeScript ソースをそのままビルドに取り込む
-  （各パッケージを事前ビルドしなくてよい）
-- `outputFileTracingRoot`: サーバ関数のファイルトレースの基点をリポジトリのルートに固定
-  （`apps/web` の外にある `packages/*` を取りこぼさない）
+- **`buildCommand` は `next build` ではなく `npm run build`。**
+  `prebuild` フックで CesiumJS の静的アセット（Workers / Assets / Widgets / ThirdParty）が
+  `public/cesium` にコピーされます。これが無いと 3D が真っ黒になります。
+- `packages/*` は `next.config.ts` の `transpilePackages` で TypeScript のまま取り込まれるため、
+  事前ビルドは不要です。
+- `maxDuration` はプランごとに上限があります。超えるとデプロイが弾かれるので、その場合は値を下げてください。
 
 ---
 
@@ -108,7 +108,7 @@ vercel --prod
 | `AI_PROVIDER` | AI 機能を使う場合のみ | `openai` / `anthropic` / `gemini` / `local` |
 | `AI_MODEL` | 任意 | 例 `gpt-4o-mini` |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | プロバイダに応じて | LLM の API キー |
-| `VALHALLA_URL` | 任意 | 自前 Valhalla を使う場合。未設定なら FOSSGIS の公開デモ |
+| `VALHALLA_URL` | 任意 | 自前 Valhalla。未設定なら FOSSGIS の公開デモ（1 req/秒） |
 | `OVERPASS_ENDPOINTS` | 任意 | 自前 Overpass。カンマ区切りで複数指定可 |
 | `NOMINATIM_URL` | 任意 | 自前 Nominatim |
 | `OSM_USER_AGENT` | 推奨 | 公開インスタンス利用時の識別子（連絡先を含める） |
@@ -122,12 +122,13 @@ vercel --prod
 
 ```bash
 curl -s https://<あなたのドメイン>/api/config | head -c 200
-curl -s "https://<あなたのドメイン>/api/route?from=35.681236,139.767125&to=35.685175,139.752799&mode=walk" \
-  | head -c 200
+curl -s "https://<あなたのドメイン>/api/route?from=35.681236,139.767125&to=35.685175,139.752799&mode=walk" | head -c 200
+curl -s -o /dev/null -w "%{http_code}\n" https://<あなたのドメイン>/cesium/Widgets/widgets.css
 ```
 
 - `/api/config` … 都市一覧・タイル URL・出典が返る
 - `/api/route` … 経路（距離・所要時間・日本語の案内）が返る
+- `/cesium/Widgets/widgets.css` … 200 が返る（404 なら Cesium アセットのコピーが走っていない）
 - ブラウザで開くと東京都心の 3D 都市が表示される
 
 ---
@@ -136,22 +137,21 @@ curl -s "https://<あなたのドメイン>/api/route?from=35.681236,139.767125&
 
 | 症状 | 原因と対処 |
 | --- | --- |
-| `No Next.js version detected` | Root Directory が `apps/web` になっていない |
-| `Module not found: Can't resolve '@ijm/shared'` | install がワークスペースのルートで走っていない。`apps/web/vercel.json` の `installCommand` が効いているか確認 |
-| `Cannot find module '../../scripts/copy-cesium-assets.mjs'` | 「Include source files outside of the Root Directory」が OFF。ON に戻す |
-| 3D が真っ黒／`/cesium/Workers/...` が 404 | `prebuild` が走っていない。Build Command を上書きしていないか確認 |
+| `No Next.js version detected` / 「Next.jsのバージョンが検出されませんでした」 | Root Directory が `apps/web` などになっている。**空欄（リポジトリ直下）に戻す** |
+| `Module not found: Can't resolve '@ijm/shared'` | install がリポジトリ直下で走っていない。Install Command の上書きを外す |
+| 3D が真っ黒／`/cesium/...` が 404 | Build Command を `next build` に上書きしている。`npm run build` に戻す（prebuild が必要） |
 | 建物・地図タイルだけ出ない | PLATEAU 配信サービス側の一時的な障害。`npm run validate:cities` で疎通確認できる |
 | 経路探索が 502／遅い | 公開 Valhalla のレート制限（1 req/秒）。本番は自前 Valhalla（`VALHALLA_URL`）へ |
 | POI が空で「取得できませんでした」 | 公開 Overpass の混雑。`OVERPASS_ENDPOINTS` で別インスタンスを指定 |
 | AI パネルが「未設定」 | `AI_PROVIDER` と API キーが未設定。設定後に再デプロイ |
-| 関数が `maxDuration` でデプロイ拒否 | プランの上限を超えている。`apps/web/vercel.json` の値を下げる |
+| 関数が `maxDuration` でデプロイ拒否 | プランの上限超過。`vercel.json` の値を下げる |
 
-## 補足: Root Directory を変えられない場合
+## 補足: なぜアプリをリポジトリ直下に置いているか
 
-組織のポリシーなどで Root Directory を変更できない場合は、次のいずれかになります。
+当初は要件どおり `apps/web/` に置いていましたが、Vercel のフレームワーク検出が
+Root Directory の `package.json` に依存するため、設定を 1 つ間違えるとデプロイできませんでした。
 
-1. `apps/web` を別リポジトリに切り出し、`packages/*` を npm パッケージとして公開する
-2. Vercel 以外（Docker / Node ホスティング）に置く。`docker/docker-compose.yml` がそのまま使えます
-
-リポジトリ直下を Root Directory にしたまま Next.js としてデプロイする方法は、
-`outputDirectory` が Next.js プリセットで意図通りに扱われる保証がないため推奨しません。
+デプロイの確実性を優先し、**Next.js アプリを直下、共有ロジックを `packages/*`** という
+（Next.js のモノレポとして一般的な）構成に変更しています。
+`apps/api`（セルフホスト用 API）と `packages/*` の分割はそのままなので、
+「3D エンジン・ナビゲーション・GIS・AI がアプリから独立している」という設計は変わりません。

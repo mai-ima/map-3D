@@ -12,7 +12,6 @@ COPY packages/navigation/package.json packages/navigation/
 COPY packages/ai/package.json packages/ai/
 COPY packages/ui/package.json packages/ui/
 COPY packages/map-engine/package.json packages/map-engine/
-COPY apps/web/package.json apps/web/
 RUN npm ci --omit=optional
 
 COPY packages ./packages

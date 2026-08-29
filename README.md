@@ -50,24 +50,23 @@ npm run dev                    # http://localhost:3000
 
 ### Vercel へのデプロイ
 
-**Root Directory を `apps/web` に設定する。これだけです。**
+**インポートして Deploy するだけです。Root Directory は既定（リポジトリ直下）のまま変更しないでください。**
 
 1. Vercel で本リポジトリをインポート
-2. **Root Directory** を `apps/web` に変更（`Edit` から選択）
+2. Framework Preset が Next.js になっていることを確認（自動）
 3. Deploy（環境変数は AI 機能を使う場合のみ必要）
 
-Vercel は **Root Directory の `package.json`** を見て Next.js を検出するため、
-リポジトリ直下のままだと `No Next.js version detected` になります
-（`next` は `apps/web/package.json` にあるため）。
+Next.js アプリはリポジトリ直下にあり、直下の `package.json` に `next` が入っているため、
+Vercel のフレームワーク検出がそのまま通ります
+（アプリをサブディレクトリに置くと Root Directory の設定が必須になり、
+`No Next.js version detected` の原因になるため直下に置いています）。
 
-ビルド設定は `apps/web/vercel.json` に入っています。
+ビルド設定は `vercel.json`:
 
-- `installCommand`: リポジトリのルートで `npm install`（ワークスペース依存の解決に必須）
-- `buildCommand`: ルートから `npm run build --workspace @ijm/web`
-  （`prebuild` で CesiumJS の静的アセットが `public/cesium` にコピーされます）
-- `functions`: 各 API のタイムアウト / `regions`: 東京 (`hnd1`)
+- `buildCommand: npm run build` … `prebuild` で CesiumJS の静的アセットが `public/cesium` にコピーされる
+- `functions` … 各 API のタイムアウト / `regions` … 東京 (`hnd1`)
 
-手順・環境変数・トラブルシューティングは [docs/deploy-vercel.md](docs/deploy-vercel.md) に詳しくまとめています。
+手順・環境変数・トラブルシューティングは [docs/deploy-vercel.md](docs/deploy-vercel.md) を参照。
 
 ### iPhone での利用
 
@@ -90,7 +89,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 | サービス | 役割 |
 | --- | --- |
-| `web` | Next.js（3D 表示 + BFF） |
+| `web` | Next.js（3D 表示 + BFF、リポジトリ直下のアプリ） |
 | `api` | スタンドアロン API（同じロジックを共有） |
 | `postgres` | PostgreSQL 17 + PostGIS 3.5（道路ネットワーク / POI） |
 | `valhalla` | ルーティングエンジン（初回起動時に OSM PBF からタイル構築） |
@@ -127,22 +126,25 @@ npm run import:osm -- tokyo      # OSM の道路ネットワーク/POI を取得
 
 ```
 immersive-japan-map/
+├── app/               Next.js App Router（画面 + API）— Vercel のデプロイ対象
+├── components/        画面固有の React コンポーネント
+├── lib/               BFF クライアント
+├── public/            Cesium の静的アセット（prebuild で生成、Git 管理外）
 ├── apps/
-│   ├── web/           Next.js 16（3D 表示 + BFF）— Vercel のデプロイ対象
 │   └── api/           セルフホスト用スタンドアロン API
 ├── packages/
-│   ├── shared/        型・座標系変換・幾何・都市レジストリ・出典定義
+│   ├── shared/        型・座標系変換・幾何・都市レジストリ・出典・アイコン形状
 │   ├── gis/           Overpass / Nominatim / PLATEAU / 地理院タイル
 │   ├── routing/       RouteProvider 抽象 + Valhalla / OSRM
 │   ├── navigation/    ナビカメラ状態機械・ルート追従・音声案内（3D 非依存）
 │   ├── map-engine/    CesiumJS ラッパ（シーン・品質・環境・建物・ルート描画）
 │   ├── ai/            AIProvider 抽象 + 地図ツール（Tool Calling）
-│   └── ui/            共有 UI プリミティブ
+│   └── ui/            共有 UI プリミティブ・SVG アイコン
 ├── data/              osm / plateau / terrain / tiles（Git 管理外）
 ├── scripts/           import-osm / convert-plateau / generate-tiles / preprocessing
 ├── docker/            Docker Compose / Dockerfile / PostGIS スキーマ
 └── docs/              research.md / architecture.md / data-pipeline.md /
-                    deploy-vercel.md / licenses.md
+                       deploy-vercel.md / licenses.md
 ```
 
 依存の向きは `shared → gis → routing`、`navigation` と `map-engine` はその上に載ります。

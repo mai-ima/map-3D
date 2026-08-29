@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "installCommand": "cd ../.. && npm install",
-  "buildCommand": "cd ../.. && npm run build --workspace @ijm/web",
+  "installCommand": "npm install",
+  "buildCommand": "npm run build",
   "regions": ["hnd1"],
   "functions": {
     "app/api/ai/chat/route.ts": { "maxDuration": 60 },

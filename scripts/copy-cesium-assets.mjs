@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
  * CesiumJS の静的アセット（Workers / Assets / ThirdParty / Widgets）を
- * apps/web/public/cesium へコピーする。
+ * public/cesium へコピーする。
  *
  * Cesium は実行時にこれらを CESIUM_BASE_URL から読み込むため、
- * バンドラ任せにできない。dev / build の前に必ず実行する。
+ * バンドラ任せにできない。dev / build の前に必ず実行する
+ * （package.json の predev / prebuild フックで自動実行される）。
  */
 
 import { cp, mkdir, rm, stat } from 'node:fs/promises';
@@ -14,11 +15,12 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
-const target = path.join(repoRoot, 'apps', 'web', 'public', 'cesium');
+const target = path.join(repoRoot, 'public', 'cesium');
 
 const CANDIDATES = [
   path.join(repoRoot, 'node_modules', 'cesium', 'Build', 'Cesium'),
-  path.join(repoRoot, 'apps', 'web', 'node_modules', 'cesium', 'Build', 'Cesium'),
+  // npm の hoisting 次第で入れ子になる場合の保険
+  path.join(repoRoot, 'node_modules', 'cesium', 'node_modules', 'cesium', 'Build', 'Cesium'),
 ];
 
 const DIRECTORIES = ['Workers', 'Assets', 'ThirdParty', 'Widgets'];
