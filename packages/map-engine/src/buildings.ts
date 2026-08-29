@@ -71,15 +71,9 @@ function farTilesetStyle(): Cesium.Cesium3DTileStyle {
 }
 
 /**
- * 近景 LOD2 を読み込む範囲（カメラ中心からの半径 m）。
- *
- * PLATEAU の最小配信単位は市区町村なので、半径を小さくしても
- * 読み込む tileset の数は一定以下にならない。東京都心の実測では
- * 2km で 7 区、3km で 8 区、4km で 10 区（絞らない場合は 62 市区町村）。
- * 移動追従があるため、3km で十分カバーできる。
+ * 遠景 LOD1 の範囲。テクスチャを持たないぶん広く取れる。
+ * 近景の半径は品質設定 (nearRadiusM) 側で端末に応じて決める。
  */
-const NEAR_RADIUS_M = 3000;
-/** 遠景 LOD1 の範囲。テクスチャを持たないぶん広く取れる（実測 7km で約 18 区） */
 const FAR_RADIUS_M = 7000;
 /** 読み込み済み範囲の縁からこれだけ内側に入ったら、範囲を取り直す */
 const REFRESH_MARGIN_M = 1000;
@@ -151,7 +145,7 @@ export class BuildingLayerManager {
     this.unload();
 
     // 起動直後はカメラ周辺だけを読む。カメラが離れたら refreshForCamera が読み直す
-    this.activeBBox = this.clampToCity(city, bboxAround(city.center, NEAR_RADIUS_M));
+    this.activeBBox = this.clampToCity(city, bboxAround(city.center, this.quality.nearRadiusM));
     const near = await Cesium.Cesium3DTileset.fromUrl(
       tilesetUrl(city, 'near', this.activeBBox),
       this.tilesetOptions(false),
@@ -288,7 +282,7 @@ export class BuildingLayerManager {
     if (stillInside) return false;
 
     const city = this.loaded.city;
-    const next = this.clampToCity(city, bboxAround(center, NEAR_RADIUS_M));
+    const next = this.clampToCity(city, bboxAround(center, this.quality.nearRadiusM));
     // 都市の外に出た場合は読み直さない（都市の切り替えは loadCity が担当する）
     if (!bboxIntersects(next, city.bbox)) return false;
 

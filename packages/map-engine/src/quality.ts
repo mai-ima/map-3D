@@ -49,6 +49,18 @@ export interface QualitySettings {
   /** 遠景タイルセットを使うか */
   useFarTileset: boolean;
   /**
+   * 近景の建物を読み込む半径 (m)。
+   * PLATEAU は市区町村単位で配信されるため、狭めても読み込む tileset の数は
+   * 一定以下にならないが、視界に入るタイル本体の量は確実に減る。
+   */
+  nearRadiusM: number;
+  /**
+   * カメラの地形衝突判定。
+   * 有効だとカメラ操作のたびに地形メッシュとの交差計算が走る。
+   * 低性能な端末では体感の重さに直結するので、切れるようにしておく。
+   */
+  terrainCollision: boolean;
+  /**
    * 描画する最大距離 (m)。
    *
    * Cesium の既定は事実上無制限で、地平線までの全タイルが読み込み対象になる。
@@ -75,6 +87,8 @@ export interface QualitySettings {
 const PRESETS: Record<QualityTier, QualitySettings> = {
   high: {
     tier: 'high',
+    nearRadiusM: 4000,
+    terrainCollision: true,
     viewDistance: 10000,
     globeScreenSpaceError: 2.0,
     globeTileCacheSize: 260,
@@ -122,6 +136,8 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
      * 「表示設定 → 描画品質 → 高品質」を選べば、これらは有効になる。
      */
     tier: 'ios-high',
+    nearRadiusM: 3000,
+    terrainCollision: true,
     viewDistance: 9000,
     globeScreenSpaceError: 2.5,
     globeTileCacheSize: 160,
@@ -155,6 +171,8 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
   },
   balanced: {
     tier: 'balanced',
+    nearRadiusM: 2500,
+    terrainCollision: false,
     viewDistance: 8000,
     globeScreenSpaceError: 3.0,
     globeTileCacheSize: 140,
@@ -179,6 +197,8 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
   },
   low: {
     tier: 'low',
+    nearRadiusM: 1500,
+    terrainCollision: false,
     viewDistance: 6000,
     globeScreenSpaceError: 4.0,
     globeTileCacheSize: 100,

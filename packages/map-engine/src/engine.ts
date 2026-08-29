@@ -90,6 +90,11 @@ export interface EngineDiagnostics {
   heapUsedMb: number | null;
   heapLimitMb: number | null;
   fps: number;
+  /**
+   * 静止中は描画自体をしていない（requestRenderMode）。
+   * このとき FPS が 0 になるのは正常で、性能不足とは意味が違う。
+   */
+  idle: boolean;
   farTilesetLoaded: boolean;
   /** 読み込み待ちのタイル数（多いほど GPU アップロードが集中する） */
   loadQueue: number;
@@ -115,10 +120,13 @@ function worldToWindow(
   return fn ? fn(scene, position) : undefined;
 }
 
-/** これを超えたら読み込みが詰まり気味とみなす */
-const LOAD_QUEUE_WARN = 24;
-/** これを超えたら明確に抑制する */
-const LOAD_QUEUE_HIGH = 60;
+/**
+ * 精細度を変更してよい最短間隔。
+ *
+ * 精細度の変更はタイルツリーの再評価を伴うので、頻繁にやると
+ * 読み込みと破棄を繰り返して一向に安定しない。
+ */
+const SSE_CHANGE_INTERVAL_MS = 1500;
 
 export class MapEngine {
   readonly viewer: Cesium.Viewer;
@@ -135,9 +143,9 @@ export class MapEngine {
   private memoryReliefStep = 0;
   private removeContextListeners: (() => void) | null = null;
   private removeMemoryMonitor: (() => void) | null = null;
-  private removeCommandFlush: (() => void) | null = null;
   private lastMemoryCheck = 0;
   private lastAdaptiveSse = 0;
+  private lastSseChangeAt = 0;
   private fps = 0;
   private fpsLastSample = 0;
   private fpsFrames = 0;
@@ -222,7 +230,9 @@ export class MapEngine {
 
     this.applyGlobeQuality();
     this.applyViewDistance();
-    this.viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
+    // 地形との衝突判定はカメラ操作のたびに交差計算が走る。低性能な端末では切る
+    this.viewer.scene.screenSpaceCameraController.enableCollisionDetection =
+      this.quality.terrainCollision;
     // 地表付近まで寄れるようにする（街を歩く体験のため）
     this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
     this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = 5_000_000;
@@ -250,7 +260,6 @@ export class MapEngine {
     );
 
     this.setupContextLossHandlers();
-    this.setupCommandBufferFlush();
     this.setupMemoryMonitor();
     this.setupInteractionHandlers();
     void this.initialize(options);
@@ -340,6 +349,8 @@ export class MapEngine {
     this.applyResolutionScale();
     this.applyGlobeQuality();
     this.applyViewDistance();
+    this.viewer.scene.screenSpaceCameraController.enableCollisionDetection =
+      this.quality.terrainCollision;
     this.viewer.shadows = this.quality.shadows;
     this.viewer.scene.postProcessStages.fxaa.enabled = this.quality.fxaa;
     this.buildings.updateQuality(this.quality);
@@ -404,6 +415,7 @@ export class MapEngine {
       heapUsedMb: heap ? toMb(heap.used) : null,
       heapLimitMb: heap ? toMb(heap.limit) : null,
       fps: this.fps,
+      idle: this.fps === 0 && this.viewer.scene.requestRenderMode && !this.navigating,
       farTilesetLoaded: this.buildings.tilesets.length > 1,
       loadQueue: this.buildings.loadQueueLength,
       shadows: this.quality.shadows,
@@ -492,40 +504,6 @@ export class MapEngine {
   }
 
   /**
-   * iOS では毎フレーム WebGL のコマンドバッファを明示的に flush する。
-   *
-   * iOS 18.2 以降、1 フレームで GPU に大量の描画コマンドを投入すると
-   * Metal 側で kIOGPUCommandBufferCallbackErrorHang が発生し、
-   * WebKit が WebGL コンテキストを破棄する（＝ページが落ちる）。
-   * 以前はこのカーネルエラーが無視されていたため表面化していなかった。
-   *
-   * WebKit 側の回避策は「flush() を呼んでコマンドバッファを分割すること」。
-   * WebKit/ANGLE は作業量を判断できないため自動では分割しない。
-   *
-   * 参考: https://bugs.webkit.org/show_bug.cgi?id=290752
-   */
-  private setupCommandBufferFlush(): void {
-    if (!this.device.isIOS) return;
-
-    // Cesium が使っているのと同じコンテキストが返る
-    // （同じ canvas に対する getContext は既存のものを返す仕様）
-    const canvas = this.viewer.scene.canvas;
-    const gl =
-      (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ??
-      (canvas.getContext('webgl') as WebGLRenderingContext | null);
-    if (!gl) return;
-
-    const remove = this.viewer.scene.postRender.addEventListener(() => {
-      try {
-        gl.flush();
-      } catch {
-        /* コンテキストが失われている場合は何もしない */
-      }
-    });
-    this.removeCommandFlush = remove;
-  }
-
-  /**
    * ナビ中かどうかに関わらず、常にメモリ使用量を見張る。
    * 街を眺めているだけでも 3D Tiles は読み込まれ続けるため、監視は常時必要。
    */
@@ -559,22 +537,21 @@ export class MapEngine {
     const height = this.viewer.camera.positionCartographic?.height;
     if (!Number.isFinite(height)) return;
 
-    // 読み込み待ちが溜まっている間は精細度を一時的に落として要求を抑える。
-    // デコード済みタイルの GPU アップロードが 1 フレームに集中すると
-    // 描画コマンドが膨らみ、iOS では WebGL コンテキストごと失われる。
-    const queue = this.buildings.loadQueueLength;
-    const queueFactor = queue > LOAD_QUEUE_HIGH ? 2 : queue > LOAD_QUEUE_WARN ? 1.4 : 1;
-
     const target = Math.min(
       96,
-      Math.round(
-        adaptiveScreenSpaceError(this.quality.screenSpaceError, height) *
-          this.detailPenalty *
-          queueFactor,
-      ),
+      Math.round(adaptiveScreenSpaceError(this.quality.screenSpaceError, height) * this.detailPenalty),
     );
-    // 微小な変化で毎回書き換えるとタイルの読み直しが起きるため、差が出たときだけ反映する
-    if (Math.abs(target - this.lastAdaptiveSse) < 1) return;
+
+    // 精細度を変えると Cesium はタイルツリーを再評価し、読み込みと破棄が走る。
+    // 小さな差で書き換えると「読み込み待ちが増える → 粗くする → 破棄されて待ちが減る →
+    // 細かくする」という振動に陥り、いつまでも読み込みが終わらなくなる。
+    // そのため、はっきり差が出たときだけ、しかも一定時間を空けて反映する。
+    const now = Date.now();
+    const changed = Math.abs(target - this.lastAdaptiveSse) / Math.max(1, this.lastAdaptiveSse);
+    if (changed < 0.2) return;
+    if (now - this.lastSseChangeAt < SSE_CHANGE_INTERVAL_MS) return;
+
+    this.lastSseChangeAt = now;
     this.lastAdaptiveSse = target;
     this.buildings.setNearScreenSpaceError(target);
   }
@@ -584,9 +561,15 @@ export class MapEngine {
    * 一度に読むのはカメラ周辺だけなので、移動したら読み直す必要がある。
    */
   private followCameraForBuildings(): void {
-    const center = this.getViewCenter();
-    if (!center) return;
-    void this.buildings.refreshForCamera(center);
+    // getViewCenter() は画面中心から地形へレイを飛ばすため、地形メッシュとの
+    // 交差計算が入る。読み込み範囲の判定にはカメラ直下の座標で十分なので、
+    // 交差計算を伴わない positionCartographic を使う。
+    const carto = this.viewer.camera.positionCartographic;
+    if (!carto) return;
+    void this.buildings.refreshForCamera({
+      lat: Cesium.Math.toDegrees(carto.latitude),
+      lng: Cesium.Math.toDegrees(carto.longitude),
+    });
   }
 
   /**
@@ -1009,8 +992,6 @@ export class MapEngine {
     this.removeContextListeners = null;
     this.removeMemoryMonitor?.();
     this.removeMemoryMonitor = null;
-    this.removeCommandFlush?.();
-    this.removeCommandFlush = null;
     this.environment.destroy();
     this.furniture.clear();
     this.buildings.unload();

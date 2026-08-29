@@ -34,7 +34,8 @@ export default function DiagnosticsPanel({ engine, onClose }: Props) {
 
   const rows = [
     row('品質ティア', diag.tier),
-    row('FPS', String(diag.fps), diag.fps > 0 && diag.fps < 25),
+    // 静止中は描画自体をしていないので、0 を性能不足と読み違えないようにする
+    row('FPS', diag.idle ? '静止中（描画停止）' : String(diag.fps), !diag.idle && diag.fps < 25),
     row('カメラ高度', `${diag.cameraHeightM.toLocaleString()} m`),
     row('描画距離', `${(diag.viewDistanceM / 1000).toFixed(1)} km`),
     row('精細度 (SSE)', `${diag.appliedScreenSpaceError} (基準 ${diag.baseScreenSpaceError})`),
