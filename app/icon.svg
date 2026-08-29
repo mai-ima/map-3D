@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Immersive Japan Map">
+  <rect width="32" height="32" rx="7" fill="#060b12"/>
+  <!-- 俯瞰した街区（3D ビルのシルエット） -->
+  <path d="M6 21.5 11 18.6v-6.2L6 15.3z" fill="#1f3b57"/>
+  <path d="M11 18.6 16 21.5V15.3l-5-2.9z" fill="#2b5478"/>
+  <path d="M16 15.3 21 12.4v6.2L16 21.5z" fill="#1f3b57"/>
+  <path d="M21 12.4 26 15.3v6.2l-5-2.9z" fill="#16304a"/>
+  <!-- 走行ルート -->
+  <path d="M7.5 25.2c3.6-1.4 5.4.6 8.4-.9 3-1.5 4.2-4.9 8.6-6.3"
+        fill="none" stroke="#39d1c8" stroke-width="2.3" stroke-linecap="round"/>
+  <circle cx="24.5" cy="17.9" r="2.1" fill="#39d1c8"/>
+</svg>

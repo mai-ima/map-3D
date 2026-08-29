@@ -5,6 +5,7 @@
  * アプリの他の場所にプロバイダ名は現れない（要件: ハードコード禁止）。
  */
 
+import { envFirst, envNumber, envOptionalUrl } from '@ijm/shared';
 import { AnthropicProvider } from './providers/anthropic';
 import { GeminiProvider } from './providers/gemini';
 import { OpenAICompatibleProvider } from './providers/openai';
@@ -45,72 +46,80 @@ export class AIProviderNotConfiguredError extends Error {
 }
 
 export function isAIConfigured(env: AIEnv = process.env as AIEnv): boolean {
-  const provider = (env.AI_PROVIDER ?? '').toLowerCase();
+  const provider = (envFirst(env.AI_PROVIDER) ?? '').toLowerCase();
   if (!provider) return false;
   switch (provider) {
     case 'openai':
-      return Boolean(env.OPENAI_API_KEY);
+      return Boolean(envFirst(env.OPENAI_API_KEY));
     case 'anthropic':
-      return Boolean(env.ANTHROPIC_API_KEY);
+      return Boolean(envFirst(env.ANTHROPIC_API_KEY));
     case 'gemini':
-      return Boolean(env.GEMINI_API_KEY);
+      return Boolean(envFirst(env.GEMINI_API_KEY));
     case 'local':
-      return Boolean(env.LOCAL_LLM_BASE_URL);
+      return Boolean(envOptionalUrl(env.LOCAL_LLM_BASE_URL));
     default:
       return false;
   }
 }
 
 export function createAIProvider(env: AIEnv = process.env as AIEnv): AIProvider {
-  const provider = (env.AI_PROVIDER ?? '').toLowerCase();
-  const timeoutMs = Number(env.AI_TIMEOUT_MS ?? 60000);
-  const model = env.AI_MODEL ?? DEFAULT_MODELS[provider] ?? '';
+  const provider = (envFirst(env.AI_PROVIDER) ?? '').toLowerCase();
+  const timeoutMs = envNumber(env.AI_TIMEOUT_MS, 60000);
+  const model = envFirst(env.AI_MODEL) ?? DEFAULT_MODELS[provider] ?? '';
+  const apiKey = {
+    openai: envFirst(env.OPENAI_API_KEY),
+    anthropic: envFirst(env.ANTHROPIC_API_KEY),
+    gemini: envFirst(env.GEMINI_API_KEY),
+    local: envFirst(env.LOCAL_LLM_API_KEY),
+  };
 
   switch (provider) {
     case 'openai':
-      if (!env.OPENAI_API_KEY) {
+      if (!apiKey.openai) {
         throw new AIProviderNotConfiguredError('OPENAI_API_KEY が設定されていません');
       }
       return new OpenAICompatibleProvider({
-        apiKey: env.OPENAI_API_KEY,
-        baseUrl: env.OPENAI_BASE_URL,
+        apiKey: apiKey.openai,
+        baseUrl: envOptionalUrl(env.OPENAI_BASE_URL),
         model,
         timeoutMs,
       });
 
     case 'anthropic':
-      if (!env.ANTHROPIC_API_KEY) {
+      if (!apiKey.anthropic) {
         throw new AIProviderNotConfiguredError('ANTHROPIC_API_KEY が設定されていません');
       }
       return new AnthropicProvider({
-        apiKey: env.ANTHROPIC_API_KEY,
-        baseUrl: env.ANTHROPIC_BASE_URL,
+        apiKey: apiKey.anthropic,
+        baseUrl: envOptionalUrl(env.ANTHROPIC_BASE_URL),
         model,
         timeoutMs,
       });
 
     case 'gemini':
-      if (!env.GEMINI_API_KEY) {
+      if (!apiKey.gemini) {
         throw new AIProviderNotConfiguredError('GEMINI_API_KEY が設定されていません');
       }
       return new GeminiProvider({
-        apiKey: env.GEMINI_API_KEY,
-        baseUrl: env.GEMINI_BASE_URL,
+        apiKey: apiKey.gemini,
+        baseUrl: envOptionalUrl(env.GEMINI_BASE_URL),
         model,
         timeoutMs,
       });
 
-    case 'local':
-      if (!env.LOCAL_LLM_BASE_URL) {
+    case 'local': {
+      const localBaseUrl = envOptionalUrl(env.LOCAL_LLM_BASE_URL);
+      if (!localBaseUrl) {
         throw new AIProviderNotConfiguredError('LOCAL_LLM_BASE_URL が設定されていません');
       }
       return new OpenAICompatibleProvider({
-        apiKey: env.LOCAL_LLM_API_KEY,
-        baseUrl: env.LOCAL_LLM_BASE_URL,
+        apiKey: apiKey.local,
+        baseUrl: localBaseUrl,
         model,
         timeoutMs,
         displayName: 'local',
       });
+    }
 
     default:
       throw new AIProviderNotConfiguredError(

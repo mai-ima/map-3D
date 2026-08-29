@@ -19,11 +19,17 @@ import { EnvironmentController, type WeatherKind } from './environment';
 import { RouteLayer } from './route-layer';
 import { StreetFurnitureLayer, type FurniturePoint } from './street-furniture';
 import {
+  MemoryWatchdog,
   PerformanceWatchdog,
+  computeResolutionScale,
   degradeTier,
   detectDevice,
+  forceDegradeTier,
   getQualitySettings,
+  resolveMemoryBudget,
   selectQualityTier,
+  type DeviceInfo,
+  type MemoryPressureReport,
   type QualitySettings,
   type QualityTier,
 } from './quality';
@@ -40,6 +46,14 @@ export interface MapEngineOptions {
   onNavigationTick?: (result: NavigationTickResult) => void;
   onQualityChange?: (settings: QualitySettings) => void;
   onCameraInteraction?: () => void;
+  /** メモリ逼迫で自動的に品質を下げたときに通知する */
+  onMemoryPressure?: (report: MemoryPressureReport) => void;
+  /**
+   * WebGL コンテキストが失われた / 復帰したときに通知する。
+   * ブラウザが GPU リソースを回収した状態で、放置すると画面が固まったように見える。
+   */
+  onContextLost?: () => void;
+  onContextRestored?: () => void;
 }
 
 export interface CameraTarget {
@@ -78,7 +92,13 @@ export class MapEngine {
 
   private quality: QualitySettings;
   private qualityTier: QualityTier;
+  private device: DeviceInfo;
   private watchdog: PerformanceWatchdog;
+  private memoryWatchdog: MemoryWatchdog;
+  private memoryReliefStep = 0;
+  private removeContextListeners: (() => void) | null = null;
+  private removeMemoryMonitor: (() => void) | null = null;
+  private lastMemoryCheck = 0;
   private session: NavigationSession | null = null;
   private navigating = false;
   private useRealPosition = false;
@@ -89,8 +109,10 @@ export class MapEngine {
   private destroyed = false;
 
   constructor(private readonly options: MapEngineOptions) {
-    this.qualityTier = options.qualityTier ?? selectQualityTier(detectDevice());
-    this.quality = getQualitySettings(this.qualityTier);
+    this.device = detectDevice();
+    this.qualityTier = options.qualityTier ?? selectQualityTier(this.device);
+    // 端末の搭載メモリを見てキャッシュ上限を絞る（タブのクラッシュ対策）
+    this.quality = resolveMemoryBudget(getQualitySettings(this.qualityTier), this.device);
 
     if (options.ionToken) {
       Cesium.Ion.defaultAccessToken = options.ionToken;
@@ -138,10 +160,11 @@ export class MapEngine {
 
     this.imageryLayer = this.viewer.imageryLayers.get(0) ?? null;
 
-    // iPhone の Retina 解像度を活かす（要件: iOS は品質を落とさない）
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    this.viewer.resolutionScale = Math.min(dpr, this.quality.resolutionScale);
+    // iPhone の Retina 解像度を活かす。ただし描画バッファの総ピクセル数には上限を設ける
+    // （大画面 × 高 DPR で MSAA/HDR の中間バッファが膨らみ、メモリ超過でタブが落ちるため）
+    this.applyResolutionScale();
 
+    this.applyGlobeQuality();
     this.viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
     // 地表付近まで寄れるようにする（街を歩く体験のため）
     this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
@@ -162,6 +185,15 @@ export class MapEngine {
       this.qualityTier !== 'ios-high',
     );
 
+    // メモリ監視は iOS でも必ず動かす。
+    // 「品質を落とさない」という方針より、タブごと落ちないことを優先する。
+    this.memoryWatchdog = new MemoryWatchdog(
+      (report) => this.relieveMemoryPressure(report),
+      this.quality.cacheBytes,
+    );
+
+    this.setupContextLossHandlers();
+    this.setupMemoryMonitor();
     this.setupInteractionHandlers();
     void this.initialize(options);
   }
@@ -239,10 +271,11 @@ export class MapEngine {
 
   setQualityTier(tier: QualityTier): void {
     this.qualityTier = tier;
-    this.quality = getQualitySettings(tier);
+    this.quality = resolveMemoryBudget(getQualitySettings(tier), this.device);
+    this.memoryWatchdog.setBudget(this.quality.cacheBytes);
     this.viewer.scene.msaaSamples = this.quality.msaaSamples;
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    this.viewer.resolutionScale = Math.min(dpr, this.quality.resolutionScale);
+    this.applyResolutionScale();
+    this.applyGlobeQuality();
     this.viewer.shadows = this.quality.shadows;
     this.viewer.scene.postProcessStages.fxaa.enabled = this.quality.fxaa;
     this.buildings.updateQuality(this.quality);
@@ -251,8 +284,121 @@ export class MapEngine {
     this.requestRender();
   }
 
-  private degradeQuality(): void {
-    const next = degradeTier(this.qualityTier);
+  /** 地形・ベースマップ側のメモリ設定を反映する */
+  private applyGlobeQuality(): void {
+    const globe = this.viewer.scene.globe;
+    globe.maximumScreenSpaceError = this.quality.globeScreenSpaceError;
+    globe.tileCacheSize = this.quality.globeTileCacheSize;
+    // 画面外の地形タイルを保持しない
+    globe.preloadSiblings = false;
+    // 半透明の順序保証は中間バッファを増やす。建物は不透明が主なので無効化する
+    // （Cesium のバージョンによっては読み取り専用なので、存在確認してから触る）
+    const oit = (
+      this.viewer.scene as unknown as { orderIndependentTranslucency?: boolean }
+    );
+    try {
+      oit.orderIndependentTranslucency = false;
+    } catch {
+      /* 未対応バージョンでは既定のまま使う */
+    }
+  }
+
+  /** 画面サイズと DPR から描画解像度を決める（総ピクセル数で頭打ちにする） */
+  private applyResolutionScale(): void {
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    const canvas = this.viewer.scene.canvas;
+    const width = canvas.clientWidth || canvas.width || 1;
+    const height = canvas.clientHeight || canvas.height || 1;
+    this.viewer.resolutionScale = computeResolutionScale(this.quality, width, height, dpr);
+  }
+
+  /**
+   * メモリ逼迫時の段階的な退避。
+   *
+   * いきなり品質ティアを落とすと見た目が大きく変わるため、影響の小さい順に手を打つ。
+   *   1) 画面外タイルの解放＋キャッシュ縮小
+   *   2) 遠景タイルセットの破棄（近景の街並みは残る）
+   *   3) 精細度（SSE）を上げる
+   *   4) 最後に品質ティアを 1 段階下げる
+   */
+  private relieveMemoryPressure(report: MemoryPressureReport): void {
+    this.options.onMemoryPressure?.(report);
+    const step = report.level === 'critical' ? this.memoryReliefStep + 1 : this.memoryReliefStep;
+    this.memoryReliefStep = Math.min(step + 1, 4);
+
+    switch (this.memoryReliefStep) {
+      case 1:
+        this.buildings.relieveMemoryPressure(0.7);
+        break;
+      case 2:
+        this.buildings.relieveMemoryPressure(0.6);
+        if (!this.buildings.dropFarTileset()) this.memoryReliefStep = 3;
+        break;
+      case 3:
+        this.quality = {
+          ...this.quality,
+          screenSpaceError: Math.min(32, Math.round(this.quality.screenSpaceError * 1.5)),
+        };
+        this.buildings.updateQuality(this.quality);
+        this.buildings.relieveMemoryPressure(0.6);
+        break;
+      default:
+        this.buildings.relieveMemoryPressure(0.5);
+        this.degradeQuality(true);
+        break;
+    }
+
+    console.warn(
+      `[map-engine] メモリ使用量が上限に近づいたため描画負荷を下げました (段階 ${this.memoryReliefStep}/4, タイル ${(report.tileBytes / 1024 / 1024).toFixed(0)}MB)`,
+    );
+    this.requestRender();
+  }
+
+  /**
+   * ナビ中かどうかに関わらず、常にメモリ使用量を見張る。
+   * 街を眺めているだけでも 3D Tiles は読み込まれ続けるため、監視は常時必要。
+   */
+  private setupMemoryMonitor(): void {
+    const remove = this.viewer.scene.postRender.addEventListener(() => {
+      const now = Date.now();
+      if (now - this.lastMemoryCheck < 1000) return;
+      this.lastMemoryCheck = now;
+      this.memoryWatchdog.check(this.buildings.totalMemoryUsageInBytes, now);
+    });
+    this.removeMemoryMonitor = remove;
+  }
+
+  /**
+   * WebGL コンテキストの喪失に備える。
+   *
+   * メモリ超過やドライバのリセットでコンテキストが失われると、既定では
+   * 画面が固まったまま何も起きない。preventDefault を呼んでおくと復帰イベントを
+   * 受け取れるので、UI 側に通知して復旧できるようにする。
+   */
+  private setupContextLossHandlers(): void {
+    const canvas = this.viewer.scene.canvas;
+    const onLost = (event: Event): void => {
+      // 既定動作を止めないと restored が発火しない
+      event.preventDefault();
+      console.warn('[map-engine] WebGL コンテキストが失われました');
+      this.options.onContextLost?.();
+    };
+    const onRestored = (): void => {
+      console.info('[map-engine] WebGL コンテキストが復帰しました');
+      this.options.onContextRestored?.();
+      this.requestRender();
+    };
+    canvas.addEventListener('webglcontextlost', onLost, false);
+    canvas.addEventListener('webglcontextrestored', onRestored, false);
+    this.removeContextListeners = () => {
+      canvas.removeEventListener('webglcontextlost', onLost);
+      canvas.removeEventListener('webglcontextrestored', onRestored);
+    };
+  }
+
+  private degradeQuality(force = false): void {
+    // メモリ起因のときは iOS でも下げる（force）。それ以外は要件どおり iOS を維持する
+    const next = force ? forceDegradeTier(this.qualityTier) : degradeTier(this.qualityTier);
     if (next === this.qualityTier) return;
     console.info(`[map-engine] 描画性能が不足しているため品質を ${next} に下げます`);
     this.setQualityTier(next);
@@ -638,6 +784,10 @@ export class MapEngine {
     if (this.destroyed) return;
     this.destroyed = true;
     this.stopNavigation();
+    this.removeContextListeners?.();
+    this.removeContextListeners = null;
+    this.removeMemoryMonitor?.();
+    this.removeMemoryMonitor = null;
     this.environment.destroy();
     this.furniture.clear();
     this.buildings.unload();

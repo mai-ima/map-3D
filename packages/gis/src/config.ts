@@ -3,6 +3,8 @@
  * サーバ側でのみ読み込まれる（ブラウザからは直接呼ばない）。
  */
 
+import { envFirst, envNumber, envUrl, envUrlList } from '@ijm/shared';
+
 export interface GisConfig {
   /** Overpass API のエンドポイント（複数指定でフェイルオーバ） */
   overpassEndpoints: string[];
@@ -19,19 +21,23 @@ const DEFAULT_OVERPASS = [
   'https://overpass.private.coffee/api/interpreter',
 ];
 
-export function getGisConfig(env: Record<string, string | undefined> = process.env): GisConfig {
-  const endpoints = (env.OVERPASS_ENDPOINTS ?? env.OVERPASS_URL ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+export const DEFAULT_NOMINATIM = 'https://nominatim.openstreetmap.org';
+export const DEFAULT_OSM_USER_AGENT =
+  'immersive-japan-map/0.1 (+https://github.com/mai-ima/map-3d)';
 
+/**
+ * 空文字や相対 URL が入っていても既定値に落ちるよう、@ijm/shared の env ヘルパ経由で読む。
+ * （ホスティング側で「変数名だけ登録され値が空」というケースを吸収する）
+ */
+export function getGisConfig(env: Record<string, string | undefined> = process.env): GisConfig {
   return {
-    overpassEndpoints: endpoints.length > 0 ? endpoints : DEFAULT_OVERPASS,
-    nominatimEndpoint: env.NOMINATIM_URL ?? 'https://nominatim.openstreetmap.org',
-    userAgent:
-      env.OSM_USER_AGENT ??
-      'immersive-japan-map/0.1 (+https://github.com/mai-ima/map-3d)',
-    timeoutMs: Number(env.GIS_TIMEOUT_MS ?? 20000),
+    overpassEndpoints: envUrlList(
+      envFirst(env.OVERPASS_ENDPOINTS, env.OVERPASS_URL),
+      DEFAULT_OVERPASS,
+    ),
+    nominatimEndpoint: envUrl(env.NOMINATIM_URL, DEFAULT_NOMINATIM),
+    userAgent: envFirst(env.OSM_USER_AGENT) ?? DEFAULT_OSM_USER_AGENT,
+    timeoutMs: envNumber(env.GIS_TIMEOUT_MS, 20000),
   };
 }
 

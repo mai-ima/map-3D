@@ -32,6 +32,8 @@ import EnvironmentBar from './EnvironmentBar';
 import NextTurnPanel from './NextTurnPanel';
 import SearchPanel, { type PlacePoint } from './SearchPanel';
 
+import ErrorBoundary from './ErrorBoundary';
+
 const MapCanvas = dynamic(() => import('./MapCanvas'), { ssr: false });
 
 export default function AppShell() {
@@ -414,12 +416,14 @@ export default function AppShell() {
 
   return (
     <main className="relative h-[100dvh] w-full overflow-hidden bg-ink-950">
-      <MapCanvas
-        city={city}
-        onReady={handleReady}
-        onNavigationTick={handleTick}
-        onError={notify}
-      />
+      <ErrorBoundary>
+        <MapCanvas
+          city={city}
+          onReady={handleReady}
+          onNavigationTick={handleTick}
+          onError={notify}
+        />
+      </ErrorBoundary>
 
       {navigating && (
         <NextTurnPanel

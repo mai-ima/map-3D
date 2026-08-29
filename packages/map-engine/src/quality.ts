@@ -13,6 +13,14 @@ export interface QualitySettings {
   tier: QualityTier;
   /** 3D Tiles の maximumScreenSpaceError（小さいほど高品質） */
   screenSpaceError: number;
+  /**
+   * 地形（globe）の maximumScreenSpaceError。Cesium 既定は 2。
+   * 建物と違って地形は起伏がなだらかなので、少し上げても見た目はほぼ変わらず
+   * 保持する地形タイル数＝メモリを確実に減らせる。
+   */
+  globeScreenSpaceError: number;
+  /** 地形タイルのキャッシュ枚数 */
+  globeTileCacheSize: number;
   /** 遠景タイルセットの SSE */
   farScreenSpaceError: number;
   /** タイルキャッシュ (byte) */
@@ -21,6 +29,12 @@ export interface QualitySettings {
   msaaSamples: number;
   /** devicePixelRatio に掛ける係数の上限 */
   resolutionScale: number;
+  /**
+   * 描画バッファの総ピクセル数の上限。
+   * 画面が大きい端末で resolutionScale をそのまま掛けると描画バッファが巨大化し、
+   * MSAA・HDR の中間バッファと合わせてメモリを食い潰すため、面積で頭打ちにする。
+   */
+  maxDrawPixels: number;
   shadows: boolean;
   shadowDistance: number;
   softShadows: boolean;
@@ -37,16 +51,30 @@ export interface QualitySettings {
   label: string;
 }
 
+/**
+ * メモリ予算について（重要）
+ *
+ * PLATEAU LOD2 はテクスチャ付きで非常に重く、maximumScreenSpaceError を小さくすると
+ * 読み込むタイル数が指数的に増える。ブラウザのタブには使用メモリの上限があり
+ * （特に iOS Safari は 1GB 前後で強制終了される）、上限を超えるとページごとクラッシュする。
+ *
+ * そのため各プリセットは「見た目の精細さ」ではなく「タブが落ちないメモリ量」から逆算している。
+ * Cesium 既定の maximumScreenSpaceError は 16 なので、下記はいずれも既定より高精細である。
+ * 実際のキャッシュ量は resolveMemoryBudget() が端末の搭載メモリを見て更に絞る。
+ */
 const PRESETS: Record<QualityTier, QualitySettings> = {
   high: {
     tier: 'high',
-    // 建物のディテールを優先する（実写テクスチャの解像度を活かす）
-    screenSpaceError: 6,
-    farScreenSpaceError: 40,
-    cacheBytes: 512 * 1024 * 1024,
-    maximumCacheOverflowBytes: 256 * 1024 * 1024,
+    globeScreenSpaceError: 2.0,
+    globeTileCacheSize: 260,
+    // 建物のディテールを優先しつつ、タイル数が発散しない範囲に収める
+    screenSpaceError: 10,
+    farScreenSpaceError: 48,
+    cacheBytes: 320 * 1024 * 1024,
+    maximumCacheOverflowBytes: 96 * 1024 * 1024,
     msaaSamples: 4,
     resolutionScale: 1.5,
+    maxDrawPixels: 4_200_000,
     shadows: true,
     shadowDistance: 3000,
     softShadows: true,
@@ -55,39 +83,46 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     fxaa: false,
     hdr: true,
     streetFurniture: true,
-    maxFurniture: 2500,
+    maxFurniture: 2000,
     useFarTileset: true,
     label: '高品質（デスクトップ）',
   },
   'ios-high': {
-    // iPhone 17 世代を想定。Retina 解像度＋MSAA を維持し、影の距離だけ抑えて発熱を防ぐ。
+    // iPhone 17 世代を想定。Retina の精細さは活かすが、iOS Safari のメモリ上限が
+    // デスクトップよりずっと低いため、キャッシュと描画ピクセル数は明確に制限する。
     tier: 'ios-high',
-    screenSpaceError: 8,
-    farScreenSpaceError: 48,
-    cacheBytes: 384 * 1024 * 1024,
-    maximumCacheOverflowBytes: 128 * 1024 * 1024,
-    msaaSamples: 4,
+    globeScreenSpaceError: 2.5,
+    globeTileCacheSize: 160,
+    screenSpaceError: 12,
+    farScreenSpaceError: 56,
+    cacheBytes: 160 * 1024 * 1024,
+    maximumCacheOverflowBytes: 48 * 1024 * 1024,
+    msaaSamples: 2,
     resolutionScale: 2.0,
+    maxDrawPixels: 2_600_000,
     shadows: true,
-    shadowDistance: 1800,
+    shadowDistance: 1500,
     softShadows: true,
     ambientOcclusion: true,
     bloom: true,
     fxaa: false,
     hdr: true,
     streetFurniture: true,
-    maxFurniture: 1500,
+    maxFurniture: 1200,
     useFarTileset: true,
     label: '高品質（iPhone 最適化）',
   },
   balanced: {
     tier: 'balanced',
-    screenSpaceError: 16,
-    farScreenSpaceError: 64,
-    cacheBytes: 256 * 1024 * 1024,
-    maximumCacheOverflowBytes: 64 * 1024 * 1024,
+    globeScreenSpaceError: 3.0,
+    globeTileCacheSize: 140,
+    screenSpaceError: 18,
+    farScreenSpaceError: 72,
+    cacheBytes: 128 * 1024 * 1024,
+    maximumCacheOverflowBytes: 32 * 1024 * 1024,
     msaaSamples: 2,
     resolutionScale: 1.25,
+    maxDrawPixels: 2_200_000,
     shadows: true,
     shadowDistance: 1200,
     softShadows: false,
@@ -96,18 +131,21 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     fxaa: true,
     hdr: false,
     streetFurniture: true,
-    maxFurniture: 800,
+    maxFurniture: 700,
     useFarTileset: true,
     label: 'バランス',
   },
   low: {
     tier: 'low',
-    screenSpaceError: 24,
-    farScreenSpaceError: 96,
-    cacheBytes: 128 * 1024 * 1024,
-    maximumCacheOverflowBytes: 32 * 1024 * 1024,
+    globeScreenSpaceError: 4.0,
+    globeTileCacheSize: 100,
+    screenSpaceError: 28,
+    farScreenSpaceError: 110,
+    cacheBytes: 64 * 1024 * 1024,
+    maximumCacheOverflowBytes: 16 * 1024 * 1024,
     msaaSamples: 1,
     resolutionScale: 1.0,
+    maxDrawPixels: 1_600_000,
     shadows: false,
     shadowDistance: 600,
     softShadows: false,
@@ -180,8 +218,70 @@ export function selectQualityTier(device: DeviceInfo = detectDevice()): QualityT
   return 'balanced';
 }
 
+/**
+ * 端末の搭載メモリ・画面サイズを見て、プリセットのメモリ予算を更に絞る。
+ *
+ * navigator.deviceMemory は Safari では取得できないので、その場合は
+ * 「iOS = 4GB 相当」という保守的な既定値で扱う（quality.ts の detectDevice を参照）。
+ */
+export function resolveMemoryBudget(
+  settings: QualitySettings,
+  device: DeviceInfo = detectDevice(),
+): QualitySettings {
+  const resolved = { ...settings };
+
+  // 搭載メモリからタイルキャッシュの上限を決める。
+  // タブが使えるのは搭載量のごく一部なので、控えめな係数を掛ける。
+  const perGb = device.isIOS ? 40 : 56; // MB / GB
+  const budgetMb = Math.round(device.deviceMemoryGb * perGb);
+  const capMb = Math.max(64, Math.min(budgetMb, Math.round(settings.cacheBytes / (1024 * 1024))));
+  resolved.cacheBytes = capMb * 1024 * 1024;
+  resolved.maximumCacheOverflowBytes = Math.min(
+    settings.maximumCacheOverflowBytes,
+    Math.round(resolved.cacheBytes * 0.3),
+  );
+
+  // コア数が少ない端末はタイルの復号が追いつかないので、精細さを一段落とす
+  if (device.hardwareConcurrency <= 4) {
+    resolved.screenSpaceError = Math.max(resolved.screenSpaceError, 16);
+    resolved.maxFurniture = Math.round(resolved.maxFurniture * 0.5);
+  }
+
+  return resolved;
+}
+
+/** 画面サイズと maxDrawPixels から、実際に使う resolutionScale を求める */
+export function computeResolutionScale(
+  settings: QualitySettings,
+  cssWidth: number,
+  cssHeight: number,
+  devicePixelRatio: number,
+): number {
+  const scale = Math.min(devicePixelRatio || 1, settings.resolutionScale);
+  const area = Math.max(1, cssWidth * cssHeight);
+  const maxScale = Math.sqrt(settings.maxDrawPixels / area);
+  // 1.0 を下回ると目に見えて粗くなるので、そこは下限として守る
+  return Math.max(1, Math.min(scale, maxScale));
+}
+
 export function getQualitySettings(tier: QualityTier): QualitySettings {
   return { ...PRESETS[tier] };
+}
+
+/**
+ * メモリ逼迫時に 1 段階下げたティア。
+ * こちらは iOS も対象にする（タブが落ちるより品質を下げる方がましなため）。
+ */
+export function forceDegradeTier(tier: QualityTier): QualityTier {
+  switch (tier) {
+    case 'high':
+    case 'ios-high':
+      return 'balanced';
+    case 'balanced':
+      return 'low';
+    default:
+      return tier;
+  }
 }
 
 /** 1 段階下げたティア（iOS は下げない） */
@@ -228,5 +328,76 @@ export class PerformanceWatchdog {
         this.onDegrade();
       }
     }
+  }
+}
+
+
+/**
+ * メモリ使用量を監視して、危険域に入る前に自動で退避する。
+ *
+ * ページごとクラッシュする（タブが落ちる）のはメモリ超過が原因なので、
+ * FPS ではなく実メモリを見る必要がある。判断材料は 2 つ:
+ *  1. 3D Tiles の実使用量（Cesium が申告する。全ブラウザで取れる）
+ *  2. JS ヒープ（performance.memory。Chromium 系のみ）
+ *
+ * 危険域では「タイルを解放 → 精細度を落とす」を段階的に行う。
+ * iOS でも作動させる（要件の「品質を落とさない」より、落ちないことを優先する）。
+ */
+export interface MemoryPressureReport {
+  tileBytes: number;
+  heapBytes: number | null;
+  heapLimitBytes: number | null;
+  level: 'ok' | 'warn' | 'critical';
+}
+
+export class MemoryWatchdog {
+  private lastActionAt: number | null = null;
+
+  constructor(
+    private readonly onPressure: (report: MemoryPressureReport) => void,
+    /** 3D Tiles がこのバイト数を超えたら警告域 */
+    private budgetBytes: number,
+    /** 連続で作動しないための最小間隔 (ms) */
+    private readonly cooldownMs = 5000,
+  ) {}
+
+  setBudget(bytes: number): void {
+    this.budgetBytes = bytes;
+  }
+
+  static readHeap(): { used: number; limit: number } | null {
+    if (typeof performance === 'undefined') return null;
+    const mem = (
+      performance as Performance & {
+        memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
+      }
+    ).memory;
+    if (!mem || !Number.isFinite(mem.usedJSHeapSize)) return null;
+    return { used: mem.usedJSHeapSize, limit: mem.jsHeapSizeLimit };
+  }
+
+  check(tileBytes: number, now = Date.now()): MemoryPressureReport {
+    const heap = MemoryWatchdog.readHeap();
+    const heapRatio = heap && heap.limit > 0 ? heap.used / heap.limit : 0;
+    const tileRatio = this.budgetBytes > 0 ? tileBytes / this.budgetBytes : 0;
+
+    let level: MemoryPressureReport['level'] = 'ok';
+    if (tileRatio >= 1.5 || heapRatio >= 0.9) level = 'critical';
+    else if (tileRatio >= 1.1 || heapRatio >= 0.75) level = 'warn';
+
+    const report: MemoryPressureReport = {
+      tileBytes,
+      heapBytes: heap?.used ?? null,
+      heapLimitBytes: heap?.limit ?? null,
+      level,
+    };
+
+    // 初回は必ず通知する（起動直後に逼迫した場合を取りこぼさない）
+    const cooledDown = this.lastActionAt === null || now - this.lastActionAt >= this.cooldownMs;
+    if (level !== 'ok' && cooledDown) {
+      this.lastActionAt = now;
+      this.onPressure(report);
+    }
+    return report;
   }
 }

@@ -29,6 +29,8 @@ export default function MapCanvas({
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<MapEngine | null>(null);
   const [loading, setLoading] = useState(true);
+  const [contextLost, setContextLost] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +50,14 @@ export default function MapCanvas({
           city,
           onNavigationTick,
           onCameraInteraction,
+          // メモリが逼迫すると、放置した場合はタブごとクラッシュする。
+          // エンジン側が自動で描画負荷を落とすので、ここでは起きたことだけ知らせる。
+          onMemoryPressure: () => {
+            setNotice('メモリ使用量が多いため、描画品質を自動で調整しました');
+            window.setTimeout(() => setNotice(null), 6000);
+          },
+          onContextLost: () => setContextLost(true),
+          onContextRestored: () => setContextLost(false),
         });
         engineRef.current = engine;
         onReady(engine);
@@ -75,6 +85,29 @@ export default function MapCanvas({
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} className="h-full w-full" />
+      {contextLost && (
+        <div className="absolute inset-0 flex items-center justify-center bg-ink-950/90 px-6">
+          <div className="max-w-sm text-center">
+            <p className="text-[15px] font-medium text-white">3D 描画が停止しました</p>
+            <p className="mt-2 text-[13px] leading-relaxed text-mist-500">
+              端末の GPU メモリが不足したため、ブラウザが 3D の描画を中断しました。
+              ページを再読み込みすると復帰します。
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-lg bg-signal-500 px-4 py-2 text-[13px] font-medium text-ink-950 transition hover:bg-signal-400"
+            >
+              再読み込み
+            </button>
+          </div>
+        </div>
+      )}
+      {notice && (
+        <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 rounded-full bg-ink-900/90 px-4 py-2 text-[12px] text-mist-400 ring-1 ring-white/10">
+          {notice}
+        </div>
+      )}
       {loading && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-ink-950">
           <div className="flex flex-col items-center gap-3">

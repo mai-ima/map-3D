@@ -72,10 +72,16 @@ export class BuildingLayerManager {
       preloadFlightDestinations: true,
       preferLeaves: !isFar,
       progressiveResolutionHeightFraction: 0.4,
+      // 視線方向の奥ほど SSE を緩める。街を見渡す視点で読み込むタイル数を大きく減らせる
       dynamicScreenSpaceError: true,
       dynamicScreenSpaceErrorDensity: 0.00278,
       dynamicScreenSpaceErrorFactor: 4,
+      // 中間 LOD を飛ばさない。飛ばすと一時的に高精細タイルを大量に抱えてメモリが跳ねる
       skipLevelOfDetail: false,
+      // 画面外に出たタイルを積極的に解放する（メモリ超過によるタブのクラッシュ対策）
+      foveatedScreenSpaceError: true,
+      foveatedConeSize: 0.2,
+      foveatedTimeDelay: 0.2,
       shadows: this.quality.shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED,
     };
   }
@@ -139,11 +145,43 @@ export class BuildingLayerManager {
     this.loaded = null;
   }
 
+  /** 読み込み済みタイルセットが実際に使っているメモリ量 (byte) */
+  get totalMemoryUsageInBytes(): number {
+    return this.tilesets.reduce((sum, t) => {
+      const used = (t as Cesium.Cesium3DTileset & { totalMemoryUsageInBytes?: number })
+        .totalMemoryUsageInBytes;
+      return sum + (Number.isFinite(used) ? (used as number) : 0);
+    }, 0);
+  }
+
+  /**
+   * メモリ逼迫時の緊急退避。
+   * 画面に出ていないタイルを解放し、キャッシュ上限を縮める。
+   * 表示中のタイルは残るので、見た目は保たれたまま使用量だけ下がる。
+   */
+  relieveMemoryPressure(factor = 0.6): void {
+    for (const tileset of this.tilesets) {
+      tileset.trimLoadedTiles();
+      const next = Math.max(48 * 1024 * 1024, Math.floor(tileset.cacheBytes * factor));
+      tileset.cacheBytes = next;
+      tileset.maximumCacheOverflowBytes = Math.floor(next * 0.25);
+    }
+  }
+
+  /** 遠景タイルセットだけを破棄する（メモリ削減の最終手段の一歩手前） */
+  dropFarTileset(): boolean {
+    if (!this.loaded?.far) return false;
+    this.viewer.scene.primitives.remove(this.loaded.far);
+    this.loaded = { city: this.loaded.city, near: this.loaded.near };
+    return true;
+  }
+
   updateQuality(quality: QualitySettings): void {
     this.quality = quality;
     if (!this.loaded) return;
     this.loaded.near.maximumScreenSpaceError = quality.screenSpaceError;
     this.loaded.near.cacheBytes = quality.cacheBytes;
+    this.loaded.near.maximumCacheOverflowBytes = quality.maximumCacheOverflowBytes;
     this.loaded.near.shadows = quality.shadows
       ? Cesium.ShadowMode.ENABLED
       : Cesium.ShadowMode.DISABLED;

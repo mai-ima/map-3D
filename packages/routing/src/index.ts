@@ -3,7 +3,7 @@
  * 環境変数だけで「公開デモサーバ」と「自前 Valhalla」を切り替えられる。
  */
 
-import type { Route, RouteRequest } from '@ijm/shared';
+import { envFirst, envNumber, envOptionalUrl, envUrl, type Route, type RouteRequest } from '@ijm/shared';
 import { OsrmProvider } from './osrm';
 import { RoutingError, type RouteProvider } from './types';
 import { ValhallaProvider } from './valhalla';
@@ -25,24 +25,31 @@ export interface RoutingEnv {
 /** FOSSGIS の公開デモサーバ（利用ポリシー: 1req/user/sec, X-Client-Id 推奨） */
 export const PUBLIC_VALHALLA_URL = 'https://valhalla1.openstreetmap.de';
 
+/** 空文字や相対 URL を弾いた OSRM エンドポイント（未設定なら undefined） */
+export function resolveOsrmEndpoints(env: RoutingEnv): {
+  drive?: string;
+  walk?: string;
+  bicycle?: string;
+} {
+  return {
+    drive: envOptionalUrl(env.OSRM_DRIVE_URL),
+    walk: envOptionalUrl(env.OSRM_WALK_URL),
+    bicycle: envOptionalUrl(env.OSRM_BIKE_URL),
+  };
+}
+
 export function createRouteProvider(env: RoutingEnv = process.env as RoutingEnv): RouteProvider {
-  const engine = (env.ROUTING_ENGINE ?? 'valhalla').toLowerCase();
-  const timeoutMs = Number(env.ROUTING_TIMEOUT_MS ?? 20000);
+  const engine = (envFirst(env.ROUTING_ENGINE) ?? 'valhalla').toLowerCase();
+  const timeoutMs = envNumber(env.ROUTING_TIMEOUT_MS, 20000);
 
   if (engine === 'osrm') {
-    return new OsrmProvider({
-      endpoints: {
-        drive: env.OSRM_DRIVE_URL,
-        walk: env.OSRM_WALK_URL,
-        bicycle: env.OSRM_BIKE_URL,
-      },
-      timeoutMs,
-    });
+    return new OsrmProvider({ endpoints: resolveOsrmEndpoints(env), timeoutMs });
   }
 
   return new ValhallaProvider({
-    baseUrl: env.VALHALLA_URL ?? PUBLIC_VALHALLA_URL,
-    clientId: env.VALHALLA_CLIENT_ID ?? 'immersive-japan-map',
+    // 空文字が入っていると相対 URL になり fetch が即失敗するため、必ず絶対 URL に正規化する
+    baseUrl: envUrl(env.VALHALLA_URL, PUBLIC_VALHALLA_URL),
+    clientId: envFirst(env.VALHALLA_CLIENT_ID) ?? 'immersive-japan-map',
     timeoutMs,
   });
 }
@@ -59,16 +66,11 @@ export async function routeWithFallback(
   try {
     return await primary.route(request);
   } catch (error) {
-    const hasOsrm = Boolean(env.OSRM_DRIVE_URL ?? env.OSRM_WALK_URL ?? env.OSRM_BIKE_URL);
+    const endpoints = resolveOsrmEndpoints(env);
+    const hasOsrm = Boolean(endpoints.drive ?? endpoints.walk ?? endpoints.bicycle);
     if (!hasOsrm || primary.name === 'osrm') throw error;
 
-    const fallback = new OsrmProvider({
-      endpoints: {
-        drive: env.OSRM_DRIVE_URL,
-        walk: env.OSRM_WALK_URL,
-        bicycle: env.OSRM_BIKE_URL,
-      },
-    });
+    const fallback = new OsrmProvider({ endpoints });
     try {
       return await fallback.route(request);
     } catch {
