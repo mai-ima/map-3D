@@ -16,6 +16,7 @@ import { BASE_ATTRIBUTION_IDS, getDefaultCity, resolveAttributions } from '@ijm/
 import type { MapEngine } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
+import { Icon } from '@ijm/ui';
 import {
   askAI,
   fetchBuilding,
@@ -499,9 +500,10 @@ export default function AppShell() {
           <AttributionPanel sources={attributions} />
           <button
             onClick={() => setAiOpen((v) => !v)}
-            className="glass rounded-full px-3.5 py-2 text-[13px] font-medium text-signal-400"
+            className="glass inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[13px] font-medium text-signal-400"
           >
-            ✨ AI に頼む
+            <Icon name="sparkle" size={15} />
+            AI に頼む
           </button>
         </div>
       </div>

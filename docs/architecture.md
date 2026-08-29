@@ -46,7 +46,7 @@
         └─────────────────┘  └───────────────┘ └────────────────┘
 
         （セルフホスト時のみ）
-        apps/api (Node/Express) ──► PostgreSQL + PostGIS
+        apps/api (Node)         ──► PostgreSQL + PostGIS
             道路ネットワーク / POI / 交差点の永続化
 ```
 
@@ -76,7 +76,7 @@ PLATEAU 3D Tiles (建物)     ──► Cesium3DTileset            ──┘
 | 領域 | 採用 | 理由 |
 | --- | --- | --- |
 | 3D エンジン | **CesiumJS 1.144** | 3D Tiles のリファレンス実装であり、PLATEAU が 3D Tiles を公式配信している。WGS84 楕円体・地形・大気散乱・太陽位置が標準搭載で「実在都市」を正確に描ける。Three.js だと測地系・地形・タイルストリーミングを全部自作することになる |
-| フレームワーク | **Next.js 15 (App Router) + TypeScript** | Route Handlers が BFF になり、APIキーをサーバ側に閉じ込められる。Vercel にそのままデプロイできる |
+| フレームワーク | **Next.js 16 (App Router) + TypeScript** | Route Handlers が BFF になり、APIキーをサーバ側に閉じ込められる。Vercel にそのままデプロイできる |
 | スタイル | **Tailwind CSS v4** | 3D キャンバス上のオーバーレイ UI を高速に組める。ビルド成果物が小さい |
 | ルーティング | **Valhalla**（OSRM をフォールバック） | 動的コスティング / マルチモーダル / **日本語案内** / maneuver に `bearing_after` があり 3D カメラ制御に直結する（[research.md §6](./research.md)） |
 | 地形 | **PLATEAU-Terrain** | quantized-mesh を全国配信済み。GSI DEM からの自前生成が不要で、PLATEAU 建物と同じ高さ基準（楕円体高）で整合する |
@@ -106,7 +106,7 @@ immersive-japan-map/
 │   │   │       └── ai/chat/route.ts     AI Tool Calling
 │   │   ├── components/          画面固有 React コンポーネント
 │   │   └── next.config.ts
-│   └── api/                     セルフホスト用スタンドアロン API (Express)
+│   └── api/                     セルフホスト用スタンドアロン API (node:http)
 ├── packages/
 │   ├── shared/                  型・座標系・幾何・都市レジストリ・定数
 │   ├── gis/                     Overpass / Nominatim / PLATEAU / GSI クライアント
@@ -143,13 +143,13 @@ Cesium への適用は `map-engine` 側のアダプタが行う。これによ�
 
 | データ | 提供元 | 形式 | 取得方法 | MVP |
 | --- | --- | --- | --- | --- |
-| 3D 建物 | PLATEAU 配信サービス | 3D Tiles 1.0/1.1 | `https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/{spec}/tileset.json` | ✅ |
-| 地形 | PLATEAU-Terrain | quantized-mesh 1.0 | `https://tile.plateauview.mlit.go.jp/terrain/` | ✅ |
-| ベースマップ | 国土地理院 | ラスタタイル PNG | `https://cyberjapandata.gsi.go.jp/xyz/{style}/{z}/{x}/{y}.png` | ✅ |
+| 3D 建物 | PLATEAU 配信サービス | 3D Tiles 1.0/1.1 | `https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/{spec}/tileset.json` | 必須 |
+| 地形 | PLATEAU-Terrain | quantized-mesh 1.0 | `https://tile.plateauview.mlit.go.jp/terrain/` | 必須 |
+| ベースマップ | 国土地理院 | ラスタタイル PNG | `https://cyberjapandata.gsi.go.jp/xyz/{style}/{z}/{x}/{y}.png` | 必須 |
 | 標高（代替） | 国土地理院 | `dem_png` | 同上 `dem_png` | ー |
-| 道路網・POI | OpenStreetMap | Overpass JSON / PBF | Overpass API / Geofabrik | ✅ |
-| ジオコーディング | Nominatim (OSM) | JSON | `nominatim.openstreetmap.org` | ✅ |
-| 経路 | Valhalla (OSM 由来) | JSON | FOSSGIS デモ or 自前 | ✅ |
+| 道路網・POI | OpenStreetMap | Overpass JSON / PBF | Overpass API / Geofabrik | 必須 |
+| ジオコーディング | Nominatim (OSM) | JSON | `nominatim.openstreetmap.org` | 必須 |
+| 経路 | Valhalla (OSM 由来) | JSON | FOSSGIS デモ or 自前 | 必須 |
 | CityGML 原本 | PLATEAU / G空間情報センター | CityGML 2.0 | 手動 DL → `data/plateau/` | 任意 |
 
 ---
@@ -281,6 +281,9 @@ createViewer({
 - **影**: `viewer.shadows = true`, `shadowMap.softShadows = true`, `maximumDistance` を端末ティア別に
 - **ルート**: 地面追従の `GroundPolylinePrimitive`（`clampToGround`）+ 発光マテリアル。加えて路面から 0.3m 浮かせた矢印テクスチャのコリドーで進行方向を表現
 - **座標**: 内部はすべて WGS84 (lon/lat/height)。表示用の変換は `packages/shared/coords.ts` に集約
+- **アイコン**: 絵文字は使わない。形状データを `packages/shared/icons.ts` に一元化し、
+  UI は React の SVG（`packages/ui/icons.tsx`）、3D マーカーは SVG データ URI をビルボード化
+  （`packages/map-engine/marker-icons.ts`）して描く。両者の絵柄が常に一致する
 
 ---
 

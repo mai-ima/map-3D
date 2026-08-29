@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { LatLng, Route, SearchResult, TravelMode } from '@ijm/shared';
+import type { IconName, LatLng, Route, SearchResult, TravelMode } from '@ijm/shared';
 import { formatDistance, formatDuration } from '@ijm/navigation';
+import { Icon } from '@ijm/ui';
 import { searchPlaces } from '@/lib/api';
 
 export interface PlacePoint {
@@ -26,10 +27,10 @@ export interface SearchPanelProps {
   onClearRoute: () => void;
 }
 
-const MODES: { value: TravelMode; label: string; icon: string }[] = [
-  { value: 'walk', label: '徒歩', icon: '🚶' },
-  { value: 'drive', label: '車', icon: '🚗' },
-  { value: 'bicycle', label: '自転車', icon: '🚲' },
+const MODES: { value: TravelMode; label: string; iconName: IconName }[] = [
+  { value: 'walk', label: '徒歩', iconName: 'walk' },
+  { value: 'drive', label: '車', iconName: 'car' },
+  { value: 'bicycle', label: '自転車', iconName: 'bike' },
 ];
 
 export default function SearchPanel(props: SearchPanelProps) {
@@ -96,7 +97,7 @@ export default function SearchPanel(props: SearchPanelProps) {
     <div className="glass w-full rounded-[18px] p-3">
       <div className="relative">
         <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-mist-500">
-          🔍
+          <Icon name="search" size={16} />
         </span>
         <input
           value={query}
@@ -142,7 +143,7 @@ export default function SearchPanel(props: SearchPanelProps) {
         <div className="mt-3 space-y-2.5">
           <div className="space-y-1.5">
             <PlaceRow
-              icon="◎"
+              iconName="origin"
               iconClass="text-signal-400"
               label="出発地"
               place={origin}
@@ -151,7 +152,7 @@ export default function SearchPanel(props: SearchPanelProps) {
               onFocus={onFocusPlace}
             />
             <PlaceRow
-              icon="⚑"
+              iconName="destination"
               iconClass="text-alert-400"
               label="目的地"
               place={destination}
@@ -166,13 +167,13 @@ export default function SearchPanel(props: SearchPanelProps) {
               <button
                 key={m.value}
                 onClick={() => onModeChange(m.value)}
-                className={`flex-1 rounded-full border px-2 py-1.5 text-[12px] transition-colors ${
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-full border px-2 py-1.5 text-[12px] transition-colors ${
                   mode === m.value
                     ? 'border-signal-400/60 bg-signal-500/15 text-signal-400'
                     : 'border-white/10 text-mist-300 hover:border-white/25'
                 }`}
               >
-                <span className="mr-1">{m.icon}</span>
+                <Icon name={m.iconName} size={16} />
                 {m.label}
               </button>
             ))}
@@ -236,7 +237,7 @@ export default function SearchPanel(props: SearchPanelProps) {
 }
 
 function PlaceRow({
-  icon,
+  iconName,
   iconClass,
   label,
   place,
@@ -244,7 +245,7 @@ function PlaceRow({
   onClear,
   onFocus,
 }: {
-  icon: string;
+  iconName: IconName;
   iconClass: string;
   label: string;
   place: PlacePoint | null;
@@ -254,7 +255,9 @@ function PlaceRow({
 }) {
   return (
     <div className="flex items-center gap-2 rounded-xl border border-white/8 bg-ink-800/50 px-3 py-2">
-      <span className={`text-[13px] ${iconClass}`}>{icon}</span>
+      <span className={iconClass}>
+        <Icon name={iconName} size={16} />
+      </span>
       <div className="min-w-0 flex-1">
         <p className="text-[10px] uppercase tracking-[0.14em] text-mist-500">{label}</p>
         {place ? (
@@ -266,8 +269,12 @@ function PlaceRow({
         )}
       </div>
       {place && (
-        <button onClick={onClear} className="shrink-0 text-[13px] text-mist-500 hover:text-alert-400">
-          ×
+        <button
+          onClick={onClear}
+          aria-label={`${label}を消去`}
+          className="shrink-0 text-mist-500 transition-colors hover:text-alert-400"
+        >
+          <Icon name="close" size={14} />
         </button>
       )}
     </div>

@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react';
 import type { ChatMessage } from '@ijm/ai';
+import { Icon } from '@ijm/ui';
 
 export interface AIPanelProps {
   enabled: boolean;
@@ -39,14 +40,21 @@ export default function AIPanel({ enabled, busy, messages, onSend, onClose }: AI
   return (
     <div className="glass flex max-h-[62vh] w-[min(92vw,400px)] flex-col rounded-[18px]">
       <div className="flex items-center gap-2 border-b border-white/8 px-3.5 py-2.5">
-        <span className="text-[13px] font-semibold">AI アシスタント</span>
+        <span className="flex items-center gap-1.5 text-[13px] font-semibold">
+          <Icon name="sparkle" size={15} className="text-signal-400" />
+          AI アシスタント
+        </span>
         {!enabled && (
           <span className="rounded-full bg-white/6 px-2 py-0.5 text-[10px] text-mist-500">
             未設定
           </span>
         )}
-        <button onClick={onClose} className="ml-auto text-[13px] text-mist-500">
-          ×
+        <button
+          onClick={onClose}
+          aria-label="AI パネルを閉じる"
+          className="ml-auto text-mist-500 transition-colors hover:text-mist-100"
+        >
+          <Icon name="close" size={15} />
         </button>
       </div>
 

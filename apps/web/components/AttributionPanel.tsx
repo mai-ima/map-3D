@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { DataSource } from '@ijm/shared';
+import { Icon } from '@ijm/ui';
 
 /**
  * データ出典表示。
@@ -18,8 +19,12 @@ export default function AttributionPanel({ sources }: { sources: DataSource[] })
         <div className="glass mb-2 max-h-[52vh] w-[min(92vw,380px)] overflow-y-auto rounded-[16px] p-3.5">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-[13px] font-semibold">データ出典とライセンス</h2>
-            <button onClick={() => setOpen(false)} className="text-[13px] text-mist-500">
-              ×
+            <button
+              onClick={() => setOpen(false)}
+              aria-label="出典パネルを閉じる"
+              className="text-mist-500 transition-colors hover:text-mist-100"
+            >
+              <Icon name="close" size={15} />
             </button>
           </div>
           <ul className="space-y-2.5">
@@ -49,8 +54,9 @@ export default function AttributionPanel({ sources }: { sources: DataSource[] })
 
       <button
         onClick={() => setOpen((v) => !v)}
-        className="glass rounded-full px-3 py-1.5 text-[11px] text-mist-300"
+        className="glass inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] text-mist-300"
       >
+        <Icon name="layers" size={13} />
         データ出典
       </button>
     </div>

@@ -3,7 +3,7 @@
  * ここを増やすだけで検索対象カテゴリを追加できる。
  */
 
-import type { PoiCategory } from '@ijm/shared';
+import type { IconName, PoiCategory } from '@ijm/shared';
 
 export interface CategoryDefinition {
   category: PoiCategory;
@@ -13,7 +13,8 @@ export interface CategoryDefinition {
   filters: string[];
   /** 自然言語の別名（AI からの指定を解決するため） */
   aliases: string[];
-  icon: string;
+  /** @ijm/shared の ICONS に対応するアイコン名（絵文字は使わない） */
+  iconName: IconName;
 }
 
 export const CATEGORY_DEFINITIONS: readonly CategoryDefinition[] = [
@@ -22,84 +23,84 @@ export const CATEGORY_DEFINITIONS: readonly CategoryDefinition[] = [
     label: 'コンビニ',
     filters: ['[shop=convenience]'],
     aliases: ['コンビニ', 'コンビニエンスストア', 'convenience', 'convenience store'],
-    icon: '🏪',
+    iconName: 'store',
   },
   {
     category: 'cafe',
     label: 'カフェ',
     filters: ['[amenity=cafe]'],
     aliases: ['カフェ', '喫茶', 'コーヒー', 'cafe', 'coffee'],
-    icon: '☕',
+    iconName: 'cafe',
   },
   {
     category: 'restaurant',
     label: '飲食店',
     filters: ['[amenity=restaurant]', '[amenity=fast_food]'],
     aliases: ['レストラン', '飲食店', 'ごはん', '食事', 'restaurant', 'food'],
-    icon: '🍜',
+    iconName: 'restaurant',
   },
   {
     category: 'hospital',
     label: '病院',
     filters: ['[amenity=hospital]', '[amenity=clinic]'],
     aliases: ['病院', 'クリニック', '医院', 'hospital', 'clinic'],
-    icon: '🏥',
+    iconName: 'hospital',
   },
   {
     category: 'school',
     label: '学校',
     filters: ['[amenity=school]', '[amenity=university]', '[amenity=kindergarten]'],
     aliases: ['学校', '大学', '幼稚園', 'school', 'university'],
-    icon: '🏫',
+    iconName: 'school',
   },
   {
     category: 'park',
     label: '公園',
     filters: ['[leisure=park]', '[leisure=garden]'],
     aliases: ['公園', '庭園', 'park', 'garden'],
-    icon: '🌳',
+    iconName: 'park',
   },
   {
     category: 'station',
     label: '駅',
     filters: ['[railway=station]', '[public_transport=station]'],
     aliases: ['駅', '鉄道駅', 'station'],
-    icon: '🚉',
+    iconName: 'transit',
   },
   {
     category: 'parking',
     label: '駐車場',
     filters: ['[amenity=parking]'],
     aliases: ['駐車場', 'パーキング', 'parking'],
-    icon: '🅿️',
+    iconName: 'parking',
   },
   {
     category: 'shop',
     label: '店舗',
     filters: ['[shop]'],
     aliases: ['店', '買い物', 'ショップ', 'shop', 'store'],
-    icon: '🛍️',
+    iconName: 'shop',
   },
   {
     category: 'toilets',
     label: 'トイレ',
     filters: ['[amenity=toilets]'],
     aliases: ['トイレ', 'お手洗い', 'toilet', 'restroom'],
-    icon: '🚻',
+    iconName: 'toilets',
   },
   {
     category: 'atm',
     label: 'ATM・銀行',
     filters: ['[amenity=atm]', '[amenity=bank]'],
     aliases: ['ATM', '銀行', 'atm', 'bank'],
-    icon: '🏧',
+    iconName: 'atm',
   },
   {
     category: 'hotel',
     label: '宿泊',
     filters: ['[tourism=hotel]', '[tourism=hostel]'],
     aliases: ['ホテル', '宿', '宿泊', 'hotel'],
-    icon: '🏨',
+    iconName: 'hotel',
   },
 ];
 
@@ -129,6 +130,6 @@ export function categoryOfTags(tags: Record<string, string>): PoiCategory {
   return 'other';
 }
 
-export function categoryIcon(category: PoiCategory): string {
-  return CATEGORY_DEFINITIONS.find((d) => d.category === category)?.icon ?? '📍';
+export function categoryIcon(category: PoiCategory): IconName {
+  return CATEGORY_DEFINITIONS.find((d) => d.category === category)?.iconName ?? 'pin';
 }

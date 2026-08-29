@@ -4,3 +4,4 @@ export * from './coords';
 export * from './polyline';
 export * from './cities';
 export * from './attribution';
+export * from './icons';

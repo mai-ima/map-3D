@@ -5,7 +5,7 @@
  * 現在の進行距離から、次／その次のマニューバとそこまでの距離を毎フレーム算出する。
  */
 
-import type { Maneuver, Route } from '@ijm/shared';
+import type { IconName, Maneuver, Route } from '@ijm/shared';
 import type { ManeuverOutlook } from './types';
 
 const TURN_TYPES = new Set([
@@ -67,30 +67,44 @@ export function maneuverLabel(maneuver?: Maneuver): string {
   }
 }
 
-/** マニューバの矢印記号（UI 用） */
-export function maneuverArrow(maneuver?: Maneuver): string {
-  if (!maneuver) return '↑';
+/**
+ * マニューバに対応するアイコン名（@ijm/shared の ICONS）。
+ * 文字記号や絵文字ではなく SVG を描くため、ここでは「名前」だけを返す。
+ */
+export function maneuverIcon(maneuver?: Maneuver): IconName {
+  if (!maneuver) return 'straight';
   switch (maneuver.type) {
     case 'turn_left':
-      return '←';
+      return 'turnLeft';
     case 'turn_right':
-      return '→';
+      return 'turnRight';
     case 'slight_left':
-      return '↖';
+      return 'slightLeft';
     case 'slight_right':
-      return '↗';
+      return 'slightRight';
     case 'sharp_left':
-      return '↰';
+      return 'sharpLeft';
     case 'sharp_right':
-      return '↱';
+      return 'sharpRight';
     case 'uturn':
-      return '↩';
+      return 'uturn';
+    case 'merge':
+      return 'merge';
+    case 'ramp':
+      return 'ramp';
+    case 'roundabout_enter':
+    case 'roundabout_exit':
+      return 'roundabout';
     case 'stairs':
-      return '⇞';
+      return 'stairs';
+    case 'ferry':
+      return 'ferry';
+    case 'transit':
+      return 'transit';
     case 'destination':
-      return '⚑';
+      return 'destination';
     default:
-      return '↑';
+      return 'straight';
   }
 }
 

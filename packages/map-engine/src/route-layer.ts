@@ -6,16 +6,18 @@
  */
 
 import * as Cesium from 'cesium';
-import type { LatLng, Poi, Route } from '@ijm/shared';
+import type { IconName, LatLng, Poi, Route } from '@ijm/shared';
+import { markerUri, type MarkerKind } from './marker-icons';
 
 export interface MarkerOptions {
   id: string;
   position: LatLng;
   label?: string;
-  color?: Cesium.Color;
   /** 地面からの高さ (m) */
   height?: number;
   kind?: 'origin' | 'destination' | 'poi' | 'highlight';
+  /** マーカー内に描くアイコン（未指定なら kind から決まる） */
+  iconName?: IconName;
 }
 
 const MODE_COLORS: Record<string, Cesium.Color> = {
@@ -233,17 +235,29 @@ export class RouteLayer {
     }
   }
 
+  /**
+   * 地点マーカー。
+   * 絵文字ラベルではなく、SVG から生成したピン画像をビルボードとして描画する
+   * （環境による字形差が出ず、高 DPI でも滲まない）。
+   */
   setMarker(options: MarkerOptions): Cesium.Entity {
     const existing = this.markerSource.entities.getById(options.id);
     if (existing) this.markerSource.entities.remove(existing);
 
-    const color =
-      options.color ??
-      (options.kind === 'origin'
-        ? Cesium.Color.fromCssColorString('#38d9c8')
+    const kind: MarkerKind =
+      options.kind === 'origin'
+        ? 'origin'
         : options.kind === 'destination'
-          ? Cesium.Color.fromCssColorString('#ff6b6b')
-          : Cesium.Color.fromCssColorString('#ffd166'));
+          ? 'destination'
+          : 'highlight';
+
+    const iconName: IconName =
+      options.iconName ??
+      (options.kind === 'origin'
+        ? 'origin'
+        : options.kind === 'destination'
+          ? 'destination'
+          : 'pin');
 
     return this.markerSource.entities.add({
       id: options.id,
@@ -252,13 +266,14 @@ export class RouteLayer {
         options.position.lat,
         options.height ?? 0,
       ),
-      point: {
-        pixelSize: options.kind === 'poi' ? 10 : 14,
-        color,
-        outlineColor: Cesium.Color.fromCssColorString('#0b1622'),
-        outlineWidth: 2,
+      billboard: {
+        image: markerUri(iconName, kind, 'pin'),
+        width: 34,
+        height: 45,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        scaleByDistance: new Cesium.NearFarScalar(200, 1.0, 6000, 0.6),
       },
       label: options.label
         ? {
@@ -266,9 +281,9 @@ export class RouteLayer {
             font: '500 13px system-ui, -apple-system, sans-serif',
             fillColor: Cesium.Color.WHITE,
             showBackground: true,
-            backgroundColor: Cesium.Color.fromCssColorString('#0b1622').withAlpha(0.75),
+            backgroundColor: Cesium.Color.fromCssColorString('#0b1622').withAlpha(0.78),
             backgroundPadding: new Cesium.Cartesian2(8, 5),
-            pixelOffset: new Cesium.Cartesian2(0, -22),
+            pixelOffset: new Cesium.Cartesian2(0, -50),
             verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
@@ -283,19 +298,32 @@ export class RouteLayer {
     if (entity) this.markerSource.entities.remove(entity);
   }
 
-  showPois(pois: Poi[], iconOf: (poi: Poi) => string): void {
+  /** POI マーカー。カテゴリごとの SVG バッジ + 名称ラベル。 */
+  showPois(pois: Poi[], iconOf: (poi: Poi) => IconName): void {
     this.clearPois();
     for (const poi of pois) {
       this.markerSource.entities.add({
         id: `poi:${poi.id}`,
         position: Cesium.Cartesian3.fromDegrees(poi.lng, poi.lat),
+        billboard: {
+          image: markerUri(iconOf(poi), 'poi', 'badge'),
+          width: 26,
+          height: 26,
+          verticalOrigin: Cesium.VerticalOrigin.CENTER,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          scaleByDistance: new Cesium.NearFarScalar(150, 1.0, 3000, 0.5),
+          translucencyByDistance: new Cesium.NearFarScalar(1500, 1.0, 4500, 0.0),
+        },
         label: {
-          text: `${iconOf(poi)} ${poi.name}`,
+          text: poi.name,
           font: '500 12px system-ui, -apple-system, sans-serif',
           fillColor: Cesium.Color.WHITE,
           showBackground: true,
-          backgroundColor: Cesium.Color.fromCssColorString('#12263a').withAlpha(0.8),
+          backgroundColor: Cesium.Color.fromCssColorString('#12263a').withAlpha(0.82),
           backgroundPadding: new Cesium.Cartesian2(7, 4),
+          pixelOffset: new Cesium.Cartesian2(0, -20),
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
           scaleByDistance: new Cesium.NearFarScalar(150, 1.0, 2500, 0.5),

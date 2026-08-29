@@ -6,6 +6,7 @@
  */
 
 import * as Cesium from 'cesium';
+import type { IconName } from '@ijm/shared';
 import type { QualitySettings } from './quality';
 
 export type WeatherKind = 'clear' | 'cloudy' | 'rain' | 'snow' | 'fog';
@@ -46,12 +47,12 @@ export const TIME_PRESETS = [
   { hour: 22, label: '22:00', description: '夜' },
 ] as const;
 
-export const WEATHER_PRESETS: { kind: WeatherKind; label: string; icon: string }[] = [
-  { kind: 'clear', label: '晴れ', icon: '☀️' },
-  { kind: 'cloudy', label: '曇り', icon: '☁️' },
-  { kind: 'rain', label: '雨', icon: '🌧️' },
-  { kind: 'snow', label: '雪', icon: '🌨️' },
-  { kind: 'fog', label: '霧', icon: '🌫️' },
+export const WEATHER_PRESETS: { kind: WeatherKind; label: string; iconName: IconName }[] = [
+  { kind: 'clear', label: '晴れ', iconName: 'sun' },
+  { kind: 'cloudy', label: '曇り', iconName: 'cloud' },
+  { kind: 'rain', label: '雨', iconName: 'rain' },
+  { kind: 'snow', label: '雪', iconName: 'snow' },
+  { kind: 'fog', label: '霧', iconName: 'fog' },
 ];
 
 const RAIN_SHADER = /* glsl */ `

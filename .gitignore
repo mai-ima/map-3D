@@ -18,6 +18,7 @@ data/plateau/*
 data/terrain/*
 data/tiles/*
 !data/**/README.md
+data/icon-preview.html
 !data/**/.gitkeep
 
 # Cesium の静的アセット（postinstall で node_modules からコピーされる）

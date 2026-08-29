@@ -148,7 +148,24 @@ npm run build        # 本番ビルド
 npm run typecheck    # 型チェック
 npm test             # ナビゲーション・座標変換の単体テスト
 npm run validate:cities   # PLATEAU 配信の実在確認
+npm run preview:icons     # アイコン一覧を data/icon-preview.html に出力
 ```
+
+### アイコン（絵文字は使わない）
+
+UI・3D マーカーとも**絵文字を使わず、すべて SVG** で描画しています。
+絵文字は環境ごとに字形・色・サイズが変わり、特に 3D シーン上のラベルでは
+余白や大きさを制御できないためです。
+
+形状データは `packages/shared/src/icons.ts` に一元化され、2 か所から描画されます。
+
+| 用途 | 実装 |
+| --- | --- |
+| UI（React） | `packages/ui/src/icons.tsx` の `<Icon name="..." />` |
+| 3D マーカー（Cesium） | `packages/map-engine/src/marker-icons.ts` が SVG データ URI を生成しビルボードに使用 |
+
+同じ形状データを共有しているため、パネル上のアイコンと 3D 空間上のマーカーの絵柄が一致します。
+アイコンを追加・変更したら `npm run preview:icons` で実寸を確認してください。
 
 ### 都市を追加する
 

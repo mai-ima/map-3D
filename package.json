@@ -20,9 +20,10 @@
     "test": "tsx --test \"packages/*/src/__tests__/*.test.ts\"",
     "api:dev": "npm run dev --workspace @ijm/api",
     "validate:cities": "node scripts/preprocessing/validate-cities.mjs",
-    "import:osm": "tsx scripts/import-osm/import-osm.ts",
+    "import:osm": "tsx scripts/import-osm/import-osm.mts",
     "docker:up": "docker compose -f docker/docker-compose.yml up -d",
-    "docker:down": "docker compose -f docker/docker-compose.yml down"
+    "docker:down": "docker compose -f docker/docker-compose.yml down",
+    "preview:icons": "tsx scripts/preprocessing/preview-icons.mts"
   },
   "devDependencies": {
     "tsx": "^4.23.12"

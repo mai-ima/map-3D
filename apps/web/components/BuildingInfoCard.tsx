@@ -1,6 +1,7 @@
 'use client';
 
 import type { BuildingInfo } from '@ijm/shared';
+import { Icon } from '@ijm/ui';
 
 const SOURCE_LABELS: Record<string, string> = {
   osm: 'OpenStreetMap',
@@ -25,8 +26,12 @@ export default function BuildingInfoCard({
         <h2 className="text-[14px] font-semibold">
           {loading ? '建物情報を取得中…' : (building?.name ?? '名称データなし')}
         </h2>
-        <button onClick={onClose} className="shrink-0 text-[13px] text-mist-500">
-          ×
+        <button
+          onClick={onClose}
+          aria-label="建物情報を閉じる"
+          className="shrink-0 text-mist-500 transition-colors hover:text-mist-100"
+        >
+          <Icon name="close" size={15} />
         </button>
       </div>
 

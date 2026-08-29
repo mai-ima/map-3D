@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import type { City, District } from '@ijm/shared';
+import type { City, District, IconName } from '@ijm/shared';
 import { CITIES } from '@ijm/shared';
+import { Icon } from '@ijm/ui';
 
 export interface EnvironmentBarProps {
   city: City;
@@ -25,19 +26,19 @@ export interface EnvironmentBarProps {
 }
 
 const TIME_PRESETS = [6, 9, 12, 17, 19, 22];
-const WEATHERS = [
-  { kind: 'clear', label: '晴れ', icon: '☀️' },
-  { kind: 'cloudy', label: '曇り', icon: '☁️' },
-  { kind: 'rain', label: '雨', icon: '🌧️' },
-  { kind: 'snow', label: '雪', icon: '🌨️' },
-  { kind: 'fog', label: '霧', icon: '🌫️' },
+const WEATHERS: { kind: string; label: string; iconName: IconName }[] = [
+  { kind: 'clear', label: '晴れ', iconName: 'sun' },
+  { kind: 'cloudy', label: '曇り', iconName: 'cloud' },
+  { kind: 'rain', label: '雨', iconName: 'rain' },
+  { kind: 'snow', label: '雪', iconName: 'snow' },
+  { kind: 'fog', label: '霧', iconName: 'fog' },
 ];
-const POI_CATEGORIES = [
-  { id: 'convenience', label: 'コンビニ', icon: '🏪' },
-  { id: 'cafe', label: 'カフェ', icon: '☕' },
-  { id: 'restaurant', label: '飲食', icon: '🍜' },
-  { id: 'station', label: '駅', icon: '🚉' },
-  { id: 'park', label: '公園', icon: '🌳' },
+const POI_CATEGORIES: { id: string; label: string; iconName: IconName }[] = [
+  { id: 'convenience', label: 'コンビニ', iconName: 'store' },
+  { id: 'cafe', label: 'カフェ', iconName: 'cafe' },
+  { id: 'restaurant', label: '飲食', iconName: 'restaurant' },
+  { id: 'station', label: '駅', iconName: 'transit' },
+  { id: 'park', label: '公園', iconName: 'park' },
 ];
 
 /**
@@ -57,10 +58,13 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
         <span className="text-[12px] tabular-nums text-mist-500">
           {String(Math.floor(props.hour)).padStart(2, '0')}:00
         </span>
-        <span className="text-[12px]">
-          {WEATHERS.find((w) => w.kind === props.weather)?.icon ?? '☀️'}
+        <span className="text-mist-300">
+          <Icon name={WEATHERS.find((w) => w.kind === props.weather)?.iconName ?? 'sun'} size={15} />
         </span>
-        <span className="ml-auto text-[11px] text-mist-500">{open ? '閉じる' : '表示設定'}</span>
+        <span className="ml-auto flex items-center gap-1 text-[11px] text-mist-500">
+          表示設定
+          <Icon name={open ? 'chevronUp' : 'chevronDown'} size={14} />
+        </span>
       </button>
 
       {open && (
@@ -126,8 +130,9 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
                   key={w.kind}
                   active={props.weather === w.kind}
                   onClick={() => props.onWeatherChange(w.kind)}
+                  iconName={w.iconName}
                 >
-                  {w.icon} {w.label}
+                  {w.label}
                 </Chip>
               ))}
             </div>
@@ -154,8 +159,9 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
                   key={c.id}
                   active={props.poiCategories.includes(c.id)}
                   onClick={() => props.onTogglePoi(c.id)}
+                  iconName={c.iconName}
                 >
-                  {c.icon} {c.label}
+                  {c.label}
                 </Chip>
               ))}
             </div>
@@ -188,21 +194,24 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Chip({
   active,
   onClick,
+  iconName,
   children,
 }: {
   active?: boolean;
   onClick: () => void;
+  iconName?: IconName;
   children: React.ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`rounded-full border px-2.5 py-1 text-[12px] transition-colors ${
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${
         active
           ? 'border-signal-400/60 bg-signal-500/15 text-signal-400'
           : 'border-white/10 text-mist-300 hover:border-white/25'
       }`}
     >
+      {iconName && <Icon name={iconName} size={14} />}
       {children}
     </button>
   );
