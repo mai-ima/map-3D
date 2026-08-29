@@ -345,6 +345,11 @@ export class MapEngine {
     }
   }
 
+  /** 端末判定による既定のティア（手動指定から「自動」に戻すときに使う） */
+  get autoQualityTier(): QualityTier {
+    return selectQualityTier(this.device);
+  }
+
   /** 実機での挙動を確認するための現在値 */
   getDiagnostics(): EngineDiagnostics {
     const heap = MemoryWatchdog.readHeap();

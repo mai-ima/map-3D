@@ -12,6 +12,8 @@ export interface EnvironmentBarProps {
   imageryId: string;
   imagery: { id: string; label: string }[];
   qualityLabel: string;
+  /** 'auto' なら端末に応じて自動判定する */
+  qualityChoice: string;
   followRealTime: boolean;
   poiCategories: string[];
   furnitureEnabled: boolean;
@@ -23,7 +25,21 @@ export interface EnvironmentBarProps {
   onImageryChange: (id: string) => void;
   onTogglePoi: (category: string) => void;
   onToggleFurniture: () => void;
+  onQualityChange: (choice: string) => void;
 }
+
+/**
+ * 描画品質の手動切り替え。
+ *
+ * 端末の判定とメモリ監視で自動調整はするが、GPU の実力は取得できる情報だけでは
+ * 分からない。動作が重い・落ちるという場合に、利用者が自分で下げられるようにしておく。
+ */
+const QUALITY_CHOICES: { id: string; label: string }[] = [
+  { id: 'auto', label: '自動' },
+  { id: 'high', label: '高品質' },
+  { id: 'balanced', label: 'バランス' },
+  { id: 'low', label: '軽量' },
+];
 
 const TIME_PRESETS = [6, 9, 12, 17, 19, 22];
 const WEATHERS: { kind: string; label: string; iconName: IconName }[] = [
@@ -173,7 +189,23 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
             </Chip>
           </Section>
 
-          <p className="text-[11px] text-mist-500">描画品質: {props.qualityLabel}</p>
+          <Section title="描画品質">
+            <div className="flex flex-wrap gap-1.5">
+              {QUALITY_CHOICES.map((q) => (
+                <Chip
+                  key={q.id}
+                  active={props.qualityChoice === q.id}
+                  onClick={() => props.onQualityChange(q.id)}
+                >
+                  {q.label}
+                </Chip>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] text-mist-500">
+              現在: {props.qualityLabel}
+              {props.qualityChoice === 'auto' && '（端末に応じて自動調整）'}
+            </p>
+          </Section>
         </div>
       )}
     </div>

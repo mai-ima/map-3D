@@ -13,7 +13,7 @@ import type {
   TravelMode,
 } from '@ijm/shared';
 import { BASE_ATTRIBUTION_IDS, getDefaultCity, resolveAttributions } from '@ijm/shared';
-import type { MapEngine } from '@ijm/map-engine';
+import type { MapEngine, QualityTier } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
 import { Icon } from '@ijm/ui';
@@ -57,6 +57,7 @@ export default function AppShell() {
   const [weather, setWeather] = useState('clear');
   const [imageryId, setImageryId] = useState('seamlessphoto');
   const [qualityLabel, setQualityLabel] = useState('自動判定中');
+  const [qualityChoice, setQualityChoice] = useState('auto');
 
   const [poiCategories, setPoiCategories] = useState<string[]>([]);
   const [furnitureEnabled, setFurnitureEnabled] = useState(false);
@@ -118,6 +119,15 @@ export default function AppShell() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('debug') === '1') setShowDiagnostics(true);
+  }, []);
+
+  const handleQualityChange = useCallback((choice: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    setQualityChoice(choice);
+    // 'auto' は端末判定に戻す。それ以外は利用者の指定を優先する
+    engine.setQualityTier(choice === 'auto' ? engine.autoQualityTier : (choice as QualityTier));
+    setQualityLabel(engine.qualitySettings.label);
   }, []);
 
   const viewCenter = useCallback((): LatLng | null => {
@@ -475,6 +485,8 @@ export default function AppShell() {
               imageryId={imageryId}
               imagery={config?.imagery ?? []}
               qualityLabel={qualityLabel}
+              qualityChoice={qualityChoice}
+              onQualityChange={handleQualityChange}
               followRealTime={followRealTime}
               poiCategories={poiCategories}
               furnitureEnabled={furnitureEnabled}
