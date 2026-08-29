@@ -32,6 +32,7 @@ import EnvironmentBar from './EnvironmentBar';
 import NextTurnPanel from './NextTurnPanel';
 import SearchPanel, { type PlacePoint } from './SearchPanel';
 
+import DiagnosticsPanel from './DiagnosticsPanel';
 import ErrorBoundary from './ErrorBoundary';
 
 const MapCanvas = dynamic(() => import('./MapCanvas'), { ssr: false });
@@ -64,6 +65,8 @@ export default function AppShell() {
   const [buildingLoading, setBuildingLoading] = useState(false);
 
   const [aiOpen, setAiOpen] = useState(false);
+  // URL に ?debug=1 が付いているときだけ描画診断を出す
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessages, setAiMessages] = useState<ChatMessage[]>([]);
 
@@ -110,6 +113,12 @@ export default function AppShell() {
     },
     [],
   );
+
+  // ?debug=1 で描画診断パネルを表示する（実機での負荷を確認するため）
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('debug') === '1') setShowDiagnostics(true);
+  }, []);
 
   const viewCenter = useCallback((): LatLng | null => {
     return engineRef.current?.getViewCenter() ?? null;
@@ -424,6 +433,13 @@ export default function AppShell() {
           onError={notify}
         />
       </ErrorBoundary>
+
+      {showDiagnostics && (
+        <DiagnosticsPanel
+          engine={engineReady ? engineRef.current : null}
+          onClose={() => setShowDiagnostics(false)}
+        />
+      )}
 
       {navigating && (
         <NextTurnPanel

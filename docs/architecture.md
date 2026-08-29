@@ -380,23 +380,87 @@ interface AIProvider {
 
 ## 11. パフォーマンス戦略
 
-**端末ティア判定**（`packages/map-engine/quality.ts`）
-```
-iOS (iPhone 15/16/17 世代)     → tier "ios-high" : SSE 10, msaa 4, resolutionScale min(dpr,2.0),
-                                                    shadows on, cacheBytes 384MB
-デスクトップ (dGPU 相当)        → tier "high"     : SSE 8,  msaa 4, dpr 1.5, shadows on, 512MB
-その他モバイル / 低性能         → tier "low"      : SSE 24, msaa 1, dpr 1.0, shadows off, 128MB
-```
-判定は `navigator.userAgent`(iOS 判定) + `deviceMemory` + `WEBGL_debug_renderer_info` + 実測 FPS。
-起動後 5 秒の平均 FPS が 30 を下回ったら 1 段自動で下げる（**iOS は下げない**＝要件どおり品質維持）。
+### 11.1 メモリ予算（タブのクラッシュ対策）
 
-- 3D Tiles: `maximumScreenSpaceError`, `cacheBytes`, `maximumCacheOverflowBytes`,
-  `cullWithChildrenBounds:true`, `cullRequestsWhileMoving:true`, `preloadWhenHidden:false`,
-  `preferLeaves:true`, `skipLevelOfDetail`（ナビ中のみ有効化してポップを抑制）
-- **地理的オンデマンド**: 都市レジストリの bbox 単位でタイルセットを attach/detach。カメラが都市 bbox から
-  一定距離離れたら `destroy()` して GPU メモリを解放する。**起動時に日本全国は読まない**
+ブラウザのタブには使用メモリの上限があり（iOS Safari は 1GB 前後、デスクトップ Chrome でも
+GPU メモリを含めれば有限）、超えるとページごと強制終了される。PLATEAU LOD2 はテクスチャ付きで
+非常に重いため、設計の出発点は「見た目の精細さ」ではなく「落ちないメモリ量」に置く。
+
+ここで重要なのは、**`cacheBytes` は「現在の視界に不要なタイル」しか切り詰めない**という点。
+視界に必要なタイルはキャッシュ上限に関係なく読み込まれるので、
+キャッシュ設定だけではメモリ使用量を抑えられない。視界そのものを絞る必要がある。
+
+| 設定 | 役割 |
+| --- | --- |
+| `maximumScreenSpaceError` | 建物の分割深度。Cesium 既定は 16。本アプリは 10〜18 |
+| `viewDistance`（カメラ far） | 描画距離。既定は事実上無制限なので 6〜16km に制限し、遠方は霧で減衰 |
+| `adaptiveScreenSpaceError()` | カメラ高度に応じて近景 LOD2 の精細度を切り替える |
+| `maxDrawPixels` | 描画バッファの総ピクセル数。MSAA・HDR の中間バッファも同倍率で効く |
+| `resolveMemoryBudget()` | `navigator.deviceMemory` から実際のキャッシュ上限を算出 |
+| `RequestScheduler` の同時数 | 復号待ちタイルの積み上がりを防ぐ（モバイル 12 / デスクトップ 18） |
+
+**カメラ高度による精細度の切り替え**（`adaptiveScreenSpaceError`）
+
+上空から街全体を見ているときに地上と同じ精細度で建物を読むと、視界内のタイルが数千枚規模になる。
+高所では遠景タイルセット（LOD1）が街並みを担うので、近景（LOD2）は粗くしてよい。
+
+```
+高度 < 300m   → 基準どおり（街を歩く視点。ここが最高精細）
+高度 < 800m   → 基準 × 1.6
+高度 < 2000m  → 基準 × 3
+高度 < 6000m  → 基準 × 6
+それ以上      → 基準 × 10（上限 96）
+```
+
+### 11.2 端末ティア判定（`packages/map-engine/quality.ts`）
+
+```
+iOS (iPhone 15/16/17 世代)  → "ios-high" : SSE 12, msaa 2, dpr 上限 2.0, cache 160MB, 描画距離 12km
+デスクトップ (dGPU 相当)     → "high"     : SSE 10, msaa 2, dpr 上限 1.5, cache 320MB, 描画距離 16km
+その他モバイル / 中位端末    → "balanced" : SSE 18, msaa 2, dpr 上限 1.25, cache 128MB, 描画距離 9km
+低性能端末                   → "low"      : SSE 28, msaa 1, dpr 上限 1.0, cache 64MB,  描画距離 6km
+```
+
+いずれも Cesium 既定の SSE 16 と同等以上の精細度を保っている。
+判定は `navigator.userAgent`（iOS 判定）+ `deviceMemory` + `hardwareConcurrency` +
+`WEBGL_debug_renderer_info`。実測 FPS が 28 を下回ったら 1 段下げる
+（FPS 起因では **iOS は下げない**＝要件どおり品質維持）。
+
+### 11.3 メモリ監視と段階的な退避（`MemoryWatchdog`）
+
+FPS ではなく実メモリを見る。判断材料は 3D Tiles の実使用量（全ブラウザで取得可）と
+JS ヒープ（`performance.memory`、Chromium 系のみ）。逼迫時は影響の小さい順に手を打つ。
+
+```
+1) 画面外タイルの解放 + キャッシュ縮小
+2) 遠景タイルセットの破棄（近景の街並みは残る）
+3) 重いポストプロセス（HDR・環境光遮蔽・ブルーム）を切る
+4) 精細度（SSE）を上げる
+5) 品質ティアを 1 段階下げる
+```
+
+**メモリ起因のときは iOS でも品質を下げる。** タブごと落ちるよりは品質を落とす方がよいため、
+要件の「iOS は品質維持」より安定性を優先する。
+
+### 11.4 障害時の受け皿
+
+- `webglcontextlost` / `webglcontextrestored` を捕捉し、復旧を案内する UI を表示
+- `ErrorBoundary` により、例外時も白画面ではなく再試行 UI を出す
+- 初期化は「先にカメラを街へ移動 → 地形 → 建物」の順。
+  データ取得を待ってから動かすと、取得が遅い・失敗したときに地球を遠望した画面で止まる
+- `?debug=1` で描画診断パネルを表示（品質ティア・カメラ高度・適用 SSE・タイル使用量・
+  JS ヒープ・FPS）。クラッシュの再現条件は端末と回線に依存するため、実機で数値を見られるようにする
+
+### 11.5 その他
+
+- 3D Tiles: `cullWithChildrenBounds`, `cullRequestsWhileMoving`, `preloadWhenHidden:false`,
+  `preferLeaves`（近景のみ）, `dynamicScreenSpaceError`, `foveatedScreenSpaceError`。
+  `skipLevelOfDetail` は **無効**（有効にすると一時的に高精細タイルを大量に抱えてメモリが跳ねる）
+- **地理的オンデマンド**: 都市レジストリの bbox 単位でタイルセットを attach/detach。
+  都市を切り替えたら前の都市を破棄して GPU メモリを解放する。**起動時に日本全国は読まない**
+- 地形側も `globe.maximumScreenSpaceError` / `tileCacheSize` / `preloadSiblings:false` で制限
 - `requestRenderMode: true`（静止時）。ナビ中・アニメーション中のみ連続描画
-- POI/Overpass 結果は BFF 側で bbox+category キーの LRU キャッシュ + `s-maxage` 付きレスポンス
+- POI/Overpass 結果は BFF 側で bbox+category キーのキャッシュ + `s-maxage` 付きレスポンス
 - ルート形状は polyline6 のまま転送し、クライアントで展開
 
 ---

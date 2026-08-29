@@ -145,6 +145,12 @@ export class BuildingLayerManager {
     this.loaded = null;
   }
 
+  /** 近景タイルセットの精細度だけを差し替える（カメラ高度に応じた制御用） */
+  setNearScreenSpaceError(sse: number): void {
+    if (!this.loaded) return;
+    this.loaded.near.maximumScreenSpaceError = sse;
+  }
+
   /** 読み込み済みタイルセットが実際に使っているメモリ量 (byte) */
   get totalMemoryUsageInBytes(): number {
     return this.tilesets.reduce((sum, t) => {

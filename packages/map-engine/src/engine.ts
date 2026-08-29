@@ -21,6 +21,7 @@ import { StreetFurnitureLayer, type FurniturePoint } from './street-furniture';
 import {
   MemoryWatchdog,
   PerformanceWatchdog,
+  adaptiveScreenSpaceError,
   computeResolutionScale,
   degradeTier,
   detectDevice,
@@ -66,6 +67,32 @@ export interface CameraTarget {
   duration?: number;
 }
 
+/**
+ * 実機での挙動を確かめるための診断情報。
+ * クラッシュの再現条件は端末とネットワークに強く依存するため、
+ * 実際に動かしている環境で数値を見られるようにしておく。
+ */
+export interface EngineDiagnostics {
+  tier: QualityTier;
+  /** プリセット上の精細度 */
+  baseScreenSpaceError: number;
+  /** カメラ高度に応じて実際に適用されている精細度 */
+  appliedScreenSpaceError: number;
+  /** メモリ逼迫で上乗せされた係数 */
+  detailPenalty: number;
+  cameraHeightM: number;
+  viewDistanceM: number;
+  resolutionScale: number;
+  /** 3D Tiles が使っているメモリ */
+  tileMemoryMb: number;
+  cacheLimitMb: number;
+  /** JS ヒープ（Chromium 系のみ取得できる） */
+  heapUsedMb: number | null;
+  heapLimitMb: number | null;
+  fps: number;
+  farTilesetLoaded: boolean;
+}
+
 export interface BuildingPickResult {
   position: LatLng;
   attributes: Record<string, unknown>;
@@ -99,6 +126,12 @@ export class MapEngine {
   private removeContextListeners: (() => void) | null = null;
   private removeMemoryMonitor: (() => void) | null = null;
   private lastMemoryCheck = 0;
+  private lastAdaptiveSse = 0;
+  private fps = 0;
+  private fpsLastSample = 0;
+  private fpsFrames = 0;
+  /** メモリ逼迫で上乗せする精細度の係数（1 = そのまま） */
+  private detailPenalty = 1;
   private session: NavigationSession | null = null;
   private navigating = false;
   private useRealPosition = false;
@@ -120,6 +153,12 @@ export class MapEngine {
       // ion を使わない構成。既定トークンによる不要なリクエストを避ける。
       Cesium.Ion.defaultAccessToken = '';
     }
+
+    // 同時リクエストが多すぎると、復号待ちのタイルがメモリ上に積み上がる。
+    // 回線が速いほど積み上がりやすいので、上限を絞って流量を平準化する。
+    Cesium.RequestScheduler.maximumRequests = this.device.isMobile ? 12 : 18;
+    Cesium.RequestScheduler.maximumRequestsPerServer = this.device.isMobile ? 6 : 8;
+    Cesium.RequestScheduler.throttleRequests = true;
 
     const imagery = getImagery(options.imageryId ?? DEFAULT_IMAGERY_ID);
 
@@ -165,6 +204,7 @@ export class MapEngine {
     this.applyResolutionScale();
 
     this.applyGlobeQuality();
+    this.applyViewDistance();
     this.viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
     // 地表付近まで寄れるようにする（街を歩く体験のため）
     this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
@@ -199,8 +239,20 @@ export class MapEngine {
   }
 
   private async initialize(options: MapEngineOptions): Promise<void> {
-    await this.setTerrain(options.terrainUrl ?? PLATEAU_TERRAIN_URL);
     const city = options.city ?? getDefaultCity();
+
+    // 先にカメラを目的の街へ移動させる。
+    // 地形や建物の取得を待ってから動かすと、回線が遅いときや取得に失敗したときに
+    // 地球を遠くから見たままの画面で止まってしまう。
+    // カメラ位置が決まっていれば、Cesium は必要な範囲のタイルだけを取りにいく。
+    this.flyTo({
+      position: city.center,
+      height: city.initialHeight,
+      pitch: -35,
+      duration: 0,
+    });
+
+    await this.setTerrain(options.terrainUrl ?? PLATEAU_TERRAIN_URL);
 
     // 建物タイルセットが落ちていても、地形・ベースマップ・ルート表示は成立させる
     try {
@@ -208,13 +260,6 @@ export class MapEngine {
     } catch (error) {
       console.warn('[map-engine] 3D 建物データの読み込みに失敗しました', error);
     }
-
-    this.flyTo({
-      position: city.center,
-      height: city.initialHeight,
-      pitch: -35,
-      duration: 0,
-    });
   }
 
   // ---- 基本設定 --------------------------------------------------------
@@ -276,12 +321,49 @@ export class MapEngine {
     this.viewer.scene.msaaSamples = this.quality.msaaSamples;
     this.applyResolutionScale();
     this.applyGlobeQuality();
+    this.applyViewDistance();
     this.viewer.shadows = this.quality.shadows;
     this.viewer.scene.postProcessStages.fxaa.enabled = this.quality.fxaa;
     this.buildings.updateQuality(this.quality);
     this.furniture.setMaxItems(this.quality.maxFurniture);
     this.options.onQualityChange?.(this.quality);
     this.requestRender();
+  }
+
+  /**
+   * 描画距離を制限する。
+   *
+   * Cesium の既定 far は事実上無制限で、地平線までのタイルがすべて読み込み対象になる。
+   * 3D Tiles のキャッシュ上限は「視界に不要なタイル」しか切り詰めないため、
+   * 視界そのものを絞らないとメモリ使用量は下がらない。
+   * 遠方は霧で減衰しているので、切っても見た目の違和感は出ない。
+   */
+  private applyViewDistance(): void {
+    const frustum = this.viewer.camera.frustum;
+    if (frustum instanceof Cesium.PerspectiveFrustum) {
+      frustum.far = this.quality.viewDistance;
+    }
+  }
+
+  /** 実機での挙動を確認するための現在値 */
+  getDiagnostics(): EngineDiagnostics {
+    const heap = MemoryWatchdog.readHeap();
+    const toMb = (bytes: number): number => Math.round((bytes / 1024 / 1024) * 10) / 10;
+    return {
+      tier: this.qualityTier,
+      baseScreenSpaceError: this.quality.screenSpaceError,
+      appliedScreenSpaceError: this.lastAdaptiveSse || this.quality.screenSpaceError,
+      detailPenalty: Math.round(this.detailPenalty * 100) / 100,
+      cameraHeightM: Math.round(this.viewer.camera.positionCartographic?.height ?? 0),
+      viewDistanceM: this.quality.viewDistance,
+      resolutionScale: Math.round(this.viewer.resolutionScale * 100) / 100,
+      tileMemoryMb: toMb(this.buildings.totalMemoryUsageInBytes),
+      cacheLimitMb: toMb(this.quality.cacheBytes),
+      heapUsedMb: heap ? toMb(heap.used) : null,
+      heapLimitMb: heap ? toMb(heap.limit) : null,
+      fps: this.fps,
+      farTilesetLoaded: this.buildings.tilesets.length > 1,
+    };
   }
 
   /** 地形・ベースマップ側のメモリ設定を反映する */
@@ -318,13 +400,14 @@ export class MapEngine {
    * いきなり品質ティアを落とすと見た目が大きく変わるため、影響の小さい順に手を打つ。
    *   1) 画面外タイルの解放＋キャッシュ縮小
    *   2) 遠景タイルセットの破棄（近景の街並みは残る）
-   *   3) 精細度（SSE）を上げる
-   *   4) 最後に品質ティアを 1 段階下げる
+   *   3) 重いポストプロセス（HDR・環境光遮蔽・ブルーム）を切る
+   *   4) 精細度（SSE）を上げる
+   *   5) 最後に品質ティアを 1 段階下げる
    */
   private relieveMemoryPressure(report: MemoryPressureReport): void {
     this.options.onMemoryPressure?.(report);
     const step = report.level === 'critical' ? this.memoryReliefStep + 1 : this.memoryReliefStep;
-    this.memoryReliefStep = Math.min(step + 1, 4);
+    this.memoryReliefStep = Math.min(step + 1, 5);
 
     switch (this.memoryReliefStep) {
       case 1:
@@ -335,21 +418,29 @@ export class MapEngine {
         if (!this.buildings.dropFarTileset()) this.memoryReliefStep = 3;
         break;
       case 3:
-        this.quality = {
-          ...this.quality,
-          screenSpaceError: Math.min(32, Math.round(this.quality.screenSpaceError * 1.5)),
-        };
-        this.buildings.updateQuality(this.quality);
+        // HDR・環境光遮蔽・ブルームは画面サイズの中間バッファを何枚も持つ。
+        // 画面が大きいほど効くので、精細度より先にこちらを切る
+        this.environment.setHeavyEffectsEnabled(false);
+        this.buildings.relieveMemoryPressure(0.6);
+        break;
+
+      case 4:
+        // 視界内に必要なタイルはキャッシュ上限では減らせないので、精細度そのものを落とす
+        this.detailPenalty = Math.min(4, this.detailPenalty * 1.8);
+        this.lastAdaptiveSse = 0;
+        this.updateAdaptiveDetail();
         this.buildings.relieveMemoryPressure(0.6);
         break;
       default:
+        this.detailPenalty = Math.min(6, this.detailPenalty * 1.5);
+        this.lastAdaptiveSse = 0;
         this.buildings.relieveMemoryPressure(0.5);
         this.degradeQuality(true);
         break;
     }
 
     console.warn(
-      `[map-engine] メモリ使用量が上限に近づいたため描画負荷を下げました (段階 ${this.memoryReliefStep}/4, タイル ${(report.tileBytes / 1024 / 1024).toFixed(0)}MB)`,
+      `[map-engine] メモリ使用量が上限に近づいたため描画負荷を下げました (段階 ${this.memoryReliefStep}/5, タイル ${(report.tileBytes / 1024 / 1024).toFixed(0)}MB)`,
     );
     this.requestRender();
   }
@@ -361,11 +452,40 @@ export class MapEngine {
   private setupMemoryMonitor(): void {
     const remove = this.viewer.scene.postRender.addEventListener(() => {
       const now = Date.now();
-      if (now - this.lastMemoryCheck < 1000) return;
+      this.fpsFrames += 1;
+      if (now - this.fpsLastSample >= 1000) {
+        this.fps = Math.round((this.fpsFrames * 1000) / (now - this.fpsLastSample));
+        this.fpsFrames = 0;
+        this.fpsLastSample = now;
+      }
+      if (now - this.lastMemoryCheck < 500) return;
       this.lastMemoryCheck = now;
+      this.updateAdaptiveDetail();
       this.memoryWatchdog.check(this.buildings.totalMemoryUsageInBytes, now);
     });
     this.removeMemoryMonitor = remove;
+  }
+
+  /**
+   * カメラ高度に応じて近景タイルセットの精細度を切り替える。
+   *
+   * 上空から街全体を見ているときは視界に入る建物が桁違いに多く、
+   * 地上と同じ精細度で読み込むと視界内タイルだけでメモリを使い切ってしまう。
+   * 高いところでは遠景タイルセット（LOD1）が街並みを担うので、
+   * 近景（LOD2）は粗くしてよい。
+   */
+  private updateAdaptiveDetail(): void {
+    const height = this.viewer.camera.positionCartographic?.height;
+    if (!Number.isFinite(height)) return;
+
+    const target = Math.min(
+      96,
+      Math.round(adaptiveScreenSpaceError(this.quality.screenSpaceError, height) * this.detailPenalty),
+    );
+    // 微小な変化で毎回書き換えるとタイルの読み直しが起きるため、差が出たときだけ反映する
+    if (Math.abs(target - this.lastAdaptiveSse) < 1) return;
+    this.lastAdaptiveSse = target;
+    this.buildings.setNearScreenSpaceError(target);
   }
 
   /**

@@ -71,8 +71,10 @@ test('描画解像度は総ピクセル数で頭打ちになる', () => {
   assert.ok(desktop < q.resolutionScale);
   assert.ok(1920 * 1080 * desktop * desktop <= q.maxDrawPixels * 1.001);
 
-  // 1.0 は下回らない（下回ると目に見えて粗くなる）
-  assert.ok(computeResolutionScale(q, 5120, 2880, 2) >= 1);
+  // 画素数の多いディスプレイでは等倍より下げてでも上限を守る
+  const retina5k = computeResolutionScale(q, 5120, 2880, 2);
+  assert.ok(retina5k < 1);
+  assert.ok(retina5k >= 0.6);
 });
 
 test('forceDegradeTier は iOS も 1 段階下げる', () => {

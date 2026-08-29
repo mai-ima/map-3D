@@ -48,6 +48,15 @@ export interface QualitySettings {
   maxFurniture: number;
   /** 遠景タイルセットを使うか */
   useFarTileset: boolean;
+  /**
+   * 描画する最大距離 (m)。
+   *
+   * Cesium の既定は事実上無制限で、地平線までの全タイルが読み込み対象になる。
+   * cacheBytes は「現在の視界に不要なタイル」しか切り詰めないため、
+   * 視界そのものを絞らないと読み込み量は減らせない。
+   * 遠方は霧で自然に減衰させるので、見た目の違和感は出ない。
+   */
+  viewDistance: number;
   label: string;
 }
 
@@ -65,6 +74,7 @@ export interface QualitySettings {
 const PRESETS: Record<QualityTier, QualitySettings> = {
   high: {
     tier: 'high',
+    viewDistance: 16000,
     globeScreenSpaceError: 2.0,
     globeTileCacheSize: 260,
     // 建物のディテールを優先しつつ、タイル数が発散しない範囲に収める
@@ -72,7 +82,9 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     farScreenSpaceError: 48,
     cacheBytes: 320 * 1024 * 1024,
     maximumCacheOverflowBytes: 96 * 1024 * 1024,
-    msaaSamples: 4,
+    // MSAA 4x は HDR の float バッファと掛け合わさってメモリを大きく食う。
+    // 2x でも輪郭の粗さはほぼ気にならないので、安定側に振る。
+    msaaSamples: 2,
     resolutionScale: 1.5,
     maxDrawPixels: 4_200_000,
     shadows: true,
@@ -91,6 +103,7 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     // iPhone 17 世代を想定。Retina の精細さは活かすが、iOS Safari のメモリ上限が
     // デスクトップよりずっと低いため、キャッシュと描画ピクセル数は明確に制限する。
     tier: 'ios-high',
+    viewDistance: 12000,
     globeScreenSpaceError: 2.5,
     globeTileCacheSize: 160,
     screenSpaceError: 12,
@@ -114,6 +127,7 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
   },
   balanced: {
     tier: 'balanced',
+    viewDistance: 9000,
     globeScreenSpaceError: 3.0,
     globeTileCacheSize: 140,
     screenSpaceError: 18,
@@ -137,6 +151,7 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
   },
   low: {
     tier: 'low',
+    viewDistance: 6000,
     globeScreenSpaceError: 4.0,
     globeTileCacheSize: 100,
     screenSpaceError: 28,
@@ -260,8 +275,10 @@ export function computeResolutionScale(
   const scale = Math.min(devicePixelRatio || 1, settings.resolutionScale);
   const area = Math.max(1, cssWidth * cssHeight);
   const maxScale = Math.sqrt(settings.maxDrawPixels / area);
-  // 1.0 を下回ると目に見えて粗くなるので、そこは下限として守る
-  return Math.max(1, Math.min(scale, maxScale));
+  // 4K など画素数の多いディスプレイでは等倍でもフレームバッファが数百 MB になる。
+  // MSAA と HDR の中間バッファも同じ倍率で効くため、等倍より下も許す。
+  // UI は React 側の DOM なので、ここを下げても文字がぼやけることはない。
+  return Math.max(0.6, Math.min(scale, maxScale));
 }
 
 export function getQualitySettings(tier: QualityTier): QualitySettings {
@@ -400,4 +417,30 @@ export class MemoryWatchdog {
     }
     return report;
   }
+}
+
+
+/**
+ * カメラ高度に応じた「近景タイルセットの精細度」を返す。
+ *
+ * 上空から街全体を見ているときに地上と同じ精細度で建物を読み込むと、
+ * 視界内のタイルが数千枚規模になりメモリを使い切る。
+ * 高いところでは遠景タイルセット（LOD1）が街並みを担うので、
+ * 近景（LOD2）の精細度は落として構わない。
+ *
+ * @param base 品質プリセットの screenSpaceError
+ * @param heightMeters カメラの対地高度
+ */
+export function adaptiveScreenSpaceError(base: number, heightMeters: number): number {
+  const factor =
+    heightMeters < 300
+      ? 1 // 街を歩く視点。ここが最高精細
+      : heightMeters < 800
+        ? 1.6
+        : heightMeters < 2000
+          ? 3
+          : heightMeters < 6000
+            ? 6
+            : 10;
+  return Math.min(96, Math.round(base * factor));
 }

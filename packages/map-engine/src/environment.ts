@@ -151,7 +151,9 @@ export class EnvironmentController {
     globe.dynamicAtmosphereLightingFromSun = true;
     // 地形に対する深度テストを有効にしないと、地面下の線が透けて見える
     globe.depthTestAgainstTerrain = true;
-    globe.maximumScreenSpaceError = this.quality.tier === 'low' ? 4 : 2;
+    // engine 側の applyGlobeQuality と同じ値を使う（片方だけ上書きすると設定が食い違う）
+    globe.maximumScreenSpaceError = this.quality.globeScreenSpaceError;
+    globe.tileCacheSize = this.quality.globeTileCacheSize;
 
     if (scene.skyAtmosphere) scene.skyAtmosphere.show = true;
     scene.fog.enabled = true;
@@ -300,6 +302,30 @@ export class EnvironmentController {
     }
   }
 
+  /**
+   * メモリが逼迫したときに、重いポストプロセスをまとめて切る。
+   *
+   * HDR は浮動小数点のフレームバッファを使い、環境光遮蔽とブルームは
+   * さらに画面サイズの中間バッファを何枚も持つ。画面が大きいほど効いてくるので、
+   * タブが落ちそうなときはここを落とすのが最も確実にメモリを空けられる。
+   */
+  setHeavyEffectsEnabled(enabled: boolean): void {
+    const scene = this.viewer.scene;
+    try {
+      scene.highDynamicRange = enabled && this.quality.hdr;
+    } catch {
+      /* 未対応環境では無視 */
+    }
+    scene.postProcessStages.ambientOcclusion.enabled = enabled && this.quality.ambientOcclusion;
+    scene.postProcessStages.bloom.enabled = enabled && this.quality.bloom;
+    // ポストプロセスを切ると輪郭が粗く見えるので、代わりに FXAA を入れる
+    scene.postProcessStages.fxaa.enabled = enabled ? this.quality.fxaa : true;
+    if (this.viewer.shadowMap) {
+      this.viewer.shadowMap.softShadows = enabled && this.quality.softShadows;
+      this.viewer.shadowMap.size = enabled ? (this.quality.tier === 'low' ? 1024 : 2048) : 1024;
+    }
+  }
+
   destroy(): void {
     if (this.weatherStage) {
       this.viewer.scene.postProcessStages.remove(this.weatherStage);
@@ -307,3 +333,4 @@ export class EnvironmentController {
     }
   }
 }
+
