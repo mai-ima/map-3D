@@ -42,7 +42,8 @@ export class NavigationSession {
     const cumulative = cumulativeDistances(route.coordinates);
     this.follower = new RouteFollower(route, options);
     this.planner = new ManeuverPlanner(route, cumulative);
-    this.camera = new NavigationCamera();
+    // 経路の移動手段に合わせて視点の高さと距離を決める
+    this.camera = new NavigationCamera({ mode: route.mode });
   }
 
   /** 既定のシミュレーション速度（移動手段から決める） */

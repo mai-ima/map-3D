@@ -13,7 +13,7 @@
  *   any --(ユーザー操作)--> FREE_LOOK --(6秒無操作)--> 直前の状態
  */
 
-import type { CameraPose, LatLng } from '@ijm/shared';
+import type { CameraPose, LatLng, TravelMode } from '@ijm/shared';
 import { angleDelta, clamp, lerp, lerpAngle, smoothDamp, smoothDampAngle } from '@ijm/shared';
 import { isTurn } from './maneuver-planner';
 import type { ManeuverOutlook, NavigationCameraState, RouteProgress } from './types';
@@ -41,6 +41,43 @@ export const CAMERA_PROFILES: Record<Exclude<NavigationCameraState, 'FREE_LOOK'>
   ARRIVAL: { range: 45, height: 60, pitch: -55, fov: 60, lookAhead: 10, smoothTime: 1.0 },
 };
 
+/**
+ * 移動手段ごとのカメラ倍率。
+ *
+ * 基準プロファイルは車を想定している。同じ高さのまま徒歩を案内すると、
+ * ビルの屋上から自分を見下ろすような画になり、街を歩いている感覚が出ない。
+ * 実際の視点に近づけるほど、周りの建物が視界に入って没入感が上がる。
+ *
+ *   徒歩     … 目線よりやや高い程度（7〜8m）。建物が両脇に立ち上がって見える
+ *   自転車   … 徒歩と車の中間
+ *   車       … 基準（車体の少し後ろ上）
+ *   公共交通 … 経路が長く駅間が飛ぶので、俯瞰寄りにして全体を把握しやすくする
+ */
+export const MODE_CAMERA_SCALE: Record<
+  TravelMode,
+  { range: number; height: number; pitchFactor: number; lookAhead: number }
+> = {
+  walk: { range: 0.45, height: 0.28, pitchFactor: 0.72, lookAhead: 0.5 },
+  bicycle: { range: 0.65, height: 0.5, pitchFactor: 0.85, lookAhead: 0.7 },
+  drive: { range: 1, height: 1, pitchFactor: 1, lookAhead: 1 },
+  transit: { range: 1.3, height: 1.5, pitchFactor: 1.15, lookAhead: 1.2 },
+  multimodal: { range: 1.1, height: 1.2, pitchFactor: 1.05, lookAhead: 1.1 },
+};
+
+/** 移動手段に合わせてプロファイルを調整する */
+export function scaleProfile(profile: CameraProfile, mode: TravelMode): CameraProfile {
+  const scale = MODE_CAMERA_SCALE[mode] ?? MODE_CAMERA_SCALE.drive;
+  return {
+    ...profile,
+    range: profile.range * scale.range,
+    // 低くしすぎると地形や建物にカメラがめり込むので下限を設ける
+    height: Math.max(4, profile.height * scale.height),
+    // 低い位置からは浅い俯角の方が自然（真下を向くと足元しか見えない）
+    pitch: Math.max(-80, profile.pitch * scale.pitchFactor),
+    lookAhead: profile.lookAhead * scale.lookAhead,
+  };
+}
+
 export interface NavigationCameraOptions {
   /** APPROACH_TURN に入る距離 (m) */
   approachDistance?: number;
@@ -52,6 +89,8 @@ export interface NavigationCameraOptions {
   freeLookTimeout?: number;
   /** 交差点が複雑と判断する閾値 */
   intersectionComplexityThreshold?: number;
+  /** 移動手段。カメラの高さと距離を合わせる */
+  mode?: TravelMode;
 }
 
 export interface CameraUpdateInput {
@@ -90,6 +129,7 @@ export class NavigationCamera {
   private currentFov = CAMERA_PROFILES.FOLLOW.fov;
   private currentHeading = 0;
   private currentTarget: LatLng | null = null;
+  private mode: TravelMode = 'walk';
 
   private vRange = { value: 0 };
   private vHeight = { value: 0 };
@@ -99,7 +139,14 @@ export class NavigationCamera {
   private vLat = { value: 0 };
   private vLng = { value: 0 };
 
-  constructor(private readonly options: NavigationCameraOptions = {}) {}
+  constructor(private readonly options: NavigationCameraOptions = {}) {
+    this.mode = options.mode ?? 'walk';
+  }
+
+  /** 案内中に移動手段が変わったときに追従させる */
+  setMode(mode: TravelMode): void {
+    this.mode = mode;
+  }
 
   get currentState(): NavigationCameraState {
     return this.state;
@@ -168,9 +215,12 @@ export class NavigationCamera {
     }
 
     const profileState = this.state === 'FREE_LOOK' ? this.previousState : this.state;
-    const profile =
+    const base =
       CAMERA_PROFILES[profileState as Exclude<NavigationCameraState, 'FREE_LOOK'>] ??
       CAMERA_PROFILES.FOLLOW;
+    // 徒歩を車と同じ高さで案内すると、屋上から自分を見下ろす画になる。
+    // 移動手段に合わせて視点の高さと距離を変える
+    const profile = scaleProfile(base, this.mode);
 
     // 速度に応じて追従距離を伸縮（徒歩と自動車で見え方を変える）
     const speedScale = clamp(0.8 + progress.speed / 14, 0.8, 1.6);

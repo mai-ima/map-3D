@@ -120,6 +120,10 @@ export default function AppShell() {
       setEngineReady(true);
       setQualityLabel(engine.qualitySettings.label);
       engine.setTimeOfDay(12);
+      // 起動時の都市が高架モデルを持たない場合も、街の骨格を見せる
+      if (city.texturedBuildings === false) {
+        void loadStructuresForView(3500);
+      }
     },
     [],
   );
@@ -220,19 +224,34 @@ export default function AppShell() {
       const engine = engineRef.current;
       if (!engine) return;
       setCity(next);
+      engine.clearElevatedStructures();
+      setStructuresEnabled(false);
+
+      // カメラ移動は建物データと無関係なので、先に動かす。
+      // 建物の取得を待ってから動かすと、取得に失敗したときに
+      // 前の都市を見たまま止まってしまう。
+      engine.flyTo({
+        position: next.center,
+        height: next.initialHeight,
+        pitch: -40,
+        duration: 2.5,
+      });
+
       try {
         await engine.loadCity(next);
-        engine.flyTo({
-          position: next.center,
-          height: next.initialHeight,
-          pitch: -40,
-          duration: 2.5,
-        });
       } catch (error) {
         notify(`${next.name} の 3D 都市データを読み込めませんでした: ${(error as Error).message}`);
       }
+
+      // 高架は建物とは別のデータ源（OSM）なので、建物が読めなくても出せる。
+      // PLATEAU に橋梁モデルが無い都市では、これが無いと街の骨格が抜け落ちる。
+      if (next.texturedBuildings === false) {
+        void loadStructuresForView(3000);
+      }
     },
-    [notify],
+    // notify と loadStructuresForView は再生成されない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   );
 
   const focusPlace = useCallback((place: PlacePoint) => {
@@ -276,6 +295,35 @@ export default function AppShell() {
     [notify, poiCategories],
   );
 
+  /**
+   * 表示範囲の高架・橋を読み込む。
+   *
+   * 都市の切り替え直後は建物タイルの取得が集中しているので、
+   * 少し待ってから始める（同時に走らせると初期表示が遅くなる）。
+   */
+  const loadStructuresForView = useCallback(async (delayMs = 0) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+
+    // 画面いっぱいの範囲は斜め見下ろしだと数十 km 四方になり、API 側で弾かれる。
+    // カメラ周辺 1.5km に切って確実に取得する
+    const bbox = engine.getSurroundingBBox(1500);
+    if (!bbox) return;
+
+    setStructuresLoading(true);
+    try {
+      const res = await fetchStructures(bbox);
+      if (res.structures.length === 0) return;
+      await engine.showElevatedStructures(res.structures, bbox.join(','));
+      setStructuresEnabled(true);
+    } catch {
+      // 構造物が出なくても地図とナビは成立する
+    } finally {
+      setStructuresLoading(false);
+    }
+  }, []);
+
   const toggleStructures = useCallback(async () => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -286,7 +334,7 @@ export default function AppShell() {
       return;
     }
 
-    const bbox = engine.getViewBBox();
+    const bbox = engine.getSurroundingBBox(1500);
     if (!bbox) {
       notify('表示範囲を特定できませんでした。ズームインしてください。');
       return;

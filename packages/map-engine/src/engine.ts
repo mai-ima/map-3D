@@ -7,7 +7,7 @@
 
 import * as Cesium from 'cesium';
 import type { City, District, ElevatedStructure, LatLng, Poi, Route } from '@ijm/shared';
-import { PLATEAU_TERRAIN_URL, bboxExpand, getDefaultCity } from '@ijm/shared';
+import { PLATEAU_TERRAIN_URL, bboxAround, bboxExpand, getDefaultCity } from '@ijm/shared';
 import { DEFAULT_IMAGERY_ID, GSI_IMAGERY, categoryIcon, getImagery } from '@ijm/gis';
 import {
   NavigationSession,
@@ -997,6 +997,26 @@ export class MapEngine {
       Cesium.Math.toDegrees(rect.north),
     ];
     return marginMeters > 0 ? bboxExpand(bbox, marginMeters) : bbox;
+  }
+
+  /**
+   * 周辺データ（高架・街路樹など）を要求するための範囲。
+   *
+   * 画面に映っている範囲そのもの（computeViewRectangle）は、斜め見下ろしだと
+   * 描画距離いっぱいまで広がって数十 km 四方になることがあり、
+   * OSM 系の API が受け付ける上限を超えてしまう。
+   * カメラ直下から一定半径に切り、確実に取得できる大きさにする。
+   */
+  getSurroundingBBox(radiusMeters = 1500): [number, number, number, number] | null {
+    const carto = this.viewer.camera.positionCartographic;
+    if (!carto) return null;
+    return bboxAround(
+      {
+        lat: Cesium.Math.toDegrees(carto.latitude),
+        lng: Cesium.Math.toDegrees(carto.longitude),
+      },
+      radiusMeters,
+    );
   }
 
   requestRender(): void {

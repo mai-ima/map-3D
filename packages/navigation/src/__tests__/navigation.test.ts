@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { Route } from '@ijm/shared';
 import { cumulativeDistances } from '@ijm/shared';
 import { ManeuverPlanner, formatDistance } from '../maneuver-planner';
-import { NavigationCamera } from '../navigation-camera';
+import { CAMERA_PROFILES, NavigationCamera, scaleProfile } from '../navigation-camera';
 import { RouteFollower } from '../route-follower';
 import { NavigationSession } from '../session';
 
@@ -200,4 +200,33 @@ test('距離表示のフォーマット', () => {
   assert.equal(formatDistance(5), 'まもなく');
   assert.equal(formatDistance(84), '80m');
   assert.equal(formatDistance(1500), '1.5km');
+});
+
+test('移動手段に応じてカメラの視点が変わる', () => {
+  const base = CAMERA_PROFILES.FOLLOW;
+
+  const walk = scaleProfile(base, 'walk');
+  const drive = scaleProfile(base, 'drive');
+  const transit = scaleProfile(base, 'transit');
+
+  // 徒歩は目線に近い高さにする。車と同じ高さだと屋上から見下ろす画になる
+  assert.ok(walk.height < drive.height, '徒歩は車より低い視点');
+  assert.ok(walk.height <= 10, `徒歩の視点が高すぎる (${walk.height}m)`);
+  assert.ok(walk.range < drive.range, '徒歩は車より近くから追う');
+
+  // 低い位置から真下を向くと足元しか見えないので、俯角は浅くする
+  assert.ok(walk.pitch > drive.pitch, '徒歩は俯角を浅くする');
+
+  // 公共交通は駅間が飛ぶので俯瞰寄り
+  assert.ok(transit.height > drive.height, '公共交通は俯瞰寄り');
+
+  // 地形や建物にめり込まない下限を守る
+  for (const mode of ['walk', 'bicycle', 'drive', 'transit', 'multimodal'] as const) {
+    for (const state of ['FOLLOW', 'APPROACH_TURN', 'TURN', 'INTERSECTION', 'ARRIVAL'] as const) {
+      const p = scaleProfile(CAMERA_PROFILES[state], mode);
+      assert.ok(p.height >= 4, `${mode}/${state}: 視点が低すぎる (${p.height}m)`);
+      assert.ok(p.pitch >= -80 && p.pitch < 0, `${mode}/${state}: 俯角が不正 (${p.pitch})`);
+      assert.ok(p.range > 0, `${mode}/${state}: 追従距離が不正`);
+    }
+  }
 });
