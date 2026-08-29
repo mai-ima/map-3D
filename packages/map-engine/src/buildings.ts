@@ -129,10 +129,12 @@ export class BuildingLayerManager {
       dynamicScreenSpaceErrorFactor: 4,
       // 中間 LOD を飛ばさない。飛ばすと一時的に高精細タイルを大量に抱えてメモリが跳ねる
       skipLevelOfDetail: false,
-      // 画面外に出たタイルを積極的に解放する（メモリ超過によるタブのクラッシュ対策）
+      // 視野の中心から離れたタイルを後回しにする。
+      // 円錐を狭くしすぎると画面の大半が粗いままになるので、
+      // 中心 35% を最高精細とし、カメラが止まればすぐ周辺も読み込む
       foveatedScreenSpaceError: true,
-      foveatedConeSize: 0.2,
-      foveatedTimeDelay: 0.2,
+      foveatedConeSize: 0.35,
+      foveatedTimeDelay: 0.15,
       shadows: this.quality.shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED,
     };
   }

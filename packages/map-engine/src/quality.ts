@@ -493,15 +493,21 @@ export class MemoryWatchdog {
  * @param heightMeters カメラの対地高度
  */
 export function adaptiveScreenSpaceError(base: number, heightMeters: number): number {
+  // 1000〜2000m は「街を見渡す」高さで、建物の形が見えていないと
+  // 3D モデルが読み込まれていないように見える。ここを粗くしすぎない。
+  // 参考: Cesium の既定は 16。東京の最深タイルの幾何誤差は 88.4、浜松は 49.4 で、
+  // SSE がそれを超えると最深部まで分割されなくなる。
   const factor =
     heightMeters < 300
       ? 1 // 街を歩く視点。ここが最高精細
       : heightMeters < 800
-        ? 1.6
+        ? 1.3
         : heightMeters < 2000
-          ? 3
+          ? 2
           : heightMeters < 6000
-            ? 6
-            : 10;
+            ? 3.5
+            : heightMeters < 20000
+              ? 6
+              : 10;
   return Math.min(96, Math.round(base * factor));
 }

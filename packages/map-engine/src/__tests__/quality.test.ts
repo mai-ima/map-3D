@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  adaptiveScreenSpaceError,
   computeResolutionScale,
   forceDegradeTier,
   getQualitySettings,
@@ -154,4 +155,40 @@ test('回復の判定は予算の変更に追従する', () => {
   // 予算が減れば同じ使用量でも余裕が無い
   watchdog.setBudget(64 * MB);
   assert.equal(watchdog.hasRecovered(50 * MB), false);
+});
+
+test('街を見渡す高さで精細度を落としすぎない', () => {
+  const base = 12; // iOS プリセットの基準値
+
+  // 街を歩く視点は基準どおり
+  assert.equal(adaptiveScreenSpaceError(base, 100), base);
+
+  // 初期表示の高さ（東京 1800m / 浜松 1100m）。
+  // ここが粗いと「3D モデルが読み込まれていない」ように見える。
+  // Cesium の既定 16 から大きく離れない範囲に収める
+  for (const h of [1100, 1500, 1800]) {
+    const sse = adaptiveScreenSpaceError(base, h);
+    assert.ok(sse <= 28, `${h}m で SSE ${sse} は粗すぎる`);
+  }
+
+  // 最深タイルまで分割されることを確かめる。
+  // 実測した幾何誤差: 東京の子タイルセット 88.4 / 浜松 49.4
+  assert.ok(adaptiveScreenSpaceError(base, 1800) < 49.4, '浜松の最深部まで届くこと');
+  assert.ok(adaptiveScreenSpaceError(base, 3000) < 88.4, '東京の最深部まで届くこと');
+
+  // 高いところでは粗くしてよい（遠景タイルセットが街並みを担う）
+  assert.ok(adaptiveScreenSpaceError(base, 30000) > adaptiveScreenSpaceError(base, 1800));
+
+  // 上限を超えない
+  assert.ok(adaptiveScreenSpaceError(base, 1_000_000) <= 96);
+});
+
+test('高度が上がるほど精細度は単調に粗くなる', () => {
+  // 途中で逆転すると、ズームの途中で急に重くなる区間ができてしまう
+  let prev = 0;
+  for (const h of [0, 100, 500, 1000, 2000, 5000, 10000, 50000, 200000]) {
+    const sse = adaptiveScreenSpaceError(12, h);
+    assert.ok(sse >= prev, `${h}m で精細度が逆転している (${prev} → ${sse})`);
+    prev = sse;
+  }
 });
