@@ -8,7 +8,7 @@
  * （package.json の predev / prebuild フックで自動実行される）。
  */
 
-import { cp, mkdir, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,33 @@ const CANDIDATES = [
 ];
 
 const DIRECTORIES = ['Workers', 'Assets', 'ThirdParty', 'Widgets'];
+
+/**
+ * コピーしないもの。
+ *
+ * Cesium は全機能ぶんのアセットを同梱している。このアプリが使わないものを
+ * 配信しても、初回表示が遅くなるだけで得るものがない。
+ * 何が実際に読まれるかは Cesium.js 内の参照を調べて確認した。
+ *
+ * 消してよいと判断した根拠:
+ *   NaturalEarthII … Cesium 既定のベースマップ。本アプリは地理院タイルを使う
+ *   maki           … Cesium 同梱の POI アイコン。本アプリは自前の SVG を使う
+ *   LensFlare      … レンズフレア演出。使っていない
+ *   Widgets/Images … Cesium 標準 UI の画像。UI は全て自前で、
+ *                    widgets.css が使う画像は data URI で埋め込まれている
+ *
+ * 残すもの:
+ *   SkyBox                      夜間の星空（時間帯の演出で使う）
+ *   approximateTerrainHeights   地面へのクランプ（経路表示に必須）
+ *   IAU2006_XYS                 地球の歳差・章動（太陽位置の計算に使う）
+ *   Workers / ThirdParty        タイルのデコード処理。必須
+ */
+const EXCLUDED = [
+  'Assets/Textures/NaturalEarthII',
+  'Assets/Textures/maki',
+  'Assets/Textures/LensFlare',
+  'Widgets/Images',
+];
 
 async function main() {
   const source = CANDIDATES.find((c) => existsSync(c));
@@ -46,9 +73,37 @@ async function main() {
     await cp(from, path.join(target, dir), { recursive: true });
   }
 
+  // 使わないアセットを落とす
+  let removed = 0;
+  for (const rel of EXCLUDED) {
+    const victim = path.join(target, rel);
+    if (!existsSync(victim)) continue;
+    removed += await directorySize(victim);
+    await rm(victim, { recursive: true, force: true });
+  }
+
   const info = await stat(target);
   if (!info.isDirectory()) throw new Error('コピー先がディレクトリではありません');
-  console.log(`[copy-cesium-assets] コピー完了: ${path.relative(repoRoot, target)}`);
+
+  const total = await directorySize(target);
+  console.log(
+    `[copy-cesium-assets] コピー完了: ${path.relative(repoRoot, target)} ` +
+      `(${mb(total)} / 未使用 ${mb(removed)} を除外)`,
+  );
+}
+
+function mb(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+
+async function directorySize(dir) {
+  let total = 0;
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) total += await directorySize(full);
+    else total += (await stat(full)).size;
+  }
+  return total;
 }
 
 main().catch((error) => {

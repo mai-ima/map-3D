@@ -130,3 +130,28 @@ test('MemoryWatchdog は予算を更新できる', () => {
   watchdog.setBudget(100 * MB);
   assert.equal(watchdog.check(200 * MB, 2000).level, 'critical');
 });
+
+test('メモリに余裕が戻ったことを判定できる', () => {
+  const budget = 100 * MB;
+  const watchdog = new MemoryWatchdog(() => {}, budget);
+
+  // 逼迫している間は回復とみなさない
+  assert.equal(watchdog.hasRecovered(150 * MB), false);
+  // 警告域を下回った程度では戻さない。すぐ戻すと上げ下げを繰り返す
+  assert.equal(watchdog.hasRecovered(80 * MB), false);
+  // 十分に下がって初めて回復とみなす
+  assert.equal(watchdog.hasRecovered(50 * MB), true);
+});
+
+test('回復の判定は予算の変更に追従する', () => {
+  const watchdog = new MemoryWatchdog(() => {}, 100 * MB);
+  assert.equal(watchdog.hasRecovered(50 * MB), true);
+
+  // 品質を上げて予算が増えれば、同じ使用量でも余裕がある
+  watchdog.setBudget(300 * MB);
+  assert.equal(watchdog.hasRecovered(150 * MB), true);
+
+  // 予算が減れば同じ使用量でも余裕が無い
+  watchdog.setBudget(64 * MB);
+  assert.equal(watchdog.hasRecovered(50 * MB), false);
+});

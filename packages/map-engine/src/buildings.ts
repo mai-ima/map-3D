@@ -418,6 +418,19 @@ export class BuildingLayerManager {
     return true;
   }
 
+  /**
+   * メモリ削減で落とした遠景タイルセットを読み直す。
+   *
+   * 余裕が戻ったのに遠景が欠けたままだと、遠くの街並みが
+   * 消えたように見え続けてしまう。
+   */
+  async restoreFarTileset(): Promise<void> {
+    if (!this.loaded || this.loaded.far || !this.quality.useFarTileset) return;
+    const city = this.loaded.city;
+    if (!city.far) return;
+    await this.loadFarTileset(city);
+  }
+
   updateQuality(quality: QualitySettings): void {
     this.quality = quality;
     if (!this.loaded) return;

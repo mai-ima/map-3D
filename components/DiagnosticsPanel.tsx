@@ -39,7 +39,13 @@ export default function DiagnosticsPanel({ engine, onClose }: Props) {
     row('カメラ高度', `${diag.cameraHeightM.toLocaleString()} m`),
     row('描画距離', `${(diag.viewDistanceM / 1000).toFixed(1)} km`),
     row('精細度 (SSE)', `${diag.appliedScreenSpaceError} (基準 ${diag.baseScreenSpaceError})`),
-    row('負荷軽減係数', `×${diag.detailPenalty}`, diag.detailPenalty > 1),
+    row(
+      '負荷軽減',
+      diag.reliefStep === 0 && diag.detailPenalty === 1
+        ? 'なし'
+        : `段階 ${diag.reliefStep}/5 ・精細度 ×${diag.detailPenalty}`,
+      diag.reliefStep > 0 || diag.detailPenalty > 1,
+    ),
     row('描画解像度', `×${diag.resolutionScale}`),
     row(
       '3D タイル使用量',

@@ -441,6 +441,19 @@ export class MemoryWatchdog {
     return { used: mem.usedJSHeapSize, limit: mem.jsHeapSizeLimit };
   }
 
+  /**
+   * メモリに十分な余裕が戻ったかを判定する。
+   *
+   * 逼迫時に落とした品質を戻すための条件。ぎりぎりで戻すとすぐまた
+   * 逼迫して上げ下げを繰り返すので、警告域よりかなり低い水準を要求する。
+   */
+  hasRecovered(tileBytes: number): boolean {
+    const heap = MemoryWatchdog.readHeap();
+    const heapRatio = heap && heap.limit > 0 ? heap.used / heap.limit : 0;
+    const tileRatio = this.budgetBytes > 0 ? tileBytes / this.budgetBytes : 0;
+    return tileRatio < 0.6 && heapRatio < 0.5;
+  }
+
   check(tileBytes: number, now = Date.now()): MemoryPressureReport {
     const heap = MemoryWatchdog.readHeap();
     const heapRatio = heap && heap.limit > 0 ? heap.used / heap.limit : 0;

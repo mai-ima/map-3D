@@ -80,8 +80,10 @@ export interface EngineDiagnostics {
   baseScreenSpaceError: number;
   /** カメラ高度に応じて実際に適用されている精細度 */
   appliedScreenSpaceError: number;
-  /** メモリ逼迫で上乗せされた係数 */
+  /** メモリ逼迫で上乗せされた係数（1 なら制限なし） */
   detailPenalty: number;
+  /** メモリ削減の段階（0 なら制限なし、5 が最大） */
+  reliefStep: number;
   cameraHeightM: number;
   viewDistanceM: number;
   resolutionScale: number;
@@ -132,6 +134,15 @@ function worldToWindow(
  * 読み込みと破棄を繰り返して一向に安定しない。
  */
 const SSE_CHANGE_INTERVAL_MS = 1500;
+/** メモリに余裕がある状態がこの回数続いたら品質を 1 段戻す（監視は 0.5 秒間隔） */
+const RECOVERY_STREAK = 10;
+/**
+ * カメラの最大高度 (m)。
+ *
+ * 地球の直径はおよそ 12,700km。その 2 倍ほど離れれば全球が視界に収まる。
+ * それ以上引けてしまうと地球が点になり、操作でも戻れなくなる。
+ */
+const MAX_CAMERA_HEIGHT_M = 25_000_000;
 
 export class MapEngine {
   readonly viewer: Cesium.Viewer;
@@ -147,6 +158,8 @@ export class MapEngine {
   private watchdog: PerformanceWatchdog;
   private memoryWatchdog: MemoryWatchdog;
   private memoryReliefStep = 0;
+  /** 余裕が戻った状態が続いた回数。すぐには戻さないための待ち */
+  private recoveryStreak = 0;
   private removeContextListeners: (() => void) | null = null;
   private removeMemoryMonitor: (() => void) | null = null;
   private removeErrorListeners: (() => void)[] = [];
@@ -243,7 +256,9 @@ export class MapEngine {
       this.quality.terrainCollision;
     // 地表付近まで寄れるようにする（街を歩く体験のため）
     this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
-    this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = 5_000_000;
+    // 地球全体が視界に収まる程度まで。これ以上引くと地球が点になり、
+    // 「縮小したら何も映らない」状態になる
+    this.viewer.scene.screenSpaceCameraController.maximumZoomDistance = MAX_CAMERA_HEIGHT_M;
     this.viewer.scene.screenSpaceCameraController.inertiaSpin = 0.85;
     this.viewer.scene.screenSpaceCameraController.inertiaTranslate = 0.85;
     this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
@@ -378,18 +393,41 @@ export class MapEngine {
   }
 
   /**
-   * 描画距離を制限する。
+   * 描画距離をカメラ高度に応じて決める。
    *
-   * Cesium の既定 far は事実上無制限で、地平線までのタイルがすべて読み込み対象になる。
-   * 3D Tiles のキャッシュ上限は「視界に不要なタイル」しか切り詰めないため、
-   * 視界そのものを絞らないとメモリ使用量は下がらない。
-   * 遠方は霧で減衰しているので、切っても見た目の違和感は出ない。
+   * 街を見ている高さでは、Cesium の既定 far（事実上無制限）だと
+   * 地平線までのタイルがすべて読み込み対象になり、メモリを使い切ってしまう。
+   * 一方で固定値に切ると、ズームアウトしたときに地球ごとクリップされて
+   * 何も映らなくなる。
+   *
+   * そこで「低いところでは短く、高いところでは高度に比例して伸ばす」。
+   * 高度の 8 倍あれば、真下を見ても斜めに見渡しても地表が視界に収まる。
    */
   private applyViewDistance(): void {
     const frustum = this.viewer.camera.frustum;
-    if (frustum instanceof Cesium.PerspectiveFrustum) {
-      frustum.far = this.quality.viewDistance;
+    if (!(frustum instanceof Cesium.PerspectiveFrustum)) return;
+
+    const carto = this.viewer.camera.positionCartographic;
+    // 慣性が乗ると上限を超えて飛んでいくことがある。超えたら引き戻す
+    if (carto && carto.height > MAX_CAMERA_HEIGHT_M) {
+      this.viewer.camera.setView({
+        destination: Cesium.Cartesian3.fromRadians(
+          carto.longitude,
+          carto.latitude,
+          MAX_CAMERA_HEIGHT_M,
+        ),
+        orientation: {
+          heading: this.viewer.camera.heading,
+          pitch: this.viewer.camera.pitch,
+          roll: 0,
+        },
+      });
     }
+
+    const height = this.viewer.camera.positionCartographic?.height ?? 1000;
+    const far = Math.max(this.quality.viewDistance, height * 8);
+    // 地球全体が入る距離が上限（これ以上伸ばしても見えるものは増えない）
+    frustum.far = Math.min(far, 5e7);
   }
 
   /**
@@ -432,6 +470,14 @@ export class MapEngine {
     return selectQualityTier(this.device);
   }
 
+  /** 実際に適用されている描画距離 */
+  private get currentFarDistance(): number {
+    const frustum = this.viewer.camera.frustum;
+    return frustum instanceof Cesium.PerspectiveFrustum
+      ? Math.round(frustum.far)
+      : this.quality.viewDistance;
+  }
+
   /** 実機での挙動を確認するための現在値 */
   getDiagnostics(): EngineDiagnostics {
     const heap = MemoryWatchdog.readHeap();
@@ -441,8 +487,9 @@ export class MapEngine {
       baseScreenSpaceError: this.quality.screenSpaceError,
       appliedScreenSpaceError: this.lastAdaptiveSse || this.quality.screenSpaceError,
       detailPenalty: Math.round(this.detailPenalty * 100) / 100,
+      reliefStep: this.memoryReliefStep,
       cameraHeightM: Math.round(this.viewer.camera.positionCartographic?.height ?? 0),
-      viewDistanceM: this.quality.viewDistance,
+      viewDistanceM: this.currentFarDistance,
       resolutionScale: Math.round(this.viewer.resolutionScale * 100) / 100,
       tileMemoryMb: toMb(this.buildings.totalMemoryUsageInBytes),
       cacheLimitMb: toMb(this.quality.cacheBytes),
@@ -610,8 +657,11 @@ export class MapEngine {
       if (now - this.lastMemoryCheck < 500) return;
       this.lastMemoryCheck = now;
       this.updateAdaptiveDetail();
+      this.applyViewDistance();
       this.followCameraForBuildings();
-      this.memoryWatchdog.check(this.buildings.totalMemoryUsageInBytes, now);
+      const tileBytes = this.buildings.totalMemoryUsageInBytes;
+      this.memoryWatchdog.check(tileBytes, now);
+      this.recoverFromMemoryPressure(tileBytes);
       // ナビ中は連続描画しているはずなので、止まっていたら異常
       if (this.navigating) this.health.checkStall(now);
     });
@@ -663,6 +713,44 @@ export class MapEngine {
       lat: Cesium.Math.toDegrees(carto.latitude),
       lng: Cesium.Math.toDegrees(carto.longitude),
     });
+  }
+
+  /**
+   * メモリに余裕が戻ったら、落とした品質を段階的に戻す。
+   *
+   * これが無いと、一度でも逼迫した時点で精細度が落ちたまま二度と戻らず、
+   * 「3D の建物が読み込まれない」ように見えてしまう。
+   * 都市を移動して読み込み量が減ったあとなどに効く。
+   *
+   * すぐ戻すと上げ下げを繰り返すので、余裕がある状態が続いたときだけ 1 段戻す。
+   */
+  private recoverFromMemoryPressure(tileBytes: number): void {
+    if (this.memoryReliefStep === 0 && this.detailPenalty === 1) {
+      this.recoveryStreak = 0;
+      return;
+    }
+
+    if (!this.memoryWatchdog.hasRecovered(tileBytes)) {
+      this.recoveryStreak = 0;
+      return;
+    }
+
+    this.recoveryStreak += 1;
+    // 監視は 0.5 秒間隔。10 回 = 約 5 秒、余裕がある状態が続いたら戻す
+    if (this.recoveryStreak < RECOVERY_STREAK) return;
+    this.recoveryStreak = 0;
+
+    if (this.detailPenalty > 1) {
+      this.detailPenalty = Math.max(1, this.detailPenalty / 1.8);
+      this.lastAdaptiveSse = 0;
+      this.updateAdaptiveDetail();
+    }
+    if (this.memoryReliefStep > 0) {
+      this.memoryReliefStep -= 1;
+      // 段階 2 で遠景を落としていた場合、戻ってきたら読み直す
+      if (this.memoryReliefStep < 2) void this.buildings.restoreFarTileset();
+    }
+    this.requestRender();
   }
 
   /**
