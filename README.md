@@ -50,14 +50,24 @@ npm run dev                    # http://localhost:3000
 
 ### Vercel へのデプロイ
 
-このリポジトリはそのまま Vercel にデプロイできます。
+**Root Directory を `apps/web` に設定する。これだけです。**
 
-1. Vercel で本リポジトリをインポート（`vercel.json` があるので追加設定は不要）
-2. 必要に応じて環境変数を設定（AI 機能を使う場合のみ必須）
-3. デプロイ
+1. Vercel で本リポジトリをインポート
+2. **Root Directory** を `apps/web` に変更（`Edit` から選択）
+3. Deploy（環境変数は AI 機能を使う場合のみ必要）
 
-`vercel.json` でビルドコマンド（`npm run build --workspace @ijm/web`）と
-出力先（`apps/web/.next`）、および API のタイムアウトを指定しています。
+Vercel は **Root Directory の `package.json`** を見て Next.js を検出するため、
+リポジトリ直下のままだと `No Next.js version detected` になります
+（`next` は `apps/web/package.json` にあるため）。
+
+ビルド設定は `apps/web/vercel.json` に入っています。
+
+- `installCommand`: リポジトリのルートで `npm install`（ワークスペース依存の解決に必須）
+- `buildCommand`: ルートから `npm run build --workspace @ijm/web`
+  （`prebuild` で CesiumJS の静的アセットが `public/cesium` にコピーされます）
+- `functions`: 各 API のタイムアウト / `regions`: 東京 (`hnd1`)
+
+手順・環境変数・トラブルシューティングは [docs/deploy-vercel.md](docs/deploy-vercel.md) に詳しくまとめています。
 
 ### iPhone での利用
 
@@ -131,7 +141,8 @@ immersive-japan-map/
 ├── data/              osm / plateau / terrain / tiles（Git 管理外）
 ├── scripts/           import-osm / convert-plateau / generate-tiles / preprocessing
 ├── docker/            Docker Compose / Dockerfile / PostGIS スキーマ
-└── docs/              research.md / architecture.md / data-pipeline.md / licenses.md
+└── docs/              research.md / architecture.md / data-pipeline.md /
+                    deploy-vercel.md / licenses.md
 ```
 
 依存の向きは `shared → gis → routing`、`navigation` と `map-engine` はその上に載ります。

@@ -2,6 +2,9 @@
   "name": "@ijm/web",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.9"
+  },
   "scripts": {
     "predev": "node ../../scripts/copy-cesium-assets.mjs",
     "dev": "next dev",

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "installCommand": "cd ../.. && npm install",
+  "buildCommand": "cd ../.. && npm run build --workspace @ijm/web",
+  "regions": ["hnd1"],
+  "functions": {
+    "app/api/ai/chat/route.ts": { "maxDuration": 60 },
+    "app/api/route/route.ts": { "maxDuration": 30 },
+    "app/api/poi/route.ts": { "maxDuration": 45 },
+    "app/api/furniture/route.ts": { "maxDuration": 45 }
+  },
+  "headers": [
+    {
+      "source": "/cesium/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    }
+  ]
+}

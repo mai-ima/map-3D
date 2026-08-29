@@ -424,6 +424,7 @@ iOS (iPhone 15/16/17 世代)     → tier "ios-high" : SSE 10, msaa 4, resolutio
 | R5 | iPhone の熱・電力による性能低下 | ナビ中のカクつき | 品質は落とさない方針のため、代わりに `requestRenderMode` の徹底、遠景タイルセットの detach、影の距離制限で対処 |
 | R6 | LOD2 テクスチャ付きタイルの重さ | 初回表示が遅い | LOD1 を先に出して LOD2 を追いロード（progressive）。`notexture` バリアントを遠景に使用 |
 | R7 | Vercel の実行時間・サイズ制限 | AI/ルート API のタイムアウト | Route Handler は軽量（外部委譲のみ）。`maxDuration` を設定。重い処理は `apps/api` 側へ |
+| R11 | モノレポと Vercel のフレームワーク検出 | `No Next.js version detected` でデプロイ不能 | Root Directory を `apps/web` にする（Vercel は Root Directory の package.json を見る）。ビルド設定は `apps/web/vercel.json` に置き、install/build はリポジトリのルートで実行してワークスペース依存を解決する。詳細は [deploy-vercel.md](./deploy-vercel.md) |
 | R8 | Cesium のバンドルサイズ | 初期ロードが遅い | `dynamic(() => …, {ssr:false})` で分割、Cesium 静的アセットは `public/cesium` から配信、`CESIUM_BASE_URL` を明示 |
 | R9 | LLM が座標を捏造する | 誤った場所を表示 | 座標は必ずツール経由。system プロンプトで禁止し、ツール結果に無い座標を含む UI コマンドは BFF 側で破棄 |
 | R10 | ライセンス表示漏れ | 規約違反 | 出典はデータソース定義に属性として持たせ、UI が**自動列挙**する（追加時に書き忘れない構造） |
