@@ -9,6 +9,7 @@
 import * as Cesium from 'cesium';
 import type { BBox, City, LatLng } from '@ijm/shared';
 import { bboxAround, bboxIntersects } from '@ijm/shared';
+import { untexturedBuildingStyle } from './building-style';
 import type { QualitySettings } from './quality';
 
 /**
@@ -151,6 +152,11 @@ export class BuildingLayerManager {
       this.tilesetOptions(false),
     );
     near.shadows = this.quality.shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
+    // 実写テクスチャがある都市には一切スタイルを当てない（それが事実の色そのもの）。
+    // テクスチャが無い都市だけ、用途属性と実測高さで塗り分ける。
+    if (city.texturedBuildings === false) {
+      near.style = untexturedBuildingStyle();
+    }
     this.watchLoadProgress(near);
     // 近景にはスタイルを当てない = PLATEAU の実写テクスチャの色をそのまま出す
     this.applyRealisticLighting(near);
@@ -300,6 +306,9 @@ export class BuildingLayerManager {
       tileset.shadows = this.quality.shadows
         ? Cesium.ShadowMode.ENABLED
         : Cesium.ShadowMode.DISABLED;
+      if (city.texturedBuildings === false) {
+        tileset.style = untexturedBuildingStyle();
+      }
       this.applyRealisticLighting(tileset);
       this.viewer.scene.primitives.add(tileset);
 

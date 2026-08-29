@@ -46,6 +46,16 @@ export interface City {
   bbox: BBox;
   /** 近景・中景用（テクスチャ付き LOD2 を含む） */
   near: PlateauTilesetSpec;
+  /**
+   * 近景モデルが実写テクスチャを持つか。
+   *
+   * PLATEAU の LOD2 は自治体・年度でテクスチャの有無が違う。
+   * 東京都（2025 年度）は WebP テクスチャを埋め込んでいるが、
+   * 浜松市（2023 年度）はジオメトリのみ（配布 ZIP にも画像が無い）。
+   * テクスチャが無い都市では、建物の用途属性で塗り分けて見た目を補う。
+   * 既定は true（テクスチャ付きとして扱い、色は一切いじらない）。
+   */
+  texturedBuildings?: boolean;
   /** 遠景用（軽量 LOD1、テクスチャ無し） */
   far?: PlateauTilesetSpec;
   /**
@@ -273,6 +283,9 @@ export const CITIES: readonly City[] = [
       lod: 'lod1',
       url: 'https://assets.cms.plateau.reearth.io/assets/8d/01deb7-3c29-4faf-9d15-818d79158d52/22130_hamamatsu-shi_city_2023_citygml_2_op_bldg_3dtiles_22131_naka-ku_lod1/tileset.json',
     },
+    // 2023 年度データのため実写テクスチャを持たない。
+    // 建物の用途属性（bldg:usage）と実測高さで塗り分けて補う。
+    texturedBuildings: false,
     // 市街地が平坦で見晴らしがよいため、東京より低い高度から始める
     initialHeight: 1100,
     districts: [

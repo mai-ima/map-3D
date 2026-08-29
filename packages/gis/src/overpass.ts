@@ -11,6 +11,7 @@
 import type { BBox, LatLng, Poi } from '@ijm/shared';
 import { distanceMeters } from '@ijm/shared';
 import { fetchWithTimeout, getGisConfig } from './config';
+import { fetchOsmMap } from './osm-api';
 import { CATEGORY_DEFINITIONS, categoryOfTags, findCategory } from './poi-categories';
 
 export interface OverpassElement {
@@ -143,10 +144,19 @@ export async function searchNearbyPois(options: NearbySearchOptions): Promise<Po
     .flatMap((f) => [`node${f}(${around});`, `way${f}(${around});`]);
 
   const query = `[out:json][timeout:25];(${clauses.join('')});out center ${limit * 2};`;
-  const res = await runOverpassQuery(query);
+
+  // Overpass の公開インスタンスは混雑時に落ちる。全滅した場合は
+  // OSM 本体の API から範囲内の要素を取り、こちら側で絞り込む。
+  let elements: OverpassElement[];
+  try {
+    elements = (await runOverpassQuery(query)).elements;
+  } catch (error) {
+    elements = await fallbackNearbyFromOsmApi(center, radius, defs);
+    if (elements.length === 0) throw error;
+  }
 
   const pois: Poi[] = [];
-  for (const el of res.elements) {
+  for (const el of elements) {
     const coord = elementCoord(el);
     if (!coord || !el.tags) continue;
     const name = el.tags.name || el.tags['name:ja'] || el.tags.brand || '';
@@ -164,6 +174,36 @@ export async function searchNearbyPois(options: NearbySearchOptions): Promise<Po
 
   pois.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
   return pois.slice(0, limit);
+}
+
+/**
+ * Overpass が使えないときに OSM 本体の API から POI を拾う。
+ *
+ * OSM API は絞り込みができず範囲内の全要素を返すため、
+ * カテゴリ判定はこちら側で行う。転送量が大きいので半径は控えめに切る。
+ */
+async function fallbackNearbyFromOsmApi(
+  center: LatLng,
+  radius: number,
+  defs: (typeof CATEGORY_DEFINITIONS)[number][],
+): Promise<OverpassElement[]> {
+  // 半径 700m 程度までに抑える（それ以上は転送量が跳ね上がる）
+  const capped = Math.min(radius, 700);
+  const dLat = capped / 111_320;
+  const dLng = capped / (111_320 * Math.cos((center.lat * Math.PI) / 180) || 1);
+
+  try {
+    const all = await fetchOsmMap([
+      center.lng - dLng,
+      center.lat - dLat,
+      center.lng + dLng,
+      center.lat + dLat,
+    ]);
+    const wanted = new Set(defs.map((d) => d.category));
+    return all.filter((el) => el.tags && wanted.has(categoryOfTags(el.tags)));
+  } catch {
+    return [];
+  }
 }
 
 // ---- 建物情報 -----------------------------------------------------------

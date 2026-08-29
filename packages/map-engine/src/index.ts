@@ -1,6 +1,7 @@
 export * from './engine';
 export * from './quality';
 export * from './buildings';
+export * from './building-style';
 export * from './route-layer';
 export * from './environment';
 export * from './street-furniture';

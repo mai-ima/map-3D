@@ -16,6 +16,7 @@
  */
 
 import type { BBox, ElevatedStructure, StructureKind } from '@ijm/shared';
+import { fetchOsmMap } from './osm-api';
 import { runOverpassQuery, type OverpassElement } from './overpass';
 
 /** 種別ごとの標準的な寸法 */
@@ -129,16 +130,23 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
     out geom;
   `;
 
+  // Overpass が落ちていても構造物は出したいので、OSM 本体の API に切り替える
+  let elements: OverpassElement[] = [];
   try {
-    const res = await runOverpassQuery(query);
-    const list: ElevatedStructure[] = [];
-    for (const el of res.elements) {
-      if (el.type !== 'way') continue;
-      const s = toStructure(el);
-      if (s) list.push(s);
-    }
-    return list;
+    elements = (await runOverpassQuery(query)).elements;
   } catch {
-    return [];
+    try {
+      elements = await fetchOsmMap(bbox);
+    } catch {
+      return [];
+    }
   }
+
+  const list: ElevatedStructure[] = [];
+  for (const el of elements) {
+    if (el.type !== 'way') continue;
+    const s = toStructure(el);
+    if (s) list.push(s);
+  }
+  return list;
 }

@@ -1,5 +1,6 @@
 export * from './config';
 export * from './nominatim';
+export * from './osm-api';
 export * from './overpass';
 export * from './structures';
 export * from './poi-categories';
