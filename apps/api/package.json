@@ -8,12 +8,6 @@
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@ijm/ai": "file:../../packages/ai",
-    "@ijm/gis": "file:../../packages/gis",
-    "@ijm/routing": "file:../../packages/routing",
-    "@ijm/shared": "file:../../packages/shared"
-  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",

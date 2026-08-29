@@ -8,8 +8,5 @@
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*.ts"
-  },
-  "dependencies": {
-    "@ijm/shared": "file:../shared"
   }
 }

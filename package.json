@@ -24,13 +24,6 @@
     "api:start": "tsx apps/api/src/server.ts"
   },
   "dependencies": {
-    "@ijm/ai": "file:packages/ai",
-    "@ijm/gis": "file:packages/gis",
-    "@ijm/map-engine": "file:packages/map-engine",
-    "@ijm/navigation": "file:packages/navigation",
-    "@ijm/routing": "file:packages/routing",
-    "@ijm/shared": "file:packages/shared",
-    "@ijm/ui": "file:packages/ui",
     "cesium": "1.144.0",
     "next": "16.3.3",
     "react": "19.2.8",

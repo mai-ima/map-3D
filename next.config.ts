@@ -1,32 +1,31 @@
 import type { NextConfig } from 'next';
 
 /**
- * Next.js アプリはリポジトリ直下に置いている。
+ * Next.js アプリはリポジトリ直下に置き、package.json も「next と react を持つだけの
+ * ごく普通の単一 Next.js プロジェクト」の形にしている。
  *
- * 理由: Vercel は「Root Directory の package.json に next があるか」でフレームワークを判定するため、
- * アプリをサブディレクトリ（apps/web など）に置くと Root Directory の設定が必須になり、
- * 設定漏れで "No Next.js version detected" になる。直下に置けば既定設定のままデプロイできる。
+ * 理由: Vercel は「Root Directory の package.json に next があるか」でフレームワークを判定する。
+ * アプリをサブディレクトリに置くと Root Directory の設定が必須になり、しかも公式仕様上
+ * 「Root Directory の外のファイルは参照できず `..` も使えない」ため、モノレポの共有パッケージを
+ * 参照できなくなる。直下に置けば既定設定のままデプロイでき、この問題が起きない。
  *
- * 共有ロジックは packages/* に置き、package.json の file: 依存 + transpilePackages で
- * ビルド無しに TypeScript ソースのまま取り込む。
- * npm workspaces を使っていないのは、Vercel から見て「ごく普通の単一 Next.js プロジェクト」に
- * 見せてフレームワーク検出を確実にするため。
+ * 共有ロジック（packages/*）は npm の依存ではなく、tsconfig の paths と
+ * 下記の resolveAlias で「同じプロジェクト内のソース」として解決している。
+ * npm workspaces も file: 依存も使わないので、依存解決がデプロイ環境に左右されない。
  */
+const PACKAGES = ['shared', 'gis', 'routing', 'navigation', 'map-engine', 'ai', 'ui'] as const;
+
+const packageAliases = Object.fromEntries(
+  PACKAGES.map((name) => [`@ijm/${name}`, `./packages/${name}/src/index.ts`]),
+);
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: [
-    '@ijm/shared',
-    '@ijm/gis',
-    '@ijm/routing',
-    '@ijm/navigation',
-    '@ijm/map-engine',
-    '@ijm/ai',
-    '@ijm/ui',
-  ],
   // Cesium は非常に大きいため、サーバ側バンドルには含めない（クライアント専用）
   serverExternalPackages: ['cesium'],
   turbopack: {
     resolveAlias: {
+      ...packageAliases,
       // Cesium が Gaussian Splat 用に静的 import する @spz-loader/core は、
       // WASM をインライン化しておりバンドルすると不正な JS になる。
       // 本アプリでは未使用なのでスタブへ差し替える（詳細は lib/stubs/spz-loader.ts）。

@@ -84,7 +84,7 @@ PLATEAU 3D Tiles (建物)     ──► Cesium3DTileset            ──┘
 | 建物 | **PLATEAU 3D Tiles** | 実在建物の実測形状。AI 生成は使わない |
 | DB | **PostgreSQL 17 + PostGIS 3.5** | `ST_Transform` が JGD2011 平面直角座標系を標準サポート。道路ネットワークのグラフ構造を保持できる |
 | AI | **自前 `AIProvider` 抽象（fetch のみ）** | ベンダーロックインを避ける。SDK を入れないので Edge/Node どちらでも動き、バンドルも増えない |
-| 共有ロジックの分割 | **`file:` 依存 + `transpilePackages`** | ビルドステップ無しで TS ソースを直接共有できる。npm workspaces を使わないことで、Vercel から見て「ごく普通の単一 Next.js プロジェクト」になり、フレームワーク検出が確実になる |
+| 共有ロジックの分割 | **tsconfig `paths` + Turbopack `resolveAlias`** | `packages/*` を npm の依存に載せず、同一プロジェクト内のソースとして解決する。`package.json` の依存が `next` / `react` / `react-dom` / `cesium` だけになり、Vercel から見て「ごく普通の単一 Next.js プロジェクト」になる。npm workspaces も `file:` 依存も使わないため、依存解決がデプロイ環境に左右されない |
 
 ---
 
@@ -427,7 +427,7 @@ iOS (iPhone 15/16/17 世代)     → tier "ios-high" : SSE 10, msaa 4, resolutio
 | R5 | iPhone の熱・電力による性能低下 | ナビ中のカクつき | 品質は落とさない方針のため、代わりに `requestRenderMode` の徹底、遠景タイルセットの detach、影の距離制限で対処 |
 | R6 | LOD2 テクスチャ付きタイルの重さ | 初回表示が遅い | LOD1 を先に出して LOD2 を追いロード（progressive）。`notexture` バリアントを遠景に使用 |
 | R7 | Vercel の実行時間・サイズ制限 | AI/ルート API のタイムアウト | Route Handler は軽量（外部委譲のみ）。`maxDuration` を設定。重い処理は `apps/api` 側へ |
-| R11 | モノレポと Vercel のフレームワーク検出 | `No Next.js version detected` でデプロイ不能 | Vercel は Root Directory の package.json を見るため、**Next.js アプリをリポジトリ直下に置く**ことで既定設定のままデプロイできるようにした。共有ロジックは `packages/*` を `file:` 依存で参照し、`transpilePackages` で TS のまま取り込む（workspaces を使わないので検出ロジックに影響しない）。詳細は [deploy-vercel.md](./deploy-vercel.md) |
+| R11 | モノレポと Vercel のフレームワーク検出 | `No Next.js version detected` でデプロイ不能 | Vercel は Root Directory の package.json を見るため、**Next.js アプリをリポジトリ直下に置く**ことで既定設定のままデプロイできるようにした。共有ロジックは `packages/*` を tsconfig `paths` + Turbopack `resolveAlias` で解決し、npm の依存には載せない。これにより `package.json` は `next` を含む標準的な形になる。詳細は [deploy-vercel.md](./deploy-vercel.md) |
 | R8 | Cesium のバンドルサイズ | 初期ロードが遅い | `dynamic(() => …, {ssr:false})` で分割、Cesium 静的アセットは `public/cesium` から配信、`CESIUM_BASE_URL` を明示 |
 | R9 | LLM が座標を捏造する | 誤った場所を表示 | 座標は必ずツール経由。system プロンプトで禁止し、ツール結果に無い座標を含む UI コマンドは BFF 側で破棄 |
 | R10 | ライセンス表示漏れ | 規約違反 | 出典はデータソース定義に属性として持たせ、UI が**自動列挙**する（追加時に書き忘れない構造） |

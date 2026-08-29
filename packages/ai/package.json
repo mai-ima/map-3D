@@ -8,10 +8,5 @@
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*.ts"
-  },
-  "dependencies": {
-    "@ijm/gis": "file:../gis",
-    "@ijm/routing": "file:../routing",
-    "@ijm/shared": "file:../shared"
   }
 }

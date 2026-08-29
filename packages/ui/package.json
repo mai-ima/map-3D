@@ -9,9 +9,6 @@
     ".": "./src/index.ts",
     "./*": "./src/*.tsx"
   },
-  "dependencies": {
-    "@ijm/shared": "file:../shared"
-  },
   "peerDependencies": {
     "react": ">=19"
   }

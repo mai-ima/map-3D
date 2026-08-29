@@ -9,11 +9,6 @@
     ".": "./src/index.ts",
     "./*": "./src/*.ts"
   },
-  "dependencies": {
-    "@ijm/gis": "file:../gis",
-    "@ijm/navigation": "file:../navigation",
-    "@ijm/shared": "file:../shared"
-  },
   "peerDependencies": {
     "cesium": ">=1.140.0"
   }

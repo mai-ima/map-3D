@@ -73,14 +73,14 @@ vercel --prod
 
 ```
 map-3d/
-├── package.json        ← next（固定バージョン）を含む（Vercel はこれを見る）
+├── package.json        ← 依存は next / react / react-dom / cesium のみ（Vercel はこれを見る）
 ├── next.config.ts
 ├── vercel.json
 ├── app/                ← App Router（画面 + API Route Handlers）
 ├── components/
 ├── lib/
 ├── public/             ← prebuild で public/cesium が生成される
-├── packages/           ← 共有ロジック（file: 依存で参照）
+├── packages/           ← 共有ロジック（tsconfig paths で解決。npm 依存ではない）
 └── apps/api/           ← セルフホスト用 API（Vercel では使わない）
 ```
 
@@ -89,7 +89,7 @@ map-3d/
 ```jsonc
 {
   "framework": "nextjs",
-  "installCommand": "npm install",   // packages/* は file: 依存として同時に解決される
+  "installCommand": "npm install",   // 依存は外部パッケージのみ
   "buildCommand": "npm run build",   // prebuild → Cesium アセットのコピー → next build
   "regions": ["hnd1"],               // 東京リージョン
   "functions": {
@@ -107,8 +107,8 @@ map-3d/
 - **`buildCommand` は `next build` ではなく `npm run build`。**
   `prebuild` フックで CesiumJS の静的アセット（Workers / Assets / Widgets / ThirdParty）が
   `public/cesium` にコピーされます。これが無いと 3D が真っ黒になります。
-- `packages/*` は `next.config.ts` の `transpilePackages` で TypeScript のまま取り込まれるため、
-  事前ビルドは不要です。
+- `packages/*` は tsconfig の `paths` と `turbopack.resolveAlias` で解決されるため、
+  npm の依存にも載らず、事前ビルドも不要です。
 - `maxDuration` はプランごとに上限があります。超えるとデプロイが弾かれるので、その場合は値を下げてください。
 
 ### Node.js のバージョン

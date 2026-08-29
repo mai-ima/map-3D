@@ -1,19 +1,11 @@
 # Next.js（3D 表示 + BFF）
-# アプリはリポジトリ直下にあり、共有ロジックは packages/*（package.json の file: 依存）。
+# アプリはリポジトリ直下にあり、共有ロジックは packages/*（tsconfig paths で解決）。
 FROM node:22-bookworm-slim AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
 FROM base AS deps
 COPY package.json package-lock.json ./
-COPY apps/api/package.json apps/api/
-COPY packages/shared/package.json packages/shared/
-COPY packages/gis/package.json packages/gis/
-COPY packages/routing/package.json packages/routing/
-COPY packages/navigation/package.json packages/navigation/
-COPY packages/map-engine/package.json packages/map-engine/
-COPY packages/ai/package.json packages/ai/
-COPY packages/ui/package.json packages/ui/
 RUN npm ci
 
 FROM base AS build
