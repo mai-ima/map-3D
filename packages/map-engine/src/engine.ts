@@ -91,6 +91,11 @@ export interface EngineDiagnostics {
   heapLimitMb: number | null;
   fps: number;
   farTilesetLoaded: boolean;
+  /** 読み込み待ちのタイル数（多いほど GPU アップロードが集中する） */
+  loadQueue: number;
+  shadows: boolean;
+  hdr: boolean;
+  msaaSamples: number;
 }
 
 export interface BuildingPickResult {
@@ -109,6 +114,11 @@ function worldToWindow(
     (transforms.wgs84ToWindowCoordinates as typeof Cesium.SceneTransforms.worldToWindowCoordinates);
   return fn ? fn(scene, position) : undefined;
 }
+
+/** これを超えたら読み込みが詰まり気味とみなす */
+const LOAD_QUEUE_WARN = 24;
+/** これを超えたら明確に抑制する */
+const LOAD_QUEUE_HIGH = 60;
 
 export class MapEngine {
   readonly viewer: Cesium.Viewer;
@@ -157,8 +167,14 @@ export class MapEngine {
 
     // 同時リクエストが多すぎると、復号待ちのタイルがメモリ上に積み上がる。
     // 回線が速いほど積み上がりやすいので、上限を絞って流量を平準化する。
-    Cesium.RequestScheduler.maximumRequests = this.device.isMobile ? 12 : 18;
-    Cesium.RequestScheduler.maximumRequestsPerServer = this.device.isMobile ? 6 : 8;
+    // iOS は 1 フレームの描画コマンド量に上限があり、超えると WebGL
+    // コンテキストごと失われる。同時に読み込むタイルを減らして流量を平準化する。
+    Cesium.RequestScheduler.maximumRequests = this.device.isIOS ? 6 : this.device.isMobile ? 12 : 18;
+    Cesium.RequestScheduler.maximumRequestsPerServer = this.device.isIOS
+      ? 4
+      : this.device.isMobile
+        ? 6
+        : 8;
     Cesium.RequestScheduler.throttleRequests = true;
 
     const imagery = getImagery(options.imageryId ?? DEFAULT_IMAGERY_ID);
@@ -370,6 +386,10 @@ export class MapEngine {
       heapLimitMb: heap ? toMb(heap.limit) : null,
       fps: this.fps,
       farTilesetLoaded: this.buildings.tilesets.length > 1,
+      loadQueue: this.buildings.loadQueueLength,
+      shadows: this.quality.shadows,
+      hdr: this.quality.hdr,
+      msaaSamples: this.quality.msaaSamples,
     };
   }
 
@@ -520,9 +540,19 @@ export class MapEngine {
     const height = this.viewer.camera.positionCartographic?.height;
     if (!Number.isFinite(height)) return;
 
+    // 読み込み待ちが溜まっている間は精細度を一時的に落として要求を抑える。
+    // デコード済みタイルの GPU アップロードが 1 フレームに集中すると
+    // 描画コマンドが膨らみ、iOS では WebGL コンテキストごと失われる。
+    const queue = this.buildings.loadQueueLength;
+    const queueFactor = queue > LOAD_QUEUE_HIGH ? 2 : queue > LOAD_QUEUE_WARN ? 1.4 : 1;
+
     const target = Math.min(
       96,
-      Math.round(adaptiveScreenSpaceError(this.quality.screenSpaceError, height) * this.detailPenalty),
+      Math.round(
+        adaptiveScreenSpaceError(this.quality.screenSpaceError, height) *
+          this.detailPenalty *
+          queueFactor,
+      ),
     );
     // 微小な変化で毎回書き換えるとタイルの読み直しが起きるため、差が出たときだけ反映する
     if (Math.abs(target - this.lastAdaptiveSse) < 1) return;

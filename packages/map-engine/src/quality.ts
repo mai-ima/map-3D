@@ -114,6 +114,11 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
      *    参考: https://bugs.webkit.org/show_bug.cgi?id=290752
      * 2. Retina では 1 画素が小さく、MSAA やブルームの寄与が元々見えにくい。
      *
+     * 影と遠景タイルセットも既定では外している。影はシャドウパスで
+     * ジオメトリをもう一度描画するため、描画コマンドがおよそ倍になる。
+     * タイルを読み込んでいる最中はこの負荷が一気に上がり、
+     * 「読み込み中に落ちる」の主因になっていた。
+     *
      * 「表示設定 → 描画品質 → 高品質」を選べば、これらは有効になる。
      */
     tier: 'ios-high',
@@ -126,17 +131,26 @@ const PRESETS: Record<QualityTier, QualitySettings> = {
     maximumCacheOverflowBytes: 48 * 1024 * 1024,
     msaaSamples: 1,
     resolutionScale: 2.0,
-    maxDrawPixels: 2_600_000,
-    shadows: true,
+    /**
+     * iPhone 17 世代の実寸から決めている。
+     *   iPhone 17 / 17 Pro   : CSS 402 × 874  (DPR 3) → ×2.0 で 1,405,296 px
+     *   iPhone 17 Pro Max    : CSS 440 × 956  (DPR 3) → ×2.0 で 1,682,560 px
+     * どちらも ×2.0 が上限に掛からずに通る値にしてある。
+     * DPR は 3 だが ×3.0 まで上げると描画バッファが 3.1M〜3.8M 画素になり、
+     * iOS の WebGL では 1 フレームの負荷が跳ね上がるため ×2.0 を上限とする。
+     * 460ppi では ×2.0 でも画素が視認できないので、精細さは損なわれない。
+     */
+    maxDrawPixels: 1_900_000,
+    shadows: false,
     shadowDistance: 1500,
-    softShadows: true,
+    softShadows: false,
     ambientOcclusion: false,
     bloom: false,
     fxaa: true,
     hdr: false,
     streetFurniture: true,
-    maxFurniture: 1200,
-    useFarTileset: true,
+    maxFurniture: 600,
+    useFarTileset: false,
     label: '高品質（iPhone 最適化）',
   },
   balanced: {

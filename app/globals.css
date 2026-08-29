@@ -75,12 +75,35 @@ body {
     inset 0 1px 0 rgb(255 255 255 / 0.05);
 }
 
+/*
+ * セーフエリア。
+ *
+ * iPhone は Dynamic Island とホームインジケータが画面の一部を覆うため、
+ * env(safe-area-inset-*) を見ないと固定配置の UI がその下に潜り込む。
+ * 横向きでは左右にもインセットが入るので、左右も必ず確保する。
+ * viewport-fit=cover を指定している前提（app/layout.tsx）。
+ */
 @utility safe-top {
   padding-top: max(0.75rem, env(safe-area-inset-top));
 }
 
 @utility safe-bottom {
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+@utility safe-x {
+  padding-left: max(0.75rem, env(safe-area-inset-left));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
+}
+
+/*
+ * タップ領域の下限。
+ * Apple のヒューマンインターフェイスガイドラインは 44pt 四方を推奨している。
+ * 見た目の高さは変えずに、当たり判定だけを広げる。
+ */
+@utility tap-target {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
 }
 
 /* スクロールバーを控えめに */

@@ -52,7 +52,18 @@ export default function DiagnosticsPanel({ engine, onClose }: Props) {
         : `${diag.heapUsedMb.toLocaleString()} MB / ${diag.heapLimitMb?.toLocaleString()} MB`,
       heapRatio !== null && heapRatio > 0.75,
     ),
+    row('読み込み待ち', `${diag.loadQueue} タイル`, diag.loadQueue > 60),
     row('遠景タイルセット', diag.farTilesetLoaded ? '読み込み中' : '未使用'),
+    row(
+      '描画オプション',
+      [
+        diag.shadows ? '影' : null,
+        diag.hdr ? 'HDR' : null,
+        diag.msaaSamples > 1 ? `MSAA×${diag.msaaSamples}` : null,
+      ]
+        .filter(Boolean)
+        .join(' / ') || 'なし（軽量描画）',
+    ),
   ];
 
   return (

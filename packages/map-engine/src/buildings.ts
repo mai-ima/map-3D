@@ -76,6 +76,10 @@ export class BuildingLayerManager {
   /** 近景タイルセットが現在カバーしている範囲 */
   private activeBBox: BBox | null = null;
   private refreshing = false;
+  /** 読み込み待ちのタイル数（loadProgress で更新される） */
+  private pendingRequests = 0;
+  private tilesProcessing = 0;
+  private removeProgressListeners: (() => void)[] = [];
   /** 透過中の feature と元の色 */
   private dimmed = new Map<Cesium.Cesium3DTileFeature, Cesium.Color>();
 
@@ -135,6 +139,7 @@ export class BuildingLayerManager {
       this.tilesetOptions(false),
     );
     near.shadows = this.quality.shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
+    this.watchLoadProgress(near);
     // 近景にはスタイルを当てない = PLATEAU の実写テクスチャの色をそのまま出す
     this.applyRealisticLighting(near);
     this.viewer.scene.primitives.add(near);
@@ -171,6 +176,7 @@ export class BuildingLayerManager {
       }
       far.style = farTilesetStyle();
       far.shadows = Cesium.ShadowMode.DISABLED;
+      this.watchLoadProgress(far);
       this.applyRealisticLighting(far);
       this.viewer.scene.primitives.add(far);
       this.loaded = { ...this.loaded, far };
@@ -199,11 +205,37 @@ export class BuildingLayerManager {
 
   unload(): void {
     this.activeBBox = null;
+    for (const remove of this.removeProgressListeners) remove();
+    this.removeProgressListeners = [];
+    this.pendingRequests = 0;
+    this.tilesProcessing = 0;
     if (!this.loaded) return;
     this.restoreAll();
     this.viewer.scene.primitives.remove(this.loaded.near);
     if (this.loaded.far) this.viewer.scene.primitives.remove(this.loaded.far);
     this.loaded = null;
+  }
+
+  /**
+   * タイルの読み込み状況を監視する。
+   *
+   * デコードが済んだタイルは GPU にアップロードされるが、これが 1 フレームに
+   * 集中すると描画コマンドが一気に膨らむ。iOS ではこれが上限を超えると
+   * WebGL コンテキストごと失われるため、待ち行列の長さを見て要求を絞る。
+   */
+  private watchLoadProgress(tileset: Cesium.Cesium3DTileset): void {
+    const remove = tileset.loadProgress.addEventListener(
+      (pendingRequests: number, tilesProcessing: number) => {
+        this.pendingRequests = pendingRequests;
+        this.tilesProcessing = tilesProcessing;
+      },
+    );
+    this.removeProgressListeners.push(remove);
+  }
+
+  /** 読み込み待ちの総数（流量制御の判断に使う） */
+  get loadQueueLength(): number {
+    return this.pendingRequests + this.tilesProcessing;
   }
 
   /** 範囲が都市の bbox をはみ出さないように収める */

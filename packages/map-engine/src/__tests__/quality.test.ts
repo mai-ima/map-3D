@@ -79,9 +79,12 @@ test('コア数が少ない端末は精細度を落とす', () => {
 
 test('描画解像度は総ピクセル数で頭打ちになる', () => {
   const q = getQualitySettings('ios-high');
-  // iPhone 相当の小さい画面では DPR をそのまま活かせる
-  const phone = computeResolutionScale(q, 402, 874, 3);
-  assert.equal(phone, q.resolutionScale);
+
+  // iPhone 17 世代は Retina 相当の ×2.0 がそのまま通る
+  //   iPhone 17 / 17 Pro : CSS 402 × 874
+  //   iPhone 17 Pro Max  : CSS 440 × 956
+  assert.equal(computeResolutionScale(q, 402, 874, 3), q.resolutionScale, 'iPhone 17');
+  assert.equal(computeResolutionScale(q, 440, 956, 3), q.resolutionScale, 'iPhone 17 Pro Max');
 
   // 大きな画面では上限に掛かって下がる
   const desktop = computeResolutionScale(q, 1920, 1080, 3);

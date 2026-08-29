@@ -22,7 +22,7 @@ export default function AttributionPanel({ sources }: { sources: DataSource[] })
             <button
               onClick={() => setOpen(false)}
               aria-label="出典パネルを閉じる"
-              className="text-mist-500 transition-colors hover:text-mist-100"
+              className="tap-target -m-2 inline-flex items-center justify-center text-mist-500 transition-colors hover:text-mist-100"
             >
               <Icon name="close" size={15} />
             </button>
@@ -54,9 +54,9 @@ export default function AttributionPanel({ sources }: { sources: DataSource[] })
 
       <button
         onClick={() => setOpen((v) => !v)}
-        className="glass inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] text-mist-300"
+        className="glass tap-target inline-flex items-center gap-1.5 rounded-full px-3.5 text-[12px] text-mist-300"
       >
-        <Icon name="layers" size={13} />
+        <Icon name="layers" size={14} />
         データ出典
       </button>
     </div>

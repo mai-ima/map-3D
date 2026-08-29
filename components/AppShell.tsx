@@ -461,7 +461,7 @@ export default function AppShell() {
 
       {/* 左上: 検索とルート */}
       {!navigating && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 px-3 safe-top">
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 safe-top safe-x">
           <div className="pointer-events-auto mx-auto w-full max-w-[420px] space-y-2 sm:mx-0">
             <SearchPanel
               origin={origin}
@@ -504,7 +504,7 @@ export default function AppShell() {
       )}
 
       {/* 右下: 建物情報・AI・出典 */}
-      <div className="pointer-events-none absolute bottom-0 right-0 z-10 flex flex-col items-end gap-2 p-3 safe-bottom">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex flex-col items-end gap-2 pt-3 safe-bottom safe-x">
         <div className="pointer-events-auto">
           <BuildingInfoCard
             building={building}
@@ -528,11 +528,12 @@ export default function AppShell() {
           </div>
         )}
 
-        <div className="pointer-events-auto flex items-center gap-2">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
           <AttributionPanel sources={attributions} />
           <button
             onClick={() => setAiOpen((v) => !v)}
-            className="glass inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[13px] font-medium text-signal-400"
+            aria-label="AI に頼む"
+            className="glass tap-target inline-flex items-center gap-1.5 rounded-full px-4 text-[13px] font-medium text-signal-400"
           >
             <Icon name="sparkle" size={15} />
             AI に頼む

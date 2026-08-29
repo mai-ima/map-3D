@@ -103,7 +103,7 @@ export default function SearchPanel(props: SearchPanelProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setExpanded(true)}
-          placeholder="どこへ行きますか？（例: 東京駅、皇居、渋谷）"
+          placeholder="どこへ行きますか？"
           className="w-full rounded-full border border-white/10 bg-ink-800/70 py-2.5 pl-9 pr-9 text-[14px] text-mist-100 outline-none placeholder:text-mist-500 focus:border-signal-400/50"
           inputMode="search"
           enterKeyHint="search"

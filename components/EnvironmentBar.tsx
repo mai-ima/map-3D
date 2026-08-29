@@ -83,8 +83,13 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
         </span>
       </button>
 
+      {/*
+        小さい画面では設定項目が縦に長くなり、画面下の操作ボタンと重なる。
+        パネル自体をスクロールさせ、下端にボタン 1 個ぶんの余白を確保する。
+        高さは 100dvh 基準（iOS の Safari はツールバーの分だけ vh がずれる）。
+      */}
       {open && (
-        <div className="space-y-3.5 border-t border-white/8 px-3.5 py-3">
+        <div className="max-h-[calc(100dvh-13rem)] space-y-3.5 overflow-y-auto overscroll-contain border-t border-white/8 px-3.5 pt-3 pb-16">
           <Section title="都市">
             <div className="flex flex-wrap gap-1.5">
               {CITIES.map((c) => (
