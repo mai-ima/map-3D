@@ -34,6 +34,8 @@ import SearchPanel, { type PlacePoint } from './SearchPanel';
 
 import DiagnosticsPanel from './DiagnosticsPanel';
 import ErrorBoundary from './ErrorBoundary';
+import MobileShell from './mobile/MobileShell';
+import { useIsMobile } from './mobile/useIsMobile';
 
 const MapCanvas = dynamic(() => import('./MapCanvas'), { ssr: false });
 
@@ -59,6 +61,8 @@ export default function AppShell() {
   const [qualityLabel, setQualityLabel] = useState('自動判定中');
   const [qualityChoice, setQualityChoice] = useState('auto');
   const [optionalLayers, setOptionalLayers] = useState<string[]>([]);
+  // iPhone などのタッチ端末では、片手で操作できるボトムシート主体の画面に切り替える
+  const isMobile = useIsMobile();
 
   const [poiCategories, setPoiCategories] = useState<string[]>([]);
   const [furnitureEnabled, setFurnitureEnabled] = useState(false);
@@ -485,8 +489,8 @@ export default function AppShell() {
         />
       )}
 
-      {/* 左上: 検索とルート */}
-      {!navigating && (
+      {/* 左上: 検索とルート（デスクトップ）*/}
+      {!navigating && !isMobile && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 safe-top safe-x">
           <div className="pointer-events-auto mx-auto w-full max-w-[420px] space-y-2 sm:mx-0">
             <SearchPanel
@@ -531,8 +535,57 @@ export default function AppShell() {
         </div>
       )}
 
+      {/* iPhone などのタッチ端末: 操作系を下から出るシートに集約する */}
+      {isMobile && !navigating && (
+        <MobileShell
+          city={city}
+          origin={origin}
+          destination={destination}
+          mode={mode}
+          route={route}
+          routing={routing}
+          navigating={navigating}
+          hour={hour}
+          weather={weather}
+          imageryId={imageryId}
+          imagery={config?.imagery ?? []}
+          qualityLabel={qualityLabel}
+          qualityChoice={qualityChoice}
+          optionalLayers={optionalLayers}
+          poiCategories={poiCategories}
+          furnitureEnabled={furnitureEnabled}
+          followRealTime={followRealTime}
+          attributions={attributions}
+          aiEnabled={aiOpen}
+          viewCenter={viewCenter}
+          onSelectOrigin={setOrigin}
+          onSelectDestination={setDestination}
+          onModeChange={setMode}
+          onCalculateRoute={calculateRoute}
+          onStartNavigation={startNavigation}
+          onFocusPlace={focusPlace}
+          onClearRoute={clearRoute}
+          onCityChange={changeCity}
+          onDistrict={(d: District) => engineRef.current?.flyToDistrict(d)}
+          onHourChange={changeHour}
+          onFollowRealTime={changeFollowRealTime}
+          onWeatherChange={changeWeather}
+          onImageryChange={changeImagery}
+          onQualityChange={handleQualityChange}
+          onToggleLayer={handleToggleLayer}
+          onTogglePoi={togglePoi}
+          onToggleFurniture={toggleFurniture}
+          onOpenAI={() => setAiOpen((v) => !v)}
+        />
+      )}
+
       {/* 右下: 建物情報・AI・出典 */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex flex-col items-end gap-2 pt-3 safe-bottom safe-x">
+      <div
+        className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 flex flex-col items-end gap-2 pt-3 safe-bottom safe-x ${
+          // シートと重なるため、モバイルでは出典と AI ボタンをシート側に任せる
+          isMobile ? 'hidden' : ''
+        }`}
+      >
         <div className="pointer-events-auto">
           <BuildingInfoCard
             building={building}
