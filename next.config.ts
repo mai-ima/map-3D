@@ -7,8 +7,10 @@ import type { NextConfig } from 'next';
  * アプリをサブディレクトリ（apps/web など）に置くと Root Directory の設定が必須になり、
  * 設定漏れで "No Next.js version detected" になる。直下に置けば既定設定のままデプロイできる。
  *
- * 共有ロジックは packages/* に置き、npm workspaces + transpilePackages で
+ * 共有ロジックは packages/* に置き、package.json の file: 依存 + transpilePackages で
  * ビルド無しに TypeScript ソースのまま取り込む。
+ * npm workspaces を使っていないのは、Vercel から見て「ごく普通の単一 Next.js プロジェクト」に
+ * 見せてフレームワーク検出を確実にするため。
  */
 const nextConfig: NextConfig = {
   reactStrictMode: true,

@@ -10,7 +10,7 @@
     "./*": "./src/*.tsx"
   },
   "dependencies": {
-    "@ijm/shared": "*"
+    "@ijm/shared": "file:../shared"
   },
   "peerDependencies": {
     "react": ">=19"

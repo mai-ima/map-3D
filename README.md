@@ -151,6 +151,11 @@ immersive-japan-map/
 **CesiumJS に依存するのは `map-engine` だけ**で、ナビゲーションのロジックは 3D エンジンから独立しており、
 単体テストできます。
 
+`packages/*` は npm workspaces ではなく **`file:` 依存**として直下の `package.json` から参照し、
+`next.config.ts` の `transpilePackages` で TypeScript のまま取り込みます
+（ビルドステップ不要。かつ Vercel から見て「ごく普通の単一 Next.js プロジェクト」になるため、
+フレームワーク検出でつまずきません）。
+
 ---
 
 ## 開発コマンド

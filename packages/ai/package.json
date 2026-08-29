@@ -10,8 +10,8 @@
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "@ijm/gis": "*",
-    "@ijm/routing": "*",
-    "@ijm/shared": "*"
+    "@ijm/gis": "file:../gis",
+    "@ijm/routing": "file:../routing",
+    "@ijm/shared": "file:../shared"
   }
 }

@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ijm/ai": "*",
-    "@ijm/gis": "*",
-    "@ijm/routing": "*",
-    "@ijm/shared": "*"
+    "@ijm/ai": "file:../../packages/ai",
+    "@ijm/gis": "file:../../packages/gis",
+    "@ijm/routing": "file:../../packages/routing",
+    "@ijm/shared": "file:../../packages/shared"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

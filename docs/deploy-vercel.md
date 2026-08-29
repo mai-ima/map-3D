@@ -58,14 +58,14 @@ vercel --prod
 
 ```
 map-3d/
-├── package.json        ← next / react を含む（Vercel はこれを見る）
+├── package.json        ← next（固定バージョン）を含む（Vercel はこれを見る）
 ├── next.config.ts
 ├── vercel.json
 ├── app/                ← App Router（画面 + API Route Handlers）
 ├── components/
 ├── lib/
 ├── public/             ← prebuild で public/cesium が生成される
-├── packages/           ← 共有ロジック（npm workspaces）
+├── packages/           ← 共有ロジック（file: 依存で参照）
 └── apps/api/           ← セルフホスト用 API（Vercel では使わない）
 ```
 
@@ -74,7 +74,7 @@ map-3d/
 ```jsonc
 {
   "framework": "nextjs",
-  "installCommand": "npm install",   // workspaces も同時に install される
+  "installCommand": "npm install",   // packages/* は file: 依存として同時に解決される
   "buildCommand": "npm run build",   // prebuild → Cesium アセットのコピー → next build
   "regions": ["hnd1"],               // 東京リージョン
   "functions": {

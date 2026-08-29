@@ -1,5 +1,5 @@
 # Next.js（3D 表示 + BFF）
-# アプリはリポジトリ直下にあり、共有ロジックは packages/* (npm workspaces)。
+# アプリはリポジトリ直下にあり、共有ロジックは packages/*（package.json の file: 依存）。
 FROM node:22-bookworm-slim AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1

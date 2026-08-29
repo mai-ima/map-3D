@@ -4,10 +4,6 @@
   "private": true,
   "description": "オープンデータで日本の実在都市をリアルタイム3D空間として再現し、AIと自然なカメラワークでナビゲーションできるオープンソース地図",
   "license": "MIT",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "engines": {
     "node": ">=20.9"
   },
@@ -19,26 +15,34 @@
     "start": "next start",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "tsx --test \"packages/*/src/__tests__/*.test.ts\"",
-    "api:dev": "npm run dev --workspace @ijm/api",
+    "api:dev": "tsx apps/api/src/server.ts",
     "validate:cities": "node scripts/preprocessing/validate-cities.mjs",
     "import:osm": "tsx scripts/import-osm/import-osm.mts",
     "preview:icons": "tsx scripts/preprocessing/preview-icons.mts",
     "docker:up": "docker compose -f docker/docker-compose.yml up -d",
-    "docker:down": "docker compose -f docker/docker-compose.yml down"
+    "docker:down": "docker compose -f docker/docker-compose.yml down",
+    "api:start": "tsx apps/api/src/server.ts"
   },
   "dependencies": {
-    "cesium": "^1.144.0",
-    "next": "^16.3.3",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "@ijm/ai": "file:packages/ai",
+    "@ijm/gis": "file:packages/gis",
+    "@ijm/map-engine": "file:packages/map-engine",
+    "@ijm/navigation": "file:packages/navigation",
+    "@ijm/routing": "file:packages/routing",
+    "@ijm/shared": "file:packages/shared",
+    "@ijm/ui": "file:packages/ui",
+    "cesium": "1.144.0",
+    "next": "16.3.3",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.3",
-    "@types/node": "^22.10.0",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "tailwindcss": "^4.3.3",
-    "tsx": "^4.23.12",
-    "typescript": "^5.9.0"
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "tailwindcss": "4.3.3",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3"
   }
 }
