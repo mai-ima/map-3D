@@ -47,6 +47,8 @@ const MapCanvas = dynamic(() => import('./MapCanvas'), { ssr: false });
 const OFF_ROUTE_GRACE_MS = 4000;
 /** 再検索の最小間隔。連続して引き直さないための間 */
 const REROUTE_COOLDOWN_MS = 15000;
+/** 音声案内のオン/オフを覚えておくキー */
+const VOICE_STORAGE_KEY = 'ijm:voice';
 
 export default function AppShell() {
   const engineRef = useRef<MapEngine | null>(null);
@@ -63,6 +65,13 @@ export default function AppShell() {
   const [tick, setTick] = useState<NavigationTickResult | null>(null);
   const [navigating, setNavigating] = useState(false);
   const [rerouting, setRerouting] = useState(false);
+  /**
+   * 音声案内のオン/オフ。
+   * 同乗者がいるときや音楽を聴いているときに切れないと使いづらい。
+   * 選択は端末に覚えさせる（毎回切り直す手間をなくす）。
+   */
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const voiceRef = useRef(true);
   // tick ハンドラは再生成しないので、最新の目的地と移動手段は ref で参照する
   const destinationRef = useRef<PlacePoint | null>(null);
   const modeRef = useRef<TravelMode>('walk');
@@ -118,7 +127,7 @@ export default function AppShell() {
     const announcement = result.announcement;
     if (announcement && spokenRef.current !== announcement.id) {
       spokenRef.current = announcement.id;
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      if (voiceRef.current && typeof window !== 'undefined' && 'speechSynthesis' in window) {
         const utterance = new SpeechSynthesisUtterance(announcement.text);
         utterance.lang = 'ja-JP';
         utterance.rate = 1.05;
@@ -200,6 +209,37 @@ export default function AppShell() {
   useEffect(() => {
     destinationRef.current = destination;
   }, [destination]);
+
+  // 音声のオン/オフは端末に覚えさせる
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(VOICE_STORAGE_KEY);
+      if (saved !== null) {
+        const on = saved === '1';
+        setVoiceEnabled(on);
+        voiceRef.current = on;
+      }
+    } catch {
+      // プライベートブラウズなどで使えない場合は既定（オン）のまま
+    }
+  }, []);
+
+  const toggleVoice = useCallback(() => {
+    setVoiceEnabled((prev) => {
+      const next = !prev;
+      voiceRef.current = next;
+      try {
+        window.localStorage.setItem(VOICE_STORAGE_KEY, next ? '1' : '0');
+      } catch {
+        // 保存できなくても今回の選択は効く
+      }
+      if (!next && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        // 読み上げ中の案内はその場で止める
+        window.speechSynthesis.cancel();
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -655,6 +695,8 @@ export default function AppShell() {
         <NextTurnPanel
           tick={tick}
           rerouting={rerouting}
+          voiceEnabled={voiceEnabled}
+          onToggleVoice={toggleVoice}
           onStop={stopNavigation}
           onResumeFollow={() => engineRef.current?.resumeFollow()}
         />

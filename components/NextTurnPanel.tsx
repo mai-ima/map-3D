@@ -14,6 +14,8 @@ export interface NextTurnPanelProps {
   tick: NavigationTickResult | null;
   /** 経路を外れて再検索している最中か */
   rerouting?: boolean;
+  voiceEnabled?: boolean;
+  onToggleVoice?: () => void;
   onStop: () => void;
   onResumeFollow: () => void;
 }
@@ -34,6 +36,8 @@ const STATE_LABELS: Record<string, string> = {
 export default function NextTurnPanel({
   tick,
   rerouting,
+  voiceEnabled = true,
+  onToggleVoice,
   onStop,
   onResumeFollow,
 }: NextTurnPanelProps) {
@@ -90,12 +94,28 @@ export default function NextTurnPanel({
             )}
           </div>
 
-          <button
-            onClick={onStop}
-            className="shrink-0 rounded-full border border-white/12 px-3 py-1.5 text-[12px] text-mist-300 transition-colors hover:border-alert-400/50 hover:text-alert-400"
-          >
-            終了
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {onToggleVoice && (
+              <button
+                onClick={onToggleVoice}
+                aria-pressed={voiceEnabled}
+                aria-label={voiceEnabled ? '音声案内を切る' : '音声案内を入れる'}
+                className={`tap-target inline-flex items-center justify-center rounded-full border px-2.5 transition-colors ${
+                  voiceEnabled
+                    ? 'border-white/12 text-mist-200'
+                    : 'border-white/8 text-mist-600'
+                }`}
+              >
+                <Icon name={voiceEnabled ? 'volumeOn' : 'volumeOff'} size={17} />
+              </button>
+            )}
+            <button
+              onClick={onStop}
+              className="tap-target shrink-0 rounded-full border border-white/12 px-3 text-[12px] text-mist-300 transition-colors hover:border-alert-400/50 hover:text-alert-400"
+            >
+              終了
+            </button>
+          </div>
         </div>
 
         <div className="mt-3 flex items-center gap-3 border-t border-white/8 pt-2.5 text-[12px] text-mist-500">

@@ -66,14 +66,42 @@ export class GuidanceGenerator {
       const label = maneuverLabel(next);
       if (!label) return null;
 
-      const street = next.streetName ? `${next.streetName}方向、` : '';
-      const text =
-        trigger <= 40
-          ? `まもなく${label}です。`
-          : `${formatDistance(outlook.distanceToNext)}先、${street}${label}です。`;
+      // 経路エンジンが距離に応じた文言を返していれば、それを優先する。
+      // 実際の道路名や交差点名が入っているので、こちらで組み立てた文より正確。
+      const text = this.textFor(next, outlook.distanceToNext, trigger, label);
+      if (!text) return null;
       return { id, text, priority: trigger <= 120 ? 'high' : 'normal' };
     }
 
     return null;
+  }
+
+  /**
+   * 距離に応じた案内文を選ぶ。
+   *
+   * カーナビは近づくにつれて文言を変える。
+   *   遠い  … 「300メートル先、田町中央通りを右方向です」
+   *   直前  … 「右方向です」
+   * 経路エンジンが用意している文言があればそれを使い、
+   * 無ければ距離と種別から組み立てる。
+   */
+  private textFor(
+    maneuver: Maneuver,
+    distance: number,
+    trigger: number,
+    label: string,
+  ): string | null {
+    // 直前は短く言い切る。長い文だと曲がり終わってから読み終わる
+    if (trigger <= 40) {
+      return maneuver.verbalAlert ?? `まもなく${label}です。`;
+    }
+
+    const distanceText = formatDistance(distance);
+    if (maneuver.verbalInstruction) {
+      return `${distanceText}先、${maneuver.verbalInstruction}`;
+    }
+
+    const street = maneuver.streetName ? `${maneuver.streetName}方向、` : '';
+    return `${distanceText}先、${street}${label}です。`;
   }
 }

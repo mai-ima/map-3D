@@ -45,8 +45,18 @@ export interface Maneuver {
   type: ManeuverType;
   /** 案内文（可能なら日本語） */
   instruction: string;
-  /** 音声案内用の短い文 */
+  /**
+   * 音声案内用の文言。
+   *
+   * 経路エンジンは距離に応じた 3 種類を返す。カーナビは近づくにつれて
+   * 文言を切り替えるので、それに合わせて使い分ける。
+   *   verbalAlert       … 曲がる直前の短い警告
+   *   verbalInstruction … 通常の案内
+   *   verbalPost        … 通過後（「300メートル直進です」など）
+   */
   verbalInstruction?: string;
+  verbalAlert?: string;
+  verbalPost?: string;
   location: LatLng;
   /** 進入方位 (度, 0=北, 時計回り) */
   bearingBefore?: number;

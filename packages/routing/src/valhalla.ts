@@ -82,6 +82,8 @@ interface ValhallaManeuver {
   instruction?: string;
   verbal_pre_transition_instruction?: string;
   verbal_post_transition_instruction?: string;
+  /** 曲がる直前に読み上げる短い警告 */
+  verbal_transition_alert_instruction?: string;
   street_names?: string[];
   begin_street_names?: string[];
   time: number;
@@ -206,6 +208,8 @@ export class ValhallaProvider implements RouteProvider {
           type: MANEUVER_TYPES[m.type] ?? 'continue',
           instruction: m.instruction ?? '',
           verbalInstruction: m.verbal_pre_transition_instruction,
+          verbalAlert: m.verbal_transition_alert_instruction,
+          verbalPost: m.verbal_post_transition_instruction,
           location,
           bearingBefore: m.bearing_before ?? bearingFromShape(coordinates, shapeIndex, -1),
           bearingAfter: m.bearing_after ?? bearingFromShape(coordinates, shapeIndex, 1),
