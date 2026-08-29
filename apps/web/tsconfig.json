@@ -1,0 +1,36 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "noEmit": true,
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@ijm/shared": ["../../packages/shared/src/index.ts"],
+      "@ijm/shared/*": ["../../packages/shared/src/*"],
+      "@ijm/gis": ["../../packages/gis/src/index.ts"],
+      "@ijm/gis/*": ["../../packages/gis/src/*"],
+      "@ijm/routing": ["../../packages/routing/src/index.ts"],
+      "@ijm/routing/*": ["../../packages/routing/src/*"],
+      "@ijm/navigation": ["../../packages/navigation/src/index.ts"],
+      "@ijm/navigation/*": ["../../packages/navigation/src/*"],
+      "@ijm/map-engine": ["../../packages/map-engine/src/index.ts"],
+      "@ijm/map-engine/*": ["../../packages/map-engine/src/*"],
+      "@ijm/ai": ["../../packages/ai/src/index.ts"],
+      "@ijm/ai/*": ["../../packages/ai/src/*"],
+      "@ijm/ui": ["../../packages/ui/src/index.ts"],
+      "@ijm/ui/*": ["../../packages/ui/src/*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    "../../packages/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}

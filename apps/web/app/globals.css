@@ -1,0 +1,111 @@
+@import 'tailwindcss';
+
+/*
+ * デザイン方針:
+ *  3D シーンが主役なので、UI は「計器盤」に徹する。
+ *  背景は深いインクブルー、面はガラス（backdrop-blur）、
+ *  進行方向の情報だけを暖色（琥珀）で強調して視線を誘導する。
+ */
+@theme {
+  --color-ink-950: #060b12;
+  --color-ink-900: #0a1017;
+  --color-ink-800: #111a25;
+  --color-ink-700: #1a2635;
+  --color-ink-600: #26364a;
+
+  --color-mist-100: #eef4fb;
+  --color-mist-300: #b9c8db;
+  --color-mist-500: #7e91a8;
+
+  --color-signal-400: #3ddad7;
+  --color-signal-500: #22c1be;
+  --color-turn-400: #ffc255;
+  --color-turn-500: #f5a623;
+  --color-alert-400: #ff6b6b;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+    'Yu Gothic', system-ui, sans-serif;
+
+  --radius-panel: 16px;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-mist-100);
+  font-family: var(--font-sans);
+  overscroll-behavior: none;
+}
+
+body {
+  /* iOS のアドレスバー伸縮でレイアウトが崩れないようにする */
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Cesium の既定 UI（クレジット等）は自前 UI に統合するため隠す */
+.cesium-viewer-bottom,
+.cesium-widget-credits,
+.cesium-viewer-toolbar,
+.cesium-viewer-animationContainer,
+.cesium-viewer-timelineContainer {
+  display: none !important;
+}
+
+.cesium-widget canvas {
+  outline: none;
+  touch-action: none;
+}
+
+@utility glass {
+  background: color-mix(in oklab, var(--color-ink-900) 78%, transparent);
+  backdrop-filter: blur(20px) saturate(1.35);
+  -webkit-backdrop-filter: blur(20px) saturate(1.35);
+  border: 1px solid rgb(255 255 255 / 0.09);
+  box-shadow:
+    0 12px 40px -12px rgb(0 0 0 / 0.65),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
+
+@utility safe-top {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+
+@utility safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+/* スクロールバーを控えめに */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.14);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes ijm-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.animate-pulse-soft {
+  animation: ijm-pulse 1.8s ease-in-out infinite;
+}

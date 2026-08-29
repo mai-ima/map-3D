@@ -1,0 +1,32 @@
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+
+# 環境変数（秘密情報は絶対にコミットしない）
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# データ（サイズが大きく、再取得可能）
+data/osm/*
+data/plateau/*
+data/terrain/*
+data/tiles/*
+!data/**/README.md
+!data/**/.gitkeep
+
+# Cesium の静的アセット（postinstall で node_modules からコピーされる）
+apps/web/public/cesium/
+
+# Valhalla のタイル
+docker/valhalla_tiles/
+
+.DS_Store
+*.log
+coverage/
+.vercel

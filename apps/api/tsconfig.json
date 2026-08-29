@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@ijm/shared": ["../../packages/shared/src/index.ts"],
+      "@ijm/gis": ["../../packages/gis/src/index.ts"],
+      "@ijm/routing": ["../../packages/routing/src/index.ts"],
+      "@ijm/ai": ["../../packages/ai/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

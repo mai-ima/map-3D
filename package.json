@@ -1,0 +1,30 @@
+{
+  "name": "immersive-japan-map",
+  "version": "0.1.0",
+  "private": true,
+  "description": "オープンデータで日本の実在都市をリアルタイム3D空間として再現し、AIと自然なカメラワークでナビゲーションできるオープンソース地図",
+  "license": "MIT",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspace @ijm/web",
+    "build": "npm run build --workspace @ijm/web",
+    "start": "npm run start --workspace @ijm/web",
+    "lint": "npm run lint --workspace @ijm/web",
+    "typecheck": "tsc --noEmit -p apps/web/tsconfig.json",
+    "test": "tsx --test \"packages/*/src/__tests__/*.test.ts\"",
+    "api:dev": "npm run dev --workspace @ijm/api",
+    "validate:cities": "node scripts/preprocessing/validate-cities.mjs",
+    "import:osm": "tsx scripts/import-osm/import-osm.ts",
+    "docker:up": "docker compose -f docker/docker-compose.yml up -d",
+    "docker:down": "docker compose -f docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12"
+  }
+}
