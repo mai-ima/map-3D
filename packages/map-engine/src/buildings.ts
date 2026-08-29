@@ -253,7 +253,19 @@ export class BuildingLayerManager {
       },
     );
     this.removeProgressListeners.push(remove);
+
+    // タイル 1 枚の失敗は珍しくない（回線・配信側の都合）。
+    // ただし多発するときは表示が欠けているので、件数を数えて後から見られるようにする
+    const removeFailed = tileset.tileFailed.addEventListener(
+      (error: { message?: string; url?: string }) => {
+        this.onTileFailed?.(error?.message ?? error?.url ?? 'タイルを取得できませんでした');
+      },
+    );
+    this.removeProgressListeners.push(removeFailed);
   }
+
+  /** タイル取得に失敗したときの通知先（エンジンが設定する） */
+  onTileFailed: ((detail: string) => void) | null = null;
 
   /** 読み込み待ちの総数（流量制御の判断に使う） */
   get loadQueueLength(): number {

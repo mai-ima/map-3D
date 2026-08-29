@@ -17,6 +17,7 @@ import {
 import { BuildingLayerManager, type OptionalLayerId } from './buildings';
 import { ElevatedStructureLayer } from './elevated-structures';
 import { EnvironmentController, type WeatherKind } from './environment';
+import { HealthMonitor, type HealthEvent } from './health-monitor';
 import { RouteLayer } from './route-layer';
 import { StreetFurnitureLayer, type FurniturePoint } from './street-furniture';
 import {
@@ -102,6 +103,9 @@ export interface EngineDiagnostics {
   shadows: boolean;
   hdr: boolean;
   msaaSamples: number;
+  /** 実行中に起きた異常の要約（何も起きていなければ null） */
+  healthSummary: string | null;
+  recentIssues: HealthEvent[];
 }
 
 export interface BuildingPickResult {
@@ -145,6 +149,8 @@ export class MapEngine {
   private memoryReliefStep = 0;
   private removeContextListeners: (() => void) | null = null;
   private removeMemoryMonitor: (() => void) | null = null;
+  private removeErrorListeners: (() => void)[] = [];
+  readonly health = new HealthMonitor();
   private lastMemoryCheck = 0;
   private lastAdaptiveSse = 0;
   private lastSseChangeAt = 0;
@@ -243,6 +249,7 @@ export class MapEngine {
     this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
 
     this.buildings = new BuildingLayerManager(this.viewer, this.quality);
+    this.buildings.onTileFailed = (detail) => this.health.record('tile-failed', detail);
     this.routeLayer = new RouteLayer(this.viewer);
     this.environment = new EnvironmentController(this.viewer, this.quality);
     this.furniture = new StreetFurnitureLayer(this.viewer, this.quality.maxFurniture);
@@ -263,6 +270,7 @@ export class MapEngine {
     );
 
     this.setupContextLossHandlers();
+    this.setupErrorMonitor();
     this.setupMemoryMonitor();
     this.setupInteractionHandlers();
     void this.initialize(options);
@@ -289,6 +297,10 @@ export class MapEngine {
       await this.loadCity(city);
     } catch (error) {
       console.warn('[map-engine] 3D 建物データの読み込みに失敗しました', error);
+      this.health.record(
+        'tile-failed',
+        `建物データを取得できません: ${(error as Error)?.message ?? error}`,
+      );
     }
   }
 
@@ -304,8 +316,10 @@ export class MapEngine {
     } catch (e) {
       // 地形が取れなくても、建物とルートは表示できる
       console.warn('[map-engine] 地形の読み込みに失敗しました。楕円体で表示します。', e);
+      this.health.record('tile-failed', `地形を取得できません: ${(e as Error)?.message ?? e}`);
       this.viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
     }
+    this.watchProviderErrors();
     this.requestRender();
   }
 
@@ -321,6 +335,7 @@ export class MapEngine {
       }),
       0,
     );
+    this.watchProviderErrors();
     this.requestRender();
   }
 
@@ -440,6 +455,8 @@ export class MapEngine {
       shadows: this.quality.shadows,
       hdr: this.quality.hdr,
       msaaSamples: this.quality.msaaSamples,
+      healthSummary: this.health.describe(),
+      recentIssues: this.health.recent.slice(0, 5),
     };
   }
 
@@ -482,6 +499,10 @@ export class MapEngine {
    *   5) 最後に品質ティアを 1 段階下げる
    */
   private relieveMemoryPressure(report: MemoryPressureReport): void {
+    this.health.record(
+      'memory-pressure',
+      `タイル ${(report.tileBytes / 1024 / 1024).toFixed(0)}MB / ${report.level}`,
+    );
     this.options.onMemoryPressure?.(report);
     const step = report.level === 'critical' ? this.memoryReliefStep + 1 : this.memoryReliefStep;
     this.memoryReliefStep = Math.min(step + 1, 5);
@@ -523,12 +544,63 @@ export class MapEngine {
   }
 
   /**
+   * Cesium が内部で処理する異常を拾って記録する。
+   *
+   * 描画エラーもタイルの取得失敗も、既定では握りつぶされて画面には出ない。
+   * そのため「なんとなく動かない」という状態になりやすい。
+   * 記録しておけば、実機で何が起きているか数字で確認できる。
+   */
+  private setupErrorMonitor(): void {
+    const scene = this.viewer.scene;
+
+    // 描画エラー。既定では例外を投げずに継続するので、ここで記録だけする
+    const removeRender = scene.renderError.addEventListener((_scene: unknown, error: unknown) => {
+      this.health.record('render-error', (error as Error)?.message ?? String(error));
+    });
+    this.removeErrorListeners.push(removeRender);
+
+    // 地形の取得失敗。地形が出ないと建物が宙に浮くので、無視できない
+    this.watchProviderErrors();
+  }
+
+  /**
+   * 地形とベースマップの取得失敗を記録する。
+   *
+   * これらが取れないと「建物だけが宙に浮く」「地面が真っ黒」といった
+   * 分かりにくい壊れ方をする。プロバイダを差し替えるたびに登録し直す。
+   */
+  private watchProviderErrors(): void {
+    const terrain = this.viewer.terrainProvider as unknown as {
+      errorEvent?: { addEventListener: (cb: (e: unknown) => void) => () => void };
+    };
+    if (terrain?.errorEvent) {
+      this.removeErrorListeners.push(
+        terrain.errorEvent.addEventListener((e: unknown) => {
+          this.health.record('tile-failed', `地形: ${(e as Error)?.message ?? String(e)}`);
+        }),
+      );
+    }
+
+    const imagery = this.imageryLayer?.imageryProvider as unknown as {
+      errorEvent?: { addEventListener: (cb: (e: unknown) => void) => () => void };
+    };
+    if (imagery?.errorEvent) {
+      this.removeErrorListeners.push(
+        imagery.errorEvent.addEventListener((e: unknown) => {
+          this.health.record('tile-failed', `地図: ${(e as Error)?.message ?? String(e)}`);
+        }),
+      );
+    }
+  }
+
+  /**
    * ナビ中かどうかに関わらず、常にメモリ使用量を見張る。
    * 街を眺めているだけでも 3D Tiles は読み込まれ続けるため、監視は常時必要。
    */
   private setupMemoryMonitor(): void {
     const remove = this.viewer.scene.postRender.addEventListener(() => {
       const now = Date.now();
+      this.health.frame(now);
       this.fpsFrames += 1;
       if (now - this.fpsLastSample >= 1000) {
         this.fps = Math.round((this.fpsFrames * 1000) / (now - this.fpsLastSample));
@@ -540,6 +612,8 @@ export class MapEngine {
       this.updateAdaptiveDetail();
       this.followCameraForBuildings();
       this.memoryWatchdog.check(this.buildings.totalMemoryUsageInBytes, now);
+      // ナビ中は連続描画しているはずなので、止まっていたら異常
+      if (this.navigating) this.health.checkStall(now);
     });
     this.removeMemoryMonitor = remove;
   }
@@ -604,10 +678,12 @@ export class MapEngine {
       // 既定動作を止めないと restored が発火しない
       event.preventDefault();
       console.warn('[map-engine] WebGL コンテキストが失われました');
+      this.health.record('context-lost', 'GPU リソースが回収されました');
       this.options.onContextLost?.();
     };
     const onRestored = (): void => {
       console.info('[map-engine] WebGL コンテキストが復帰しました');
+      this.health.record('context-restored', '描画を再開しました');
       this.options.onContextRestored?.();
       this.requestRender();
     };
@@ -624,6 +700,7 @@ export class MapEngine {
     const next = force ? forceDegradeTier(this.qualityTier) : degradeTier(this.qualityTier);
     if (next === this.qualityTier) return;
     console.info(`[map-engine] 描画性能が不足しているため品質を ${next} に下げます`);
+    this.health.record('quality-degraded', `${this.qualityTier} → ${next}`);
     this.setQualityTier(next);
   }
 
@@ -1031,6 +1108,8 @@ export class MapEngine {
     this.removeContextListeners = null;
     this.removeMemoryMonitor?.();
     this.removeMemoryMonitor = null;
+    for (const remove of this.removeErrorListeners) remove();
+    this.removeErrorListeners = [];
     this.structures.clear();
     this.environment.destroy();
     this.furniture.clear();

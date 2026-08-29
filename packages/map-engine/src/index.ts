@@ -1,5 +1,6 @@
 export * from './engine';
 export * from './quality';
+export * from './health-monitor';
 export * from './buildings';
 export * from './building-style';
 export * from './route-layer';

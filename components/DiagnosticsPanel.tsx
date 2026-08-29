@@ -67,8 +67,18 @@ export default function DiagnosticsPanel({ engine, onClose }: Props) {
     ),
   ];
 
+  const issueLabels: Record<string, string> = {
+    'tile-failed': 'タイル取得失敗',
+    'render-error': '描画エラー',
+    'context-lost': '描画中断',
+    'context-restored': '描画復帰',
+    'memory-pressure': 'メモリ逼迫',
+    'quality-degraded': '品質自動調整',
+    stall: '描画停止',
+  };
+
   return (
-    <div className="pointer-events-auto absolute bottom-4 left-4 z-30 w-[19rem] rounded-xl bg-ink-900/92 p-3 text-[11px] ring-1 ring-white/10 backdrop-blur">
+    <div className="pointer-events-auto absolute bottom-4 left-4 z-30 max-h-[70dvh] w-[19rem] overflow-y-auto rounded-xl bg-ink-900/92 p-3 text-[11px] ring-1 ring-white/10 backdrop-blur">
       <div className="mb-2 flex items-center justify-between">
         <span className="font-medium tracking-wide text-mist-300">描画診断</span>
         <button
@@ -92,10 +102,34 @@ export default function DiagnosticsPanel({ engine, onClose }: Props) {
           </div>
         ))}
       </dl>
-      <p className="mt-2 border-t border-white/8 pt-2 leading-relaxed text-mist-600">
-        3D タイル使用量が目安を大きく超えるか、JS ヒープが上限に近づくとタブが落ちます。
-        その手前で自動的に負荷を下げます。
-      </p>
+      {diag.healthSummary ? (
+        <div className="mt-2 border-t border-white/8 pt-2">
+          <p className="mb-1 font-medium text-amber-300">検出された問題</p>
+          <p className="mb-1.5 text-mist-400">{diag.healthSummary}</p>
+          <ul className="space-y-0.5">
+            {diag.recentIssues.map((e, i) => (
+              <li key={`${e.at}-${i}`} className="flex gap-1.5 text-mist-500">
+                <span className="shrink-0 tabular-nums">
+                  {new Date(e.at).toLocaleTimeString('ja-JP', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                  })}
+                </span>
+                <span className="min-w-0">
+                  <span className="text-mist-400">{issueLabels[e.kind] ?? e.kind}</span>
+                  {e.detail && <span className="block break-words">{e.detail}</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="mt-2 border-t border-white/8 pt-2 leading-relaxed text-mist-600">
+          問題は検出されていません。3D タイル使用量が目安を大きく超えるか、
+          JS ヒープが上限に近づくと自動的に負荷を下げます。
+        </p>
+      )}
     </div>
   );
 }
