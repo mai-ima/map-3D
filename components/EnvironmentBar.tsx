@@ -26,7 +26,23 @@ export interface EnvironmentBarProps {
   onTogglePoi: (category: string) => void;
   onToggleFurniture: () => void;
   onQualityChange: (choice: string) => void;
+  /** PLATEAU の追加レイヤ（LOD3 詳細・橋梁・都市設備・植生） */
+  optionalLayers: string[];
+  onToggleLayer: (id: string) => void;
 }
+
+/**
+ * 建物のベース（LOD2）に重ねられる PLATEAU の追加レイヤ。
+ *
+ * LOD3（開口部）・LOD4（室内）は整備済みの区が限られており、
+ * 未整備の範囲では重ねられない。その場合は選んでも変化しない旨を UI に出す。
+ */
+const OPTIONAL_LAYERS: { id: string; label: string; note: string }[] = [
+  { id: 'detail', label: '詳細モデル（LOD3）', note: '窓・扉などの開口部。整備済みの区のみ' },
+  { id: 'bridge', label: '橋梁', note: '' },
+  { id: 'furniture', label: '都市設備', note: '' },
+  { id: 'vegetation', label: '植生', note: '' },
+];
 
 /**
  * 描画品質の手動切り替え。
@@ -192,6 +208,24 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
             <Chip active={props.furnitureEnabled} onClick={props.onToggleFurniture}>
               {props.furnitureEnabled ? '表示中' : '表示する'}
             </Chip>
+          </Section>
+
+          <Section title="PLATEAU の追加レイヤ">
+            <div className="flex flex-wrap gap-1.5">
+              {OPTIONAL_LAYERS.map((l) => (
+                <Chip
+                  key={l.id}
+                  active={props.optionalLayers.includes(l.id)}
+                  onClick={() => props.onToggleLayer(l.id)}
+                >
+                  {l.label}
+                </Chip>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-mist-500">
+              LOD3 は窓や扉の開口部まで再現したモデル。国土交通省 PLATEAU の整備範囲に
+              限られるため、未整備の地域では表示が変わりません。
+            </p>
           </Section>
 
           <Section title="描画品質">

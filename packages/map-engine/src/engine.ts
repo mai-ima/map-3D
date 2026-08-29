@@ -14,7 +14,7 @@ import {
   type NavigationSessionOptions,
   type NavigationTickResult,
 } from '@ijm/navigation';
-import { BuildingLayerManager } from './buildings';
+import { BuildingLayerManager, type OptionalLayerId } from './buildings';
 import { EnvironmentController, type WeatherKind } from './environment';
 import { RouteLayer } from './route-layer';
 import { StreetFurnitureLayer, type FurniturePoint } from './street-furniture';
@@ -361,6 +361,25 @@ export class MapEngine {
     if (frustum instanceof Cesium.PerspectiveFrustum) {
       frustum.far = this.quality.viewDistance;
     }
+  }
+
+  /**
+   * 追加レイヤ（LOD3 詳細・橋梁・都市設備・植生）の表示を切り替える。
+   * 整備されていない範囲では false を返す（異常ではなく、単に重ねられない）。
+   */
+  async setOptionalLayer(id: OptionalLayerId, enabled: boolean): Promise<boolean> {
+    if (!enabled) {
+      this.buildings.disableLayer(id);
+      this.requestRender();
+      return false;
+    }
+    const ok = await this.buildings.enableLayer(id);
+    this.requestRender();
+    return ok;
+  }
+
+  isOptionalLayerEnabled(id: OptionalLayerId): boolean {
+    return this.buildings.isLayerEnabled(id);
   }
 
   /** 端末判定による既定のティア（手動指定から「自動」に戻すときに使う） */

@@ -19,10 +19,10 @@ import type { QualitySettings } from './quality';
  * 開いた直後に数千リクエストと大量のメモリ確保が起きるため、
  * BFF (/api/tileset) で必要な範囲の子だけに絞ってから読み込む。
  */
-function tilesetUrl(city: City, lod: 'near' | 'far', bbox: BBox): string {
+function tilesetUrl(city: City, layer: string, bbox: BBox): string {
   const params = new URLSearchParams({
     city: city.id,
-    lod,
+    layer,
     bbox: bbox.map((n) => n.toFixed(4)).join(','),
   });
   return `/api/tileset?${params.toString()}`;
@@ -33,6 +33,19 @@ export interface LoadedCityTilesets {
   near: Cesium.Cesium3DTileset;
   far?: Cesium.Cesium3DTileset;
 }
+
+/**
+ * 建物のベース（LOD2）に重ねられる追加レイヤ。
+ *
+ *   detail    … LOD3（開口部）・LOD4（室内）。整備範囲が狭いので重ねる形で扱う
+ *   bridge    … 橋梁
+ *   furniture … 都市設備
+ *   vegetation… 植生
+ *
+ * いずれも整備されていない範囲では BFF が 404 を返すので、
+ * 呼び出し側は「重ねられなかった」ことを普通の結果として扱える。
+ */
+export type OptionalLayerId = 'detail' | 'bridge' | 'furniture' | 'vegetation';
 
 /**
  * 遠景 LOD1 用の中立色。
@@ -80,6 +93,8 @@ export class BuildingLayerManager {
   private pendingRequests = 0;
   private tilesProcessing = 0;
   private removeProgressListeners: (() => void)[] = [];
+  /** 追加レイヤ（LOD3 詳細・橋梁・都市設備・植生） */
+  private optionalLayers = new Map<OptionalLayerId, Cesium.Cesium3DTileset>();
   /** 透過中の feature と元の色 */
   private dimmed = new Map<Cesium.Cesium3DTileFeature, Cesium.Color>();
 
@@ -94,7 +109,10 @@ export class BuildingLayerManager {
 
   get tilesets(): Cesium.Cesium3DTileset[] {
     if (!this.loaded) return [];
-    return this.loaded.far ? [this.loaded.near, this.loaded.far] : [this.loaded.near];
+    const list = [this.loaded.near];
+    if (this.loaded.far) list.push(this.loaded.far);
+    list.push(...this.optionalLayers.values());
+    return list;
   }
 
   private tilesetOptions(isFar: boolean): Cesium.Cesium3DTileset.ConstructorOptions {
@@ -205,6 +223,10 @@ export class BuildingLayerManager {
 
   unload(): void {
     this.activeBBox = null;
+    for (const tileset of this.optionalLayers.values()) {
+      this.viewer.scene.primitives.remove(tileset);
+    }
+    this.optionalLayers.clear();
     for (const remove of this.removeProgressListeners) remove();
     this.removeProgressListeners = [];
     this.pendingRequests = 0;
@@ -299,6 +321,49 @@ export class BuildingLayerManager {
     } finally {
       this.refreshing = false;
     }
+  }
+
+  /**
+   * 追加レイヤを重ねる。整備されていない範囲では false を返す（異常ではない）。
+   *
+   * ベースの建物（LOD2）はそのまま残す。LOD3・LOD4 は整備済みの区が限られており、
+   * 広域を置き換えられないため、重ねる形にしている。
+   */
+  async enableLayer(id: OptionalLayerId): Promise<boolean> {
+    if (!this.loaded || this.optionalLayers.has(id)) return false;
+    const city = this.loaded.city;
+    const bbox = this.activeBBox ?? city.bbox;
+
+    try {
+      const tileset = await Cesium.Cesium3DTileset.fromUrl(
+        tilesetUrl(city, id, bbox),
+        this.tilesetOptions(false),
+      );
+      if (!this.loaded || this.loaded.city.id !== city.id) {
+        tileset.destroy();
+        return false;
+      }
+      tileset.shadows = Cesium.ShadowMode.DISABLED;
+      this.applyRealisticLighting(tileset);
+      this.watchLoadProgress(tileset);
+      this.viewer.scene.primitives.add(tileset);
+      this.optionalLayers.set(id, tileset);
+      return true;
+    } catch {
+      // 未整備の範囲では BFF が 404 を返す。重ねられないだけで異常ではない
+      return false;
+    }
+  }
+
+  disableLayer(id: OptionalLayerId): void {
+    const tileset = this.optionalLayers.get(id);
+    if (!tileset) return;
+    this.viewer.scene.primitives.remove(tileset);
+    this.optionalLayers.delete(id);
+  }
+
+  isLayerEnabled(id: OptionalLayerId): boolean {
+    return this.optionalLayers.has(id);
   }
 
   /** 近景タイルセットの精細度だけを差し替える（カメラ高度に応じた制御用） */

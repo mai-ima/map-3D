@@ -21,7 +21,8 @@
     "preview:icons": "tsx scripts/preprocessing/preview-icons.mts",
     "docker:up": "docker compose -f docker/docker-compose.yml up -d",
     "docker:down": "docker compose -f docker/docker-compose.yml down",
-    "api:start": "tsx apps/api/src/server.ts"
+    "api:start": "tsx apps/api/src/server.ts",
+    "survey:lod": "node scripts/preprocessing/survey-lod.mjs"
   },
   "dependencies": {
     "cesium": "1.144.0",

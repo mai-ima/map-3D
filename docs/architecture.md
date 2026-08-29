@@ -157,6 +157,45 @@ Cesium への適用は `map-engine` 側のアダプタが行う。これによ�
 
 ---
 
+### 4.1 PLATEAU の LOD と地物タイプ
+
+PLATEAU の 3D Tiles は `{area}-{feature}-{lod}-{year}` という ID で配信される。
+URL の組み立てと LOD の扱いは `packages/shared/src/plateau.ts` に集約してある
+（配信側の命名規則が変わったときに直す場所を 1 箇所にするため）。
+
+| LOD | 内容 | 東京都の整備状況（2026-08 実測） |
+| --- | --- | --- |
+| LOD1 | 箱型（高さのみ） | 62 市区町村 |
+| LOD2 | 屋根形状＋実写テクスチャ | 62 市区町村 |
+| LOD3 | 窓・扉などの開口部 | 港区・台東区・墨田区の 3 区 |
+| LOD4 | 室内空間 | 台東区のみ |
+
+`maxlodN`（利用可能な最大 LOD）と `lodN`（その LOD ちょうど）の 2 系統がある。
+`maxlod2` / `maxlod3` / `maxlod4` はいずれも同じ内容を返すため、
+LOD3 以上を明示的に得るには `lod3` / `lod4` を指定する必要がある。
+
+**未整備でも HTTP 200 が返る**（`root.children` が 0 件になる）ので、
+URL の存在確認だけでは可用性を判断できない。BFF (`/api/tileset`) は
+bbox で絞ったあとに子が残るかどうかで採否を決め、残らなければ下位 LOD に落とす。
+
+LOD3・LOD4 は整備範囲が狭く広域のベースを置き換えられないため、
+**LOD2 のベースに重ねる追加レイヤ**として扱う。
+このとき LOD2 まで落とすとベースと同じデータを二重に読むことになるので、
+詳細レイヤのフォールバックは LOD3 で止める（`lodFallbackChain(spec, 3)`）。
+
+建物以外の地物も同じ仕組みで重ねられる。東京都の整備状況は
+橋梁 21 / 都市設備 13 / 植生 13 市区町村、道路は 0 件（2026-08 実測）。
+
+整備状況は次のコマンドで確認できる。都市を追加するときはこれを見てから
+`packages/shared/src/cities.ts` に反映する。
+
+```
+npm run survey:lod          # 登録済み都市の都道府県を調べる
+npm run survey:lod -- 13 14 # 都道府県コードを直接指定
+```
+
+---
+
 ## 5. 各データのライセンス
 
 | データ | ライセンス | 表示義務 | 備考 |
@@ -245,6 +284,27 @@ UI 実装: 画面右下に常時「データ出典」ボタン、タップで全
 
 ### `GET /api/building?lat=&lng=` / `?osmId=`
 → OSM の建物タグ + PLATEAU 属性（取得できる範囲）
+
+### `GET /api/tileset?city=tokyo&layer=near&bbox=minLng,minLat,maxLng,maxLat`
+
+PLATEAU の tileset.json を、指定範囲に交差する市区町村だけに絞って配信する。
+`layer` は `near`（LOD2 ベース）/ `far`（LOD1 遠景）/ `detail`（LOD3・LOD4）/
+都市定義の `overlays` に登録した ID（`bridge` / `furniture` / `vegetation`）。
+未整備で中身が残らない場合は 404 を返し、呼び出し側は「重ねない」と判断する。
+
+レスポンスヘッダで結果を確認できる。
+
+```
+X-Tileset-Children: 8/62                  絞り込み後 / 元の市区町村数
+X-Tileset-Dataset:  13-bldg-lod3-latest   実際に採用されたデータセット
+X-Tileset-Lod:      lod3
+```
+
+### `GET /api/health`
+
+外部サービス（Nominatim / Overpass / Valhalla / 地理院タイル / PLATEAU）の
+解決後 URL と到達性を返す。デプロイ先での設定事故を切り分けるための診断用。
+API キーの値は返さない（設定の有無のみ）。
 
 ### `GET /api/config`
 → クライアントに渡してよい公開設定のみ（タイル URL、既定都市、有効機能フラグ）。**秘密情報は返さない**。

@@ -2,39 +2,25 @@
  * 都市レジストリ。
  *
  * 全国展開は「このファイルにエントリを 1 つ追加する」だけで完結する設計にしている。
- * アプリは起動時にすべての都市を読み込むことはせず、選択された都市（および隣接都市）の
- * bbox に入ったときにだけ 3D Tiles を attach する。
+ * アプリは起動時にすべての都市を読み込むことはせず、選択された都市の
+ * カメラ周辺に入ったときにだけ 3D Tiles を attach する。
  *
- * PLATEAU の 3D Tiles URL 仕様:
- *   https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/{area}-{type}-{lod}-{year}/tileset.json
- *   area: 都道府県コード(2桁) / 市区町村コード(5桁) / "all"
- *   lod : lod1 | lod2 | maxlod1 | maxlod2 (+ "-notexture")
- *   year: 西暦 または "latest"
+ * PLATEAU の URL 組み立てと LOD の扱いは plateau.ts に分離してある
+ * （配信側の命名規則が変わったときに直す場所を 1 箇所にするため）。
  */
 
 import type { BBox, LatLng } from './types';
+import { plateauTilesetUrl, type PlateauTilesetSpec } from './plateau';
 
-export const PLATEAU_3DTILES_BASE = 'https://api.plateauview.mlit.go.jp/datacatalog/3dtiles';
-export const PLATEAU_TERRAIN_URL = 'https://tile.plateauview.mlit.go.jp/terrain';
+// 既存の import 経路を壊さないよう、ここからも再エクスポートしておく
+export { PLATEAU_3DTILES_BASE, PLATEAU_TERRAIN_URL, plateauTilesetUrl } from './plateau';
+export type { PlateauTilesetSpec } from './plateau';
 
-export interface PlateauTilesetSpec {
-  /** 都道府県コード or 市区町村コード or "all" */
-  area: string;
-  featureType?: 'bldg' | 'brid' | 'tran' | 'veg' | 'frn';
-  lod: 'lod1' | 'lod2' | 'maxlod1' | 'maxlod2';
-  notexture?: boolean;
-  year?: string;
-}
-
-export function plateauTilesetUrl(spec: PlateauTilesetSpec): string {
-  const parts = [
-    spec.area,
-    spec.featureType ?? 'bldg',
-    spec.lod,
-    ...(spec.notexture ? ['notexture'] : []),
-    spec.year ?? 'latest',
-  ];
-  return `${PLATEAU_3DTILES_BASE}/${parts.join('-')}/tileset.json`;
+/** 建物以外の地物レイヤ */
+export interface CityOverlay {
+  id: string;
+  label: string;
+  spec: PlateauTilesetSpec;
 }
 
 /** 都市内の注目エリア（段階的に追加していく単位） */
@@ -62,6 +48,16 @@ export interface City {
   near: PlateauTilesetSpec;
   /** 遠景用（軽量 LOD1、テクスチャ無し） */
   far?: PlateauTilesetSpec;
+  /**
+   * 詳細モデル（LOD3 = 開口部、LOD4 = 室内）。
+   *
+   * 整備範囲が非常に狭く、広域のベースを置き換えるものではないため、
+   * 「整備済みの区にだけ重ねる追加レイヤ」として扱う。
+   * 未整備の場合は中身が空の tileset が返るので、BFF 側で判定して無視する。
+   */
+  detail?: PlateauTilesetSpec;
+  /** 建物以外の地物（橋梁・都市設備・植生など）。任意で重ねられる */
+  overlays?: CityOverlay[];
   initialHeight: number;
   districts: District[];
   /** データ整備状況のメモ（PLATEAU の整備差を UI に出すため） */
@@ -79,6 +75,15 @@ export const CITIES: readonly City[] = [
     bbox: [139.6, 35.58, 139.85, 35.76],
     near: { area: '13', lod: 'maxlod2' },
     far: { area: '13', lod: 'maxlod1' },
+    // LOD4（室内）は台東区のみ、LOD3（開口部）は港区・台東区・墨田区のみ整備済み
+    // （2026-08 時点の実測 / npm run survey:lod で確認できる）。
+    // LOD4 を要求し、無ければ LOD3 に落ちる。LOD2 までは落とさない（ベースと重複するため）。
+    detail: { area: '13', lod: 'lod4' },
+    overlays: [
+      { id: 'bridge', label: '橋梁', spec: { area: '13', featureType: 'brid', lod: 'maxlod2' } },
+      { id: 'furniture', label: '都市設備', spec: { area: '13', featureType: 'frn', lod: 'maxlod2' } },
+      { id: 'vegetation', label: '植生', spec: { area: '13', featureType: 'veg', lod: 'maxlod2' } },
+    ],
     initialHeight: 1800,
     districts: [
       {

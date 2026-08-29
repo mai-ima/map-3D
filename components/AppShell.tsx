@@ -13,7 +13,7 @@ import type {
   TravelMode,
 } from '@ijm/shared';
 import { BASE_ATTRIBUTION_IDS, getDefaultCity, resolveAttributions } from '@ijm/shared';
-import type { MapEngine, QualityTier } from '@ijm/map-engine';
+import type { MapEngine, OptionalLayerId, QualityTier } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
 import { Icon } from '@ijm/ui';
@@ -58,6 +58,7 @@ export default function AppShell() {
   const [imageryId, setImageryId] = useState('seamlessphoto');
   const [qualityLabel, setQualityLabel] = useState('自動判定中');
   const [qualityChoice, setQualityChoice] = useState('auto');
+  const [optionalLayers, setOptionalLayers] = useState<string[]>([]);
 
   const [poiCategories, setPoiCategories] = useState<string[]>([]);
   const [furnitureEnabled, setFurnitureEnabled] = useState(false);
@@ -120,6 +121,31 @@ export default function AppShell() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('debug') === '1') setShowDiagnostics(true);
   }, []);
+
+  const handleToggleLayer = useCallback(
+    async (id: string) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      const layer = id as OptionalLayerId;
+
+      if (engine.isOptionalLayerEnabled(layer)) {
+        await engine.setOptionalLayer(layer, false);
+        setOptionalLayers((prev) => prev.filter((v) => v !== id));
+        return;
+      }
+
+      const ok = await engine.setOptionalLayer(layer, true);
+      if (ok) {
+        setOptionalLayers((prev) => [...prev, id]);
+      } else {
+        // 未整備の範囲では重ねられない。異常ではないので、その旨だけ伝える
+        notify('この範囲には該当する PLATEAU データがありません');
+      }
+    },
+    // notify は再生成されないため依存に含めなくてよい
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   const handleQualityChange = useCallback((choice: string) => {
     const engine = engineRef.current;
@@ -487,6 +513,8 @@ export default function AppShell() {
               qualityLabel={qualityLabel}
               qualityChoice={qualityChoice}
               onQualityChange={handleQualityChange}
+              optionalLayers={optionalLayers}
+              onToggleLayer={handleToggleLayer}
               followRealTime={followRealTime}
               poiCategories={poiCategories}
               furnitureEnabled={furnitureEnabled}
