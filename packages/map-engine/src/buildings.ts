@@ -8,7 +8,7 @@
 
 import * as Cesium from 'cesium';
 import type { BBox, City, LatLng } from '@ijm/shared';
-import { bboxAround, bboxIntersects } from '@ijm/shared';
+import { bboxAround, bboxIntersects, isDirectTileset } from '@ijm/shared';
 import { untexturedBuildingStyle } from './building-style';
 import type { QualitySettings } from './quality';
 
@@ -77,12 +77,78 @@ export function farTilesetStyle(): Cesium.Cesium3DTileStyle {
 }
 
 /**
+ * 遠景 LOD1 を重ねる意味があるか。
+ *
+ * 遠景は「近景が読み込んでいない遠くの街並み」を薄く描くためのもの。
+ * ところが浜松・姫路のように tileset.json を直接指定している都市では、
+ * 近景 (LOD2) と遠景 (LOD1) がまったく同じ範囲・同じ四分木を返す。
+ * 実測（2026-08, 浜松市旧中区）:
+ *
+ *   near lod2  範囲 [137.6808, 34.6804, 137.7611, 34.7831] 子 4 件
+ *   far  lod1  範囲 [137.6808, 34.6804, 137.7611, 34.7831] 子 4 件（同一）
+ *
+ * この状態で両方を出すと、すべての建物が LOD2 の屋根形状と LOD1 の箱で
+ * 二重に描かれる。同じ場所に 2 つの面があるので深度が競合してちらつき、
+ * 屋根の形も箱に埋もれて見えなくなる。
+ *
+ * 近景が市域全体をカバーしているなら、遠景は足すものが何も無い。
+ * 読まないことで二重描画が消え、タイルの読み込みも半分になる。
+ */
+export function needsFarTileset(city: City): boolean {
+  return !(city.near && isDirectTileset(city.near));
+}
+
+/**
+ * 近景がカバーしている範囲を遠景から切り抜くための面を作る。
+ *
+ * 近景 (LOD2) と遠景 (LOD1) は同じ建物を含む。重ねて描くと、
+ * 屋根形状のある LOD2 と箱の LOD1 が同じ場所で深度を奪い合い、
+ * 建物が二重に見えたりちらついたりする。
+ *
+ * ClippingPlaneCollection は、unionClippingRegions を false にすると
+ * 「すべての面で切り取る側と判定された領域」だけを切り取る（＝論理積）。
+ * 矩形の 4 辺それぞれで内側が負になるように面を置けば、
+ * 矩形の内側だけがくり抜かれる。
+ */
+function createHoleClipping(bbox: BBox | null): Cesium.ClippingPlaneCollection | undefined {
+  if (!bbox) return undefined;
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const centre = Cesium.Cartesian3.fromDegrees((minLng + maxLng) / 2, (minLat + maxLat) / 2);
+  const cos = Math.cos((((minLat + maxLat) / 2) * Math.PI) / 180) || 1;
+  // 中心からの半径 (m)。局所的な東西南北の平面として扱う
+  const halfEast = ((maxLng - minLng) / 2) * 111_320 * cos;
+  const halfNorth = ((maxLat - minLat) / 2) * 111_320;
+
+  return new Cesium.ClippingPlaneCollection({
+    // 局所座標系は x = 東, y = 北。各辺の外向き法線と、中心からの距離
+    planes: [
+      new Cesium.ClippingPlane(new Cesium.Cartesian3(1, 0, 0), -halfEast),
+      new Cesium.ClippingPlane(new Cesium.Cartesian3(-1, 0, 0), -halfEast),
+      new Cesium.ClippingPlane(new Cesium.Cartesian3(0, 1, 0), -halfNorth),
+      new Cesium.ClippingPlane(new Cesium.Cartesian3(0, -1, 0), -halfNorth),
+    ],
+    // すべての面の内側にあるものだけを切り取る（論理積）
+    unionClippingRegions: false,
+    modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(centre),
+    edgeWidth: 0,
+  });
+}
+
+/**
  * 遠景 LOD1 の範囲。テクスチャを持たないぶん広く取れる。
  * 近景の半径は品質設定 (nearRadiusM) 側で端末に応じて決める。
  */
 const FAR_RADIUS_M = 7000;
 /** 読み込み済み範囲の縁からこれだけ内側に入ったら、範囲を取り直す */
 const REFRESH_MARGIN_M = 1000;
+
+/**
+ * 範囲を取り直すとき、新しい建物が出そろうのを待つ上限 (ms)。
+ *
+ * これを超えたら、読めているぶんだけで切り替える。
+ * 待ち続けると古い範囲と新しい範囲の両方をメモリに抱えることになる。
+ */
+const TILE_SWAP_TIMEOUT_MS = 8000;
 
 export class BuildingLayerManager {
   private loaded: LoadedCityTilesets | null = null;
@@ -124,24 +190,50 @@ export class BuildingLayerManager {
       cacheBytes: isFar ? Math.floor(q.cacheBytes * 0.35) : q.cacheBytes,
       maximumCacheOverflowBytes: q.maximumCacheOverflowBytes,
       cullWithChildrenBounds: true,
+      // 移動中もタイルを要求し続ける。強く間引くと、動かしている間は
+      // 建物が現れず、止めた瞬間に一斉に出る（＝ちらつきの原因になる）。
+      // Cesium の既定値と同じ 60 で、要求のむだ撃ちだけを抑える
       cullRequestsWhileMoving: true,
-      cullRequestsWhileMovingMultiplier: 10,
+      cullRequestsWhileMovingMultiplier: 60,
       preloadWhenHidden: false,
       preloadFlightDestinations: true,
-      preferLeaves: !isFar,
-      progressiveResolutionHeightFraction: 0.4,
+
+      /**
+       * 中間 LOD を飛ばさず、親から順に精細化する。
+       *
+       * preferLeaves（葉タイルを先に要求する）は skipLevelOfDetail と
+       * 組み合わせて使うもので、中間 LOD を全部読む設定と併せると
+       * 「粗い親が出る前に葉を待つ」形になり、建物が出たり消えたりする。
+       * 親から順に読めば、粗い状態から段階的に精細になるだけで済む。
+       */
+      skipLevelOfDetail: false,
+      preferLeaves: false,
+
+      /**
+       * 低解像度で先に埋める機能は使わない。
+       *
+       * progressiveResolutionHeightFraction は、画面の一部を粗いタイルで
+       * 先に埋めてから精細化する。Cesium の説明どおり、その切り替わりが
+       * ポッピング（急な入れ替わり）として見える。
+       * 粗いタイルを別途読むぶん通信も増えるので、切ると軽くもなる。
+       */
+      progressiveResolutionHeightFraction: 0,
+
       // 視線方向の奥ほど SSE を緩める。街を見渡す視点で読み込むタイル数を大きく減らせる
       dynamicScreenSpaceError: true,
       dynamicScreenSpaceErrorDensity: 0.00278,
       dynamicScreenSpaceErrorFactor: 4,
-      // 中間 LOD を飛ばさない。飛ばすと一時的に高精細タイルを大量に抱えてメモリが跳ねる
-      skipLevelOfDetail: false,
-      // 視野の中心から離れたタイルを後回しにする。
-      // 円錐を狭くしすぎると画面の大半が粗いままになるので、
-      // 中心 35% を最高精細とし、カメラが止まればすぐ周辺も読み込む
+
+      /**
+       * 視野の中心から離れたタイルの精細度を落とす。
+       *
+       * 読み込む量を減らす効果は大きいので残すが、遅延は入れない。
+       * 遅延を入れると、カメラを動かしている間は周辺が読まれず、
+       * 止めた瞬間に現れるため、周辺だけがちらついて見える。
+       */
       foveatedScreenSpaceError: true,
       foveatedConeSize: 0.35,
-      foveatedTimeDelay: 0.15,
+      foveatedTimeDelay: 0,
       shadows: this.quality.shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED,
     };
   }
@@ -197,7 +289,7 @@ export class BuildingLayerManager {
     // 遠景は近景の表示が始まってから読む。
     // 同時に読むと開いた直後のリクエストとメモリ確保が集中し、
     // 端末によってはタブごと落ちる。近くから順に見えてくる方が体感も良い。
-    if (city.far && this.quality.useFarTileset) {
+    if (city.far && this.quality.useFarTileset && needsFarTileset(city)) {
       void this.loadFarTileset(city);
     }
 
@@ -224,6 +316,10 @@ export class BuildingLayerManager {
       }
       this.applyStyle(far, farTilesetStyle);
       far.shadows = Cesium.ShadowMode.DISABLED;
+      // 近景が描いている範囲は遠景から切り抜く。
+      // 重ねると同じ建物が LOD2 の屋根形状と LOD1 の箱で二重に描かれる
+      const hole = createHoleClipping(this.activeBBox);
+      if (hole) far.clippingPlanes = hole;
       this.watchLoadProgress(far);
       this.applyRealisticLighting(far);
       this.viewer.scene.primitives.add(far);
@@ -349,7 +445,7 @@ export class BuildingLayerManager {
         ? Cesium.ShadowMode.ENABLED
         : Cesium.ShadowMode.DISABLED;
       if (city.texturedBuildings === false) {
-        tileset.style = untexturedBuildingStyle();
+        this.applyStyle(tileset, untexturedBuildingStyle);
       }
       this.applyRealisticLighting(tileset);
       this.viewer.scene.primitives.add(tileset);
@@ -358,7 +454,23 @@ export class BuildingLayerManager {
       this.loaded = { ...this.loaded, near: tileset };
       this.activeBBox = next;
       this.restoreAll();
+      this.watchLoadProgress(tileset);
+
+      // 新しい範囲の建物が出そろうまで、古いものを残しておく。
+      //
+      // fromUrl が返した時点のタイルセットは tileset.json を読んだだけで
+      // 中身が空。ここで古いほうをすぐ消すと、読み込みが終わるまでの
+      // 数秒間、街から建物が丸ごと消えてしまう。
+      // カメラが 2km ほど動くたびにこれが起きていた。
+      await this.waitForFirstTiles(tileset);
+      // 待っている間にさらに読み直されていたら、この入れ替えは古い
+      if (this.loaded?.near !== tileset) {
+        this.viewer.scene.primitives.remove(tileset);
+        return false;
+      }
       this.viewer.scene.primitives.remove(previous);
+      // 近景が動いたぶん、遠景のくり抜きも動かす
+      this.updateFarClipping();
       return true;
     } catch {
       // 取り直しに失敗しても、今表示しているものはそのまま使える
@@ -366,6 +478,37 @@ export class BuildingLayerManager {
     } finally {
       this.refreshing = false;
     }
+  }
+
+  /** 遠景のくり抜きを、いまの近景の範囲に合わせ直す */
+  private updateFarClipping(): void {
+    const far = this.loaded?.far;
+    if (!far || !this.activeBBox) return;
+    const next = createHoleClipping(this.activeBBox);
+    if (next) far.clippingPlanes = next;
+  }
+
+  /**
+   * 視界ぶんのタイルが読み終わるのを待つ。
+   *
+   * 読み込みが進まない場合に古いタイルセットを抱え続けるとメモリを圧迫するので、
+   * 上限時間で打ち切る。打ち切っても新しいほうへ切り替えるだけで、
+   * その時点で読めているぶんは表示される。
+   */
+  private waitForFirstTiles(tileset: Cesium.Cesium3DTileset): Promise<void> {
+    if (tileset.tilesLoaded) return Promise.resolve();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        window.clearTimeout(timer);
+        remove();
+        resolve();
+      };
+      const remove = tileset.initialTilesLoaded.addEventListener(finish);
+      const timer = window.setTimeout(finish, TILE_SWAP_TIMEOUT_MS);
+    });
   }
 
   /**

@@ -230,9 +230,10 @@ test('桁橋は箱桁 1 本と柱頭部を持つ', async () => {
   near(box.offset, 0, 0.05, '箱桁は中央に 1 本');
   assert.ok(box.width < 9, '桁は床版より狭い');
 
-  // 支間 32m / 120m → 4 径間 = 5 か所。1 か所につき 柱頭部 1 + 柱 1
+  // 支間 32m / 120m → 4 径間 = 5 か所。1 か所につき 柱頭部 1 + 柱 1。
+  // これに両端の橋台 2 つが加わる
   const bays = Math.round(120 / 32);
-  assert.equal(frame.length, (bays + 1) * 2);
+  assert.equal(frame.length, (bays + 1) * 2 + 2);
   const caps = frame.filter((f) => f.bottom > 1);
   assert.equal(caps.length, bays + 1, '柱頭部');
   for (const cap of caps) {
@@ -265,15 +266,17 @@ test('歩道橋は桁を持たず柱も細い', async () => {
   near(deck[0].top, 5 + 0.45, 0.05, '床版の上面');
 
   const bays = Math.round(80 / 18);
-  assert.equal(frame.length, bays + 1, '柱 1 本ずつ');
-  for (const c of frame) {
+  // 柱に加えて両端の橋台
+  assert.equal(frame.length, bays + 1 + 2, '柱 1 本ずつ + 橋台 2');
+  const columns = frame.filter((f) => f.width < 0.8);
+  assert.equal(columns.length, bays + 1, '柱 1 本ずつ');
+  for (const c of columns) {
     near(c.bottom, 0, 0.05, '柱は地表から立つ');
     near(c.top, 5, 0.05, '柱の頭が床版の下面');
-    assert.ok(c.width < 0.8, '柱は細い');
   }
 });
 
-test('橋脚を立てない設定では柱を作らない', async () => {
+test('橋脚を立てない設定でも橋台は立つ', async () => {
   const shortBridge: ElevatedStructure = {
     ...railViaduct,
     id: 'short',
@@ -282,10 +285,20 @@ test('橋脚を立てない設定では柱を作らない', async () => {
     path: eastLine(40),
     pierSpacing: 0,
   };
-  const groups = await build([shortBridge]);
-  // 床版と高欄だけになる
-  const all = groups.flat();
-  assert.ok(all.every((m) => m.bottom > 5), '地表まで伸びるものが無い');
+  const [deck, frame] = await build([shortBridge]);
+
+  // 桁の下に柱は無い
+  assert.ok(deck.every((m) => m.bottom > 5), '床版と桁は宙に浮いている');
+
+  // 両端には橋台があり、地表から桁を受ける。
+  // これが無いと床版が空中で終わり、道路から切り離されて見える
+  assert.equal(frame.length, 2, '両端の橋台');
+  for (const a of frame) {
+    near(a.bottom, 0, 0.05, '橋台は地表から立つ');
+    near(a.top, 9.35 - 0.35 - 1.0, 0.05, '橋台の天端が桁の下面');
+    assert.ok(a.width > 11, '橋台は床版の幅より少し広い');
+    assert.ok(a.length < 3, '橋台は進行方向に薄い');
+  }
 });
 
 test('斜めに走る高架でも柱が構造と平行に立つ', async () => {

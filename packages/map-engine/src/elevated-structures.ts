@@ -327,8 +327,15 @@ function pickIndices(length: number, max: number): number[] {
 export class ElevatedStructureLayer {
   private primitives: Cesium.Primitive[] = [];
   private loadedKey: string | null = null;
+  private shadows: Cesium.ShadowMode = Cesium.ShadowMode.ENABLED;
 
   constructor(private readonly viewer: Cesium.Viewer) {}
+
+  /** 影を落とすかどうかを品質設定に合わせる */
+  setShadows(enabled: boolean): void {
+    this.shadows = enabled ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
+    for (const p of this.primitives) p.shadows = this.shadows;
+  }
 
   get count(): number {
     return this.primitives.length;
@@ -377,6 +384,7 @@ export class ElevatedStructureLayer {
 
       this.addDeck(deckInstances, s, beamBottom, slabBottom, material.deck);
       this.addParapets(railInstances, s, deckTop, material.deck);
+      this.addAbutments(frameInstances, s, metrics, beamBottom, ground[index], material.pier);
 
       const used = this.addFrame(
         frameInstances,
@@ -402,7 +410,9 @@ export class ElevatedStructureLayer {
           closed: true,
         }),
         // 影を落とすと立体感が出る（品質設定で影を切っている場合は無視される）
-        shadows: Cesium.ShadowMode.ENABLED,
+        // 影は品質設定に従う。ここだけ有効にすると、影を切っている端末でも
+        // シャドウマップへの描画が走ってしまう
+        shadows: this.shadows,
         asynchronous: true,
       });
       this.viewer.scene.primitives.add(primitive);
@@ -577,6 +587,52 @@ export class ElevatedStructureLayer {
       const line = this.offsetPath(s.path, offset * side, deckTop);
       if (line.length < 2) continue;
       out.push(this.volume(line, shape, tint));
+    }
+  }
+
+  /**
+   * 橋台。橋の両端で桁を受け、地面につなぐ壁。
+   *
+   * 実物の橋は必ず両岸に橋台があり、そこで路面と地面がつながっている。
+   * これが無いと床版が空中で終わり、道路から切り離されて浮いて見える。
+   * 桁を持たない床版橋でも、両端の橋台だけは必ずある。
+   *
+   * ラーメン高架橋のように延々と続く構造には付けない（端が街の外に続くため）。
+   */
+  private addAbutments(
+    out: Cesium.GeometryInstance[],
+    s: ElevatedStructure,
+    metrics: PathMetrics,
+    beamBottom: number[],
+    ground: number[],
+    color: Cesium.Color,
+  ): void {
+    if (s.form === 'rigid-frame') return;
+
+    const lats = s.path.map((p) => p.lat);
+    const lngs = s.path.map((p) => p.lng);
+    // 橋台の厚み。桁を受けるので床版より少し内側から立ち上がる
+    const depth = Math.min(2.2, Math.max(0.9, metrics.total * 0.06));
+
+    for (const d of [depth / 2, metrics.total - depth / 2]) {
+      const point = pointAt(lats, lngs, metrics.cumulative, d);
+      const heading = headingAtDistance(s.path, metrics.cumulative, d);
+      const top = valueAt(beamBottom, metrics.cumulative, d);
+      const soil = valueAt(ground, metrics.cumulative, d);
+      const height = top - soil;
+      // 地面すれすれの橋には橋台が見えない
+      if (height < 0.4) continue;
+
+      out.push(
+        this.box(point, heading, {
+          // 床版よりわずかに広い。実物も桁の外側まで受けている
+          halfX: s.width * 0.52,
+          halfY: depth / 2,
+          halfZ: height / 2,
+          z: soil + height / 2,
+          color,
+        }),
+      );
     }
   }
 

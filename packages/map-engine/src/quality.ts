@@ -497,17 +497,21 @@ export function adaptiveScreenSpaceError(base: number, heightMeters: number): nu
   // 3D モデルが読み込まれていないように見える。ここを粗くしすぎない。
   // 参考: Cesium の既定は 16。東京の最深タイルの幾何誤差は 88.4、浜松は 49.4 で、
   // SSE がそれを超えると最深部まで分割されなくなる。
-  const factor =
-    heightMeters < 300
-      ? 1 // 街を歩く視点。ここが最高精細
-      : heightMeters < 800
-        ? 1.3
-        : heightMeters < 2000
-          ? 2
-          : heightMeters < 6000
-            ? 3.5
-            : heightMeters < 20000
-              ? 6
-              : 10;
+  //
+  // 段で切り替えると、境目をまたいだ瞬間に街じゅうの建物が一斉に
+  // 粗く（細かく）なり、ちらついて見える。高度の対数に対して
+  // 連続に変えることで、どこを通っても変化が小さく収まる。
+  //
+  //   300m 以下 … ×1.0（街を歩く視点。ここが最高精細）
+  //   800m      … ×1.4
+  //   2,000m    … ×2.1
+  //   6,000m    … ×3.4
+  //   20,000m   … ×5.0
+  //   60,000m   … ×6.6
+  const FULL_DETAIL_M = 300;
+  if (heightMeters <= FULL_DETAIL_M) return Math.min(96, Math.round(base));
+
+  const octaves = Math.log2(heightMeters / FULL_DETAIL_M);
+  const factor = 1 + octaves * 0.42;
   return Math.min(96, Math.round(base * factor));
 }

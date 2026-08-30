@@ -283,6 +283,7 @@ export class MapEngine {
     this.environment = new EnvironmentController(this.viewer, this.quality);
     this.furniture = new StreetFurnitureLayer(this.viewer, this.quality.maxFurniture);
     this.structures = new ElevatedStructureLayer(this.viewer);
+    this.structures.setShadows(this.quality.shadows);
 
     this.watchdog = new PerformanceWatchdog(
       () => this.degradeQuality(),
@@ -399,6 +400,7 @@ export class MapEngine {
     this.viewer.scene.screenSpaceCameraController.enableCollisionDetection =
       this.quality.terrainCollision;
     this.viewer.shadows = this.quality.shadows;
+    this.structures.setShadows(this.quality.shadows);
     this.viewer.scene.postProcessStages.fxaa.enabled = this.quality.fxaa;
     this.buildings.updateQuality(this.quality);
     this.furniture.setMaxItems(this.quality.maxFurniture);
