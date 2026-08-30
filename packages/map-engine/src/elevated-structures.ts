@@ -510,6 +510,13 @@ export class ElevatedStructureLayer {
     if (s.pierSpacing <= 0 || budget <= 0) return 0;
 
     const bays = bayPositions(metrics.total, s.pierSpacing);
+
+    // 予算が尽きて途中から柱が消えると、そこだけ床版が宙に浮いて見える。
+    // 1 本ぶんまるごと入らないなら、その構造物には柱を付けない。
+    // 並べ替えでカメラに近いものから処理しているので、手前の高架が優先される
+    const perBay = s.form === 'rigid-frame' ? 3 : s.form === 'girder' ? 2 : 1;
+    if (bays.length * perBay > budget) return 0;
+
     const lats = s.path.map((p) => p.lat);
     const lngs = s.path.map((p) => p.lng);
     let added = 0;
