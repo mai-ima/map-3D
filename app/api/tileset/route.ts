@@ -93,18 +93,57 @@ function absolutizeUris(tile: Tile, baseUrl: string): Tile {
   };
 }
 
+/** 2 つの範囲が重なる面積（度の 2 乗。大小の比較にだけ使う） */
+function overlapArea(a: BBox, b: BBox): number {
+  const width = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+  const height = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  return width > 0 && height > 0 ? width * height : 0;
+}
+
 /**
- * bbox と交差しない子を落とす。
+ * 一度に開く子タイルセットの数の上限。
+ *
+ * 東京都心の実測（2026-08, 東京駅の周辺 3km を要求）:
+ *
+ *   千代田区 17.4km²(95%) 中央区 16.4km²(84%) 江東区 15.7km² 港区 13.9km²
+ *   台東区    5.0km²(29%) 新宿区  4.2km²(10%) 文京区  3.3km² 墨田区  2.4km²(8%)
+ *
+ * 交差するかどうかだけで選ぶと、端がかすっているだけの 4 区まで開いてしまう。
+ * その 4 区が総タイル数のおよそ半分（1,781 / 3,555）を占めていた。
+ * 区の tileset.json だけでも 8 区で 4.3MB あり、開いた時点で
+ * その中のタイルが読み込み対象になる。
+ *
+ * 重なりの大きい順に選べば、実際に見えている範囲を落とさずに済む。
+ * カメラが移動すれば読み直されるので、進んだ先の区はその時に開かれる。
+ */
+const MAX_CHILDREN: Record<'near' | 'far', number> = { near: 5, far: 10 };
+
+/**
+ * bbox と重ならない子を落とし、重なりの大きい順に上限まで残す。
  * boundingVolume が region でない子は判定できないので、安全側に倒して残す。
  */
-function filterChildren(root: Tile, bbox: BBox): { root: Tile; kept: number; total: number } {
+function filterChildren(
+  root: Tile,
+  bbox: BBox,
+  limit: number,
+): { root: Tile; kept: number; total: number } {
   const children = root.children ?? [];
   if (children.length === 0) return { root, kept: 0, total: 0 };
 
-  const kept = children.filter((child) => {
+  const scored: { child: Tile; area: number }[] = [];
+  for (const child of children) {
     const childBBox = regionToBBox(child.boundingVolume);
-    return childBBox === null ? true : bboxIntersects(childBBox, bbox);
-  });
+    // 判定できない子は、重なりが最大だったことにして必ず残す
+    if (childBBox === null) {
+      scored.push({ child, area: Number.POSITIVE_INFINITY });
+      continue;
+    }
+    if (!bboxIntersects(childBBox, bbox)) continue;
+    scored.push({ child, area: overlapArea(childBBox, bbox) });
+  }
+
+  scored.sort((a, b) => b.area - a.area);
+  const kept = scored.slice(0, limit).map((s) => s.child);
 
   return {
     root: { ...root, children: kept },
@@ -138,6 +177,7 @@ async function resolveTileset(
   spec: PlateauTilesetSpec,
   bbox: BBox,
   minLevel = 1,
+  childLimit = MAX_CHILDREN.near,
 ): Promise<{ tileset: Tileset; root: Tile; spec: PlateauTilesetSpec; kept: number; total: number } | null> {
   for (const candidate of lodFallbackChain(spec, minLevel)) {
     const tileset = await fetchTileset(candidate);
@@ -150,7 +190,7 @@ async function resolveTileset(
       return { tileset, root: tileset.root, spec: candidate, kept: total, total };
     }
 
-    const { root, kept, total } = filterChildren(tileset.root, bbox);
+    const { root, kept, total } = filterChildren(tileset.root, bbox, childLimit);
     if (kept > 0) return { tileset, root, spec: candidate, kept, total };
   }
   return null;
@@ -199,7 +239,9 @@ export async function GET(request: Request) {
     // 詳細レイヤはベース（LOD2）に重ねるものなので、LOD3 未満には落とさない。
     // 落とすとベースと同じデータを二重に読み込むことになる。
     const minLevel = layer === 'detail' ? 3 : 1;
-    const resolved = await resolveTileset(spec, bbox, minLevel);
+    // 遠景は 1 枚が軽い LOD1 なので、広い範囲を担わせてよい
+    const childLimit = layer === 'far' ? MAX_CHILDREN.far : MAX_CHILDREN.near;
+    const resolved = await resolveTileset(spec, bbox, minLevel, childLimit);
     if (!resolved) {
       // この範囲に該当データが無い。呼び出し側は「重ねない」判断ができればよい
       return NextResponse.json(
