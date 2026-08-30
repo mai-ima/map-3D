@@ -89,6 +89,9 @@ export default function AppShell() {
   // 高架・橋（OSM 由来の立体構造物）
   const [structuresEnabled, setStructuresEnabled] = useState(false);
   const [structuresLoading, setStructuresLoading] = useState(false);
+  // カメラ操作のコールバックは毎フレーム走るので、再生成されない ref から読む
+  const structuresEnabledRef = useRef(false);
+  const structuresLoadingRef = useRef(false);
   // iPhone などのタッチ端末では、片手で操作できるボトムシート主体の画面に切り替える
   const isMobile = useIsMobile();
 
@@ -174,6 +177,13 @@ export default function AppShell() {
     },
     [],
   );
+
+  useEffect(() => {
+    structuresEnabledRef.current = structuresEnabled;
+  }, [structuresEnabled]);
+  useEffect(() => {
+    structuresLoadingRef.current = structuresLoading;
+  }, [structuresLoading]);
 
   // ?debug=1 で描画診断パネルを表示する（実機での負荷を確認するため）
   useEffect(() => {
@@ -430,8 +440,10 @@ export default function AppShell() {
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
 
     // 画面いっぱいの範囲は斜め見下ろしだと数十 km 四方になり、API 側で弾かれる。
-    // カメラ周辺 1.5km に切って確実に取得する
-    const bbox = engine.getSurroundingBBox(1500);
+    // カメラ周辺 1.5km に切って確実に取得する。
+    // 中心は 500m 格子に載せる。少し動くたびに違う範囲を要求すると
+    // キャッシュがまったく当たらず、構造物の組み立て直しも毎回走る
+    const bbox = engine.getSurroundingBBox(1500, 500);
     if (!bbox) return;
 
     setStructuresLoading(true);
@@ -447,6 +459,24 @@ export default function AppShell() {
     }
   }, []);
 
+  /**
+   * カメラが動いたら高架を取り直す。
+   *
+   * 高架はカメラ周辺 1.5km ぶんしか読んでいないので、街を移動すると
+   * その範囲から出てしまい、高架だけが付いてこない。
+   * 取り直しは通信とジオメトリの再生成を伴うので、
+   * 十分に離れたときだけ、しかも 1 件ずつ実行する。
+   */
+  const handleCameraMoved = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine || !structuresEnabledRef.current) return;
+    if (structuresLoadingRef.current) return;
+    if (!engine.needsStructureRefresh()) return;
+    void loadStructuresForView();
+    // loadStructuresForView は再生成されない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const toggleStructures = useCallback(async () => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -457,7 +487,8 @@ export default function AppShell() {
       return;
     }
 
-    const bbox = engine.getSurroundingBBox(1500);
+    // 手動で出すときも、自動で追従するときと同じ格子に載せる
+    const bbox = engine.getSurroundingBBox(1500, 500);
     if (!bbox) {
       notify('表示範囲を特定できませんでした。ズームインしてください。');
       return;
@@ -680,6 +711,7 @@ export default function AppShell() {
           city={city}
           onReady={handleReady}
           onNavigationTick={handleTick}
+          onCameraInteraction={handleCameraMoved}
           onError={notify}
         />
       </ErrorBoundary>

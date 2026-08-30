@@ -7,7 +7,13 @@
 
 import * as Cesium from 'cesium';
 import type { City, District, ElevatedStructure, LatLng, Poi, Route } from '@ijm/shared';
-import { PLATEAU_TERRAIN_URL, bboxAround, bboxExpand, getDefaultCity } from '@ijm/shared';
+import {
+  PLATEAU_TERRAIN_URL,
+  bboxAround,
+  bboxExpand,
+  distanceMeters,
+  getDefaultCity,
+} from '@ijm/shared';
 import { DEFAULT_IMAGERY_ID, GSI_IMAGERY, categoryIcon, getImagery } from '@ijm/gis';
 import {
   NavigationSession,
@@ -174,6 +180,8 @@ export class MapEngine {
   readonly health = new HealthMonitor();
   private lastMemoryCheck = 0;
   private lastAdaptiveSse = 0;
+  /** 高架を読み込んだときのカメラ位置。ここから離れたら取り直す */
+  private structuresCentre: LatLng | null = null;
   private lastSseChangeAt = 0;
   private fps = 0;
   private fpsLastSample = 0;
@@ -492,12 +500,38 @@ export class MapEngine {
    */
   async showElevatedStructures(structures: ElevatedStructure[], key: string): Promise<void> {
     await this.structures.render(structures, key);
+    this.structuresCentre = this.cameraGroundPosition();
     this.requestRender();
   }
 
   clearElevatedStructures(): void {
     this.structures.clear();
+    this.structuresCentre = null;
     this.requestRender();
+  }
+
+  /**
+   * 高架を読み直すべきか。
+   *
+   * 高架は起動時に「カメラ周辺 1.5km」ぶんだけ取っている。
+   * 街を移動するとその範囲から出てしまい、高架だけが付いてこない。
+   * 中心から離れたら取り直す。
+   */
+  needsStructureRefresh(marginMeters = 700): boolean {
+    if (!this.structuresCentre) return false;
+    const now = this.cameraGroundPosition();
+    if (!now) return false;
+    return distanceMeters(this.structuresCentre, now) > marginMeters;
+  }
+
+  /** カメラ直下の地表座標（地形との交差計算を伴わない） */
+  private cameraGroundPosition(): LatLng | null {
+    const carto = this.viewer.camera.positionCartographic;
+    if (!carto) return null;
+    return {
+      lat: Cesium.Math.toDegrees(carto.latitude),
+      lng: Cesium.Math.toDegrees(carto.longitude),
+    };
   }
 
   /** 端末判定による既定のティア（手動指定から「自動」に戻すときに使う） */
@@ -1220,16 +1254,30 @@ export class MapEngine {
    * OSM 系の API が受け付ける上限を超えてしまう。
    * カメラ直下から一定半径に切り、確実に取得できる大きさにする。
    */
-  getSurroundingBBox(radiusMeters = 1500): [number, number, number, number] | null {
+  getSurroundingBBox(
+    radiusMeters = 1500,
+    /**
+     * 中心をこの間隔の格子に丸める (m)。
+     *
+     * カメラが少し動くたびに違う範囲を要求すると、毎回まったく別の
+     * キャッシュキーになり、エッジにも手元にも当たらない。
+     * 格子に載せておけば、近い場所では同じ範囲を要求することになり、
+     * 通信も、受け取った構造物の組み立て直しも起きなくなる。
+     */
+    snapMeters = 0,
+  ): [number, number, number, number] | null {
     const carto = this.viewer.camera.positionCartographic;
     if (!carto) return null;
-    return bboxAround(
-      {
-        lat: Cesium.Math.toDegrees(carto.latitude),
-        lng: Cesium.Math.toDegrees(carto.longitude),
-      },
-      radiusMeters,
-    );
+    let lat = Cesium.Math.toDegrees(carto.latitude);
+    let lng = Cesium.Math.toDegrees(carto.longitude);
+
+    if (snapMeters > 0) {
+      const latStep = snapMeters / 111_320;
+      const lngStep = latStep / (Math.cos((lat * Math.PI) / 180) || 1);
+      lat = Math.round(lat / latStep) * latStep;
+      lng = Math.round(lng / lngStep) * lngStep;
+    }
+    return bboxAround({ lat, lng }, radiusMeters);
   }
 
   requestRender(): void {
