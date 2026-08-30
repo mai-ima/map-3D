@@ -263,7 +263,9 @@ export class MapEngine {
     this.viewer.scene.screenSpaceCameraController.inertiaTranslate = 0.85;
     this.viewer.scene.screenSpaceCameraController.inertiaZoom = 0.8;
 
-    this.buildings = new BuildingLayerManager(this.viewer, this.quality);
+    this.buildings = new BuildingLayerManager(this.viewer, this.quality, (message) =>
+      this.health.record('tile-failed', message),
+    );
     this.buildings.onTileFailed = (detail) => this.health.record('tile-failed', detail);
     this.routeLayer = new RouteLayer(this.viewer);
     this.environment = new EnvironmentController(this.viewer, this.quality);

@@ -235,19 +235,54 @@ export const CITIES: readonly City[] = [
     ],
   },
   {
-    id: 'kobe',
-    name: '神戸',
-    nameEn: 'Kobe',
+    /**
+     * 姫路市。
+     *
+     * 以前はここに神戸市を置いていたが、PLATEAU には神戸市のデータが存在しない。
+     * 兵庫県 (28) のまとめ配信に入っているのは姫路・加古川・三木・朝来・たつのの
+     * 5 市だけで、コンポジットの範囲も東経 134.42〜135.17 と、神戸 (135.18) に届かない。
+     * そのため神戸を選ぶと必ず「3D 都市データを読み込めませんでした」になっていた。
+     * 実際に整備されている姫路市に差し替えている（確認: npm run survey:city -- 28201）。
+     *
+     * 姫路市は区ごとではなく市単位で配信されているので URL を直接指定する。
+     */
+    id: 'himeji',
+    name: '姫路',
+    nameEn: 'Himeji',
     prefectureCode: '28',
-    cityCodes: ['28100'],
-    center: { lat: 34.6796, lng: 135.1781 },
-    bbox: [135.1, 34.62, 135.27, 34.75],
-    // 神戸市 (28100) 単独の配信は空のため、県単位のコンポジットを使う
-    near: { area: '28', lod: 'maxlod2' },
-    far: { area: '28', lod: 'maxlod1' },
-    initialHeight: 1600,
+    cityCodes: ['28201'],
+    // 姫路駅（OpenStreetMap の実測値）
+    center: { lat: 34.82965, lng: 134.69023 },
+    // 3D Tiles が実際にカバーする範囲（tileset.json の boundingVolume より）
+    bbox: [134.46069, 34.64105, 134.80906, 35.09027],
+    near: {
+      area: '28201',
+      lod: 'lod2',
+      url: 'https://assets.cms.plateau.reearth.io/assets/0e/d29649-6196-4d81-97c7-41cc343b0942/28201_himeji-shi_city_2023_citygml_2_op_bldg_3dtiles_lod2/tileset.json',
+    },
+    far: {
+      area: '28201',
+      lod: 'lod1',
+      url: 'https://assets.cms.plateau.reearth.io/assets/7e/feb981-bc38-4e5e-b6de-162d40d6bfe8/28201_himeji-shi_city_2023_citygml_2_op_bldg_3dtiles_lod1/tileset.json',
+    },
+    initialHeight: 1200,
     districts: [
-      { id: 'sannomiya', name: '三宮', center: { lat: 34.6947, lng: 135.1959 }, height: 800 },
+      {
+        id: 'himeji-station',
+        name: '姫路駅',
+        center: { lat: 34.82965, lng: 134.69023 },
+        height: 600,
+        heading: 0,
+        description: '大手前通りがまっすぐ姫路城へ伸びる',
+      },
+      {
+        id: 'himeji-castle',
+        name: '姫路城',
+        center: { lat: 34.83945, lng: 134.69391 },
+        height: 700,
+        heading: 180,
+        description: '現存天守。世界文化遺産',
+      },
     ],
   },
   {

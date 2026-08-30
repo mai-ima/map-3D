@@ -24,30 +24,49 @@
 import * as Cesium from 'cesium';
 
 /**
+ * 属性の参照。
+ *
+ * PLATEAU のバッチテーブルの属性名にはコロンが入っている（実データで確認済み:
+ * bldg:usage / bldg:measuredHeight）。3D Tiles のスタイル式では、
+ * コロンを含む名前は `${feature['名前']}` の形でしか参照できない。
+ *
+ * `${bldg:usage}` と直接書くと式のパースに失敗して例外になり、
+ * `${['bldg:usage']}` はパースこそ通るが常に undefined になる（黙って壊れる）。
+ * どちらも実際に踏んだので、参照はここに集約して書き間違いを防ぐ。
+ */
+const USAGE = "${feature['bldg:usage']}";
+const HEIGHT = "${feature['bldg:measuredHeight']}";
+
+/**
  * 用途ごとの色。
  *
  * 日本の市街地を上から見たときの印象に寄せて、彩度は低めに揃えている。
  * 派手に塗り分けると用途図になってしまい、街の風景に見えなくなる。
+ *
+ * 並び順は浜松市旧中区の実測での出現頻度順にしている。
+ * スタイルの条件は上から順に評価され、最初に一致したところで止まるため、
+ * 多い用途を先に置くと 1 棟あたりの評価回数が大きく減る
+ * （住宅系だけで全体の 7 割を占めるので、平均 2〜3 回で決まる）。
  */
 const USAGE_COLORS: [usage: string, color: string][] = [
   // 住宅系。街の過半を占めるので、最も自然な色にする
   ['住宅', '#d6d0c6'],
   ['共同住宅', '#cdc7bd'],
-  ['店舗等併用住宅', '#d2cabd'],
-  ['店舗等併用共同住宅', '#cec6b9'],
-  ['作業所併用住宅', '#cbc5ba'],
   // 商業系。少し明るく、暖色寄りにして中心市街地が浮かび上がるようにする
   ['商業施設', '#dcd5c4'],
-  ['商業系複合施設', '#d8d1c1'],
-  ['宿泊施設', '#d9d0c0'],
   // 業務・公共系。やや青みを入れて商業と区別する
   ['業務施設', '#c8ccd1'],
-  ['官公庁施設', '#c4c8cd'],
-  ['文教厚生施設', '#c9ccc9'],
+  ['店舗等併用住宅', '#d2cabd'],
   // 産業系。コンクリートと金属屋根の色
-  ['工場', '#bfc3c5'],
   ['運輸倉庫施設', '#c2c5c6'],
+  ['工場', '#bfc3c5'],
+  ['文教厚生施設', '#c9ccc9'],
+  ['店舗等併用共同住宅', '#cec6b9'],
+  ['商業系複合施設', '#d8d1c1'],
+  ['官公庁施設', '#c4c8cd'],
+  ['宿泊施設', '#d9d0c0'],
   ['供給処理施設', '#bcc0c2'],
+  ['作業所併用住宅', '#cbc5ba'],
   ['農林漁業用施設', '#c7c8bf'],
   ['防衛施設', '#c0c2c0'],
 ];
@@ -56,44 +75,53 @@ const USAGE_COLORS: [usage: string, color: string][] = [
 const UNKNOWN_COLOR = '#cbc7c0';
 
 /**
+ * 実測高さによる明度の補正。
+ *
+ * 実際の街では高い建物ほど空の光を受けて明るく、低い建物は隣家の影に沈む。
+ * テクスチャが無いと全部が同じ明るさになってのっぺりするので、
+ * 実データの高さでわずかな差を付ける。
+ *
+ * 0m で ×0.95、60m 以上で ×1.07。段ではなく連続で変えるので、
+ * 同じ用途の建物が並んでも階数の違いが分かる。
+ */
+const SHADE = `(0.95 + min(${HEIGHT}, 60.0) / 500.0)`;
+
+/**
+ * 高さが入っているか。
+ *
+ * スタイル式に defined() は無い（Cesium が用意しているのは isNaN と isFinite）。
+ * 高さが未定義のまま min() に渡すと評価時に例外になり、そのタイルが描けなくなる。
+ */
+const HAS_HEIGHT = `!isNaN(${HEIGHT})`;
+
+/**
+ * 高さ補正を掛けた色。
+ *
+ * `color(...) * 係数` と書くとアルファまで掛かってしまい、
+ * 建物がわずかに半透明になる（＝不透明で描けるはずのものが
+ * 半透明パスに回り、描画が重くなる）。
+ * 成分ごとに掛けて、アルファは 1.0 に固定する。
+ */
+function shaded(hex: string): string {
+  const channel = (at: number) =>
+    (Number.parseInt(hex.slice(at, at + 2), 16) / 255).toFixed(4);
+  return `vec4(${channel(1)} * ${SHADE}, ${channel(3)} * ${SHADE}, ${channel(5)} * ${SHADE}, 1.0)`;
+}
+
+/**
  * テクスチャを持たない建物モデル向けのスタイル。
  *
  * 用途で塗り分けたうえで、実測高さに応じて明度を変える。
- * 実際の街では高い建物ほど空の光を受けて明るく、低い建物は
- * 隣家の影に沈む。テクスチャが無いと全部が同じ明るさになって
- * のっぺりするので、実データの高さでわずかな差を付ける。
- *
- * 3D Tiles のスタイル式は色の演算に制限があるため、
- * 用途ごとに高さ補正済みの色を条件として並べる形で実現している。
+ * 高さが入っていない建物には補正を掛けられないので、
+ * 用途ごとに「高さあり」「高さなし」の 2 条件を並べている。
  */
 export function untexturedBuildingStyle(): Cesium.Cesium3DTileStyle {
-  const shade = (hex: string, factor: number): string => {
-    const r = Math.round(Number.parseInt(hex.slice(1, 3), 16) * factor);
-    const g = Math.round(Number.parseInt(hex.slice(3, 5), 16) * factor);
-    const b = Math.round(Number.parseInt(hex.slice(5, 7), 16) * factor);
-    const clamp = (n: number): string => Math.min(255, Math.max(0, n)).toString(16).padStart(2, '0');
-    return `#${clamp(r)}${clamp(g)}${clamp(b)}`;
-  };
-
   const conditions: [string, string][] = [];
   for (const [usage, color] of USAGE_COLORS) {
-    // 高い建物ほど明るく。境界は日本の市街地の階数分布に合わせている
-    conditions.push([
-      `\${bldg:usage} === '${usage}' && \${bldg:measuredHeight} >= 45`,
-      `color('${shade(color, 1.07)}')`,
-    ]);
-    conditions.push([
-      `\${bldg:usage} === '${usage}' && \${bldg:measuredHeight} >= 20`,
-      `color('${shade(color, 1.03)}')`,
-    ]);
-    conditions.push([
-      `\${bldg:usage} === '${usage}' && \${bldg:measuredHeight} < 8`,
-      `color('${shade(color, 0.95)}')`,
-    ]);
-    conditions.push([`\${bldg:usage} === '${usage}'`, `color('${color}')`]);
+    conditions.push([`${USAGE} === '${usage}' && ${HAS_HEIGHT}`, shaded(color)]);
+    conditions.push([`${USAGE} === '${usage}'`, `color('${color}')`]);
   }
-  conditions.push([`\${bldg:measuredHeight} >= 45`, `color('${shade(UNKNOWN_COLOR, 1.07)}')`]);
-  conditions.push([`\${bldg:measuredHeight} < 8`, `color('${shade(UNKNOWN_COLOR, 0.95)}')`]);
+  conditions.push([HAS_HEIGHT, shaded(UNKNOWN_COLOR)]);
   conditions.push(['true', `color('${UNKNOWN_COLOR}')`]);
 
   return new Cesium.Cesium3DTileStyle({ color: { conditions } });

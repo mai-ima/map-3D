@@ -57,14 +57,19 @@ export type OptionalLayerId = 'detail' | 'bridge' | 'furniture' | 'vegetation';
  * 「実在しない色を創作しない」という方針に従い、彩度をほぼ持たない
  * コンクリート系の中立色のみを使い、高さでわずかな明度差を付けるにとどめる。
  */
-function farTilesetStyle(): Cesium.Cesium3DTileStyle {
+export function farTilesetStyle(): Cesium.Cesium3DTileStyle {
+  // 属性名にコロンが入っているので ${feature['...']} の形でしか参照できない。
+  // アンダースコアで書くと常に未定義になり、全棟が同じ色になってしまう。
+  // また defined() はスタイル式に存在しない（あるのは isNaN / isFinite）。
+  // 以前は両方を踏んでいて、遠景タイルセットは一度も表示されていなかった
+  const height = "${feature['bldg:measuredHeight']}";
   return new Cesium.Cesium3DTileStyle({
     color: {
       conditions: [
-        ['!defined(${bldg_measuredHeight})', 'color("#cfcbc4")'],
-        ['${bldg_measuredHeight} >= 150', 'color("#c4c0ba")'],
-        ['${bldg_measuredHeight} >= 80', 'color("#c9c5bf")'],
-        ['${bldg_measuredHeight} >= 40', 'color("#cecac4")'],
+        [`isNaN(${height})`, 'color("#cfcbc4")'],
+        [`${height} >= 150`, 'color("#c4c0ba")'],
+        [`${height} >= 80`, 'color("#c9c5bf")'],
+        [`${height} >= 40`, 'color("#cecac4")'],
         ['true', 'color("#d3cfc9")'],
       ],
     },
@@ -96,6 +101,8 @@ export class BuildingLayerManager {
   constructor(
     private readonly viewer: Cesium.Viewer,
     private quality: QualitySettings,
+    /** 配色を当てられなかったことを記録する（表示は続く） */
+    private readonly onStyleError?: (message: string) => void,
   ) {}
 
   get currentCity(): City | null {
@@ -140,6 +147,27 @@ export class BuildingLayerManager {
   }
 
   /**
+   * スタイルを当てる。失敗しても建物そのものは表示する。
+   *
+   * スタイル式は文字列なので、型検査では誤りを見つけられない。
+   * 属性名の書き方を間違えると Cesium3DTileStyle の生成時に例外が飛び、
+   * そのまま外へ投げると「3D 都市データを読み込めませんでした」となって
+   * 建物が 1 棟も出なくなる（浜松で実際に起きた）。
+   * 色が付かないことより、街が出ないことのほうが重い。
+   */
+  private applyStyle(
+    tileset: Cesium.Cesium3DTileset,
+    build: () => Cesium.Cesium3DTileStyle,
+  ): void {
+    try {
+      tileset.style = build();
+    } catch (error) {
+      console.warn('[map-engine] 建物の配色を適用できませんでした', error);
+      this.onStyleError?.(`建物の配色を適用できません: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  /**
    * 都市を読み込む。既に別の都市が読み込まれていれば破棄してメモリを解放する。
    */
   async loadCity(city: City): Promise<LoadedCityTilesets> {
@@ -157,7 +185,7 @@ export class BuildingLayerManager {
     // 実写テクスチャがある都市には一切スタイルを当てない（それが事実の色そのもの）。
     // テクスチャが無い都市だけ、用途属性と実測高さで塗り分ける。
     if (city.texturedBuildings === false) {
-      near.style = untexturedBuildingStyle();
+      this.applyStyle(near, untexturedBuildingStyle);
     }
     this.watchLoadProgress(near);
     // 近景にはスタイルを当てない = PLATEAU の実写テクスチャの色をそのまま出す
@@ -194,7 +222,7 @@ export class BuildingLayerManager {
         far.destroy();
         return;
       }
-      far.style = farTilesetStyle();
+      this.applyStyle(far, farTilesetStyle);
       far.shadows = Cesium.ShadowMode.DISABLED;
       this.watchLoadProgress(far);
       this.applyRealisticLighting(far);
