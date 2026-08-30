@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classify, toStructure, widthOf } from '../structures';
+import type { BBox } from '@ijm/shared';
+import { classify, clipPathToBBox, toStructure, widthOf } from '../structures';
 
 const way = (tags: Record<string, string>, points = 3) => ({
   type: 'way' as const,
@@ -64,6 +65,123 @@ test('OSM の形状をそのまま中心線として保持する', () => {
   assert.equal(s.id, 'osm:way123');
   assert.equal(s.lanes, 3);
   assert.equal(s.kind, 'road-elevated');
+});
+
+test('鉄道高架はラーメン高架橋の実寸で組む', () => {
+  const s = toStructure(way({ railway: 'rail', layer: '1' }));
+  assert.ok(s);
+  assert.equal(s.form, 'rigid-frame', '都市部の鉄道高架はラーメン高架橋');
+
+  // 径間 8.6〜8.9m。ここが長すぎると柱がまばらになり、
+  // ラーメン高架橋には見えなくなる（以前は 22m にしていた）
+  assert.ok(s.pierSpacing >= 8 && s.pierSpacing <= 9.5, `径間 ${s.pierSpacing}m は実物と違う`);
+
+  // 縦梁の高さは径間の 1/8〜1/9
+  const ratio = s.pierSpacing / s.girderDepth;
+  assert.ok(ratio >= 7 && ratio <= 10, `縦梁が径間の 1/${ratio.toFixed(1)} は実物と違う`);
+
+  // 梁下高 8.0〜8.5m
+  assert.ok(s.clearance >= 8 && s.clearance <= 8.5);
+
+  // 防音壁は高欄より高い
+  const road = toStructure(way({ highway: 'motorway', layer: '1' }));
+  assert.ok(road && s.parapetHeight > road.parapetHeight);
+});
+
+test('桁橋の桁高は支間長の 1/16〜1/20 に収まる', () => {
+  const cases: Record<string, string>[] = [
+    { railway: 'rail', bridge: 'yes' },
+    { highway: 'motorway', layer: '1' },
+    { highway: 'primary', bridge: 'yes' },
+  ];
+  for (const tags of cases) {
+    const s = toStructure(way(tags));
+    assert.ok(s);
+    assert.equal(s.form, 'girder', `${JSON.stringify(tags)} は桁橋`);
+    // pierSpacing が 0（橋脚を立てない短い橋）でも桁高は支間相当で決める
+    const span = s.pierSpacing > 0 ? s.pierSpacing : 30;
+    const ratio = span / s.girderDepth;
+    assert.ok(ratio >= 15 && ratio <= 22, `桁高が支間の 1/${ratio.toFixed(1)} は実物と違う`);
+  }
+});
+
+test('歩道橋は桁を持たない薄い床版', () => {
+  const s = toStructure(way({ highway: 'footway', bridge: 'yes' }));
+  assert.ok(s);
+  assert.equal(s.form, 'slab');
+  assert.equal(s.girderDepth, 0);
+  // 柱は細い
+  assert.ok(s.pierSize < 1);
+});
+
+test('高い高架ほど柱を太くする', () => {
+  // 高さ 10m を超えるラーメン高架橋は柱の中間につなぎ梁が入る。
+  // 細長い柱のままだと拡大したときに頼りなく見える
+  const low = toStructure(way({ railway: 'rail', layer: '1' }));
+  const high = toStructure(way({ railway: 'rail', layer: '3' }));
+  assert.ok(low && high);
+  assert.ok(high.clearance > 10);
+  assert.ok(high.pierSize > low.pierSize);
+});
+
+test('長く続く鉄道の橋はラーメン高架橋として扱う', () => {
+  // 浜松の実データ: 東海道本線 1,776m / 東海道新幹線 1,374m が
+  // どちらも bridge=yes + layer=1 の 1 本の way で入っている。
+  // これを支間 30m の桁橋として組むと、実物とまるで違う見た目になる
+  assert.equal(classify({ railway: 'rail', bridge: 'yes', layer: '1' }, 1776), 'rail-elevated');
+  // 川をまたぐ程度の長さなら桁橋のまま
+  assert.equal(classify({ railway: 'rail', bridge: 'yes', layer: '1' }, 120), 'rail-bridge');
+  // viaduct と明記されていれば長さによらず高架
+  assert.equal(classify({ railway: 'rail', bridge: 'viaduct' }, 60), 'rail-elevated');
+  // 道路も同じ
+  assert.equal(classify({ highway: 'primary', bridge: 'yes', layer: '1' }, 900), 'road-elevated');
+  assert.equal(classify({ highway: 'primary', bridge: 'yes', layer: '1' }, 90), 'road-bridge');
+});
+
+test('表示範囲の外へ伸びた経路を切り落とす', () => {
+  const bbox: BBox = [137.73, 34.7, 137.74, 34.71];
+  // 範囲をまたいで東西に伸びる経路（マージンは約 250m = 0.0023 度）
+  const path = [
+    { lat: 34.705, lng: 137.7 },
+    { lat: 34.705, lng: 137.72 },
+    { lat: 34.705, lng: 137.735 },
+    { lat: 34.705, lng: 137.75 },
+    { lat: 34.705, lng: 137.77 },
+  ];
+  const runs = clipPathToBBox(path, bbox);
+  assert.equal(runs.length, 1);
+  // 範囲内の点に加えて、出入りの直前・直後の点も残る（切り口を隠すため）
+  assert.deepEqual(
+    runs[0].map((p) => p.lng),
+    [137.72, 137.735, 137.75],
+  );
+
+  // 範囲を出て再び入る経路は区間に分かれる
+  const zigzag = [
+    { lat: 34.705, lng: 137.735 },
+    { lat: 34.8, lng: 137.735 },
+    { lat: 34.706, lng: 137.736 },
+  ];
+  assert.equal(clipPathToBBox(zigzag, bbox).length, 2);
+
+  // まるごと範囲内なら何も変わらない
+  const inside = [
+    { lat: 34.702, lng: 137.732 },
+    { lat: 34.708, lng: 137.738 },
+  ];
+  assert.deepEqual(clipPathToBBox(inside, bbox), [inside]);
+
+  // まるごと範囲外なら何も返さない
+  assert.deepEqual(
+    clipPathToBBox(
+      [
+        { lat: 35.5, lng: 139.7 },
+        { lat: 35.6, lng: 139.8 },
+      ],
+      bbox,
+    ),
+    [],
+  );
 });
 
 test('一般道の橋には橋脚を立てない', () => {

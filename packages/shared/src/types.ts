@@ -236,9 +236,21 @@ export type StructureKind =
   | 'road-bridge'
   | 'footbridge';
 
+/**
+ * 構造形式。見た目が大きく変わるので分けて扱う。
+ *
+ *   rigid-frame … ラーメン高架橋。柱と梁が一体で、短い径間が連続する。
+ *                 都市部の鉄道高架はほぼこれ
+ *   girder      … 桁橋。橋台・橋脚の上に桁を渡す。川や道路をまたぐ橋
+ *   slab        … 床版橋。桁を持たない薄い板。歩道橋や小規模な橋
+ */
+export type StructureForm = 'rigid-frame' | 'girder' | 'slab';
+
 export interface ElevatedStructure {
   id: string;
   kind: StructureKind;
+  /** 構造形式。組み立て方が変わる */
+  form: StructureForm;
   name?: string;
   /** 中心線（OSM の実データ） */
   path: LatLng[];
@@ -246,12 +258,18 @@ export interface ElevatedStructure {
   width: number;
   /** OSM の layer。上下関係の目安 */
   layer: number;
-  /** 桁の厚み (m) */
+  /** 床版の厚み (m) */
   deckThickness: number;
-  /** 地表からデッキ下端までの高さ (m) */
+  /** 縦梁の高さ (m)。0 なら梁を持たない構造 */
+  girderDepth: number;
+  /** 地表から床版下端までの高さ (m) */
   clearance: number;
-  /** 橋脚を立てる間隔 (m)。0 なら橋脚なし */
+  /** 柱・橋脚を立てる間隔 (m)。0 なら支柱なし */
   pierSpacing: number;
+  /** 柱の断面の一辺 (m) */
+  pierSize: number;
+  /** 高欄・防音壁の高さ (m) */
+  parapetHeight: number;
   lanes?: number;
   tracks?: number;
 }
