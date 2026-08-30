@@ -3,6 +3,7 @@ export * from './nominatim';
 export * from './osm-api';
 export * from './overpass';
 export * from './structures';
+export * from './structure-merge';
 export * from './poi-categories';
 export * from './gsi';
 export * from './plateau';

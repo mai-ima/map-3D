@@ -18,6 +18,7 @@
 import type { BBox, ElevatedStructure, LatLng, StructureForm, StructureKind } from '@ijm/shared';
 import { fetchOsmMap } from './osm-api';
 import { runOverpassQuery, type OverpassElement } from './overpass';
+import { consolidateStructures } from './structure-merge';
 
 /**
  * 種別ごとの標準的な寸法。
@@ -42,30 +43,32 @@ const PROFILE: Record<
     width: number;
     deckThickness: number;
     girderDepth: number;
-    clearance: number;
+    deckHeight: number;
     pierSpacing: number;
     pierSize: number;
     parapetHeight: number;
   }
 > = {
-  // 高架鉄道。ラーメン高架橋。短い径間の柱が連続するのが最大の特徴
+  // 高架鉄道。ラーメン高架橋。短い径間の柱が連続するのが最大の特徴。
+  // 路面 9.4m − 版 0.35 − 梁 1.0 = 梁下 8.05m（実測の 8.0〜8.5m に入る）
   'rail-elevated': {
     form: 'rigid-frame',
-    width: 11,
+    width: 4.4, // way 1 本 = 線路 1 本。まとめるときに実幅を計算する
     deckThickness: 0.35,
     girderDepth: 1.0, // 径間 8.9m の約 1/9
-    clearance: 8,
+    deckHeight: 9.4,
     pierSpacing: 8.9,
     pierSize: 0.9,
     parapetHeight: 2.0, // 防音壁
   },
-  // 鉄道橋。川や道路をまたぐ区間は桁橋になり、支間が長く柱の数が減る
+  // 鉄道橋。川や道路をまたぐ区間は桁橋になり、支間が長く柱の数が減る。
+  // 軌道面の高さは高架区間と同じにする（同じ線路がつながっているため）
   'rail-bridge': {
     form: 'girder',
-    width: 11,
+    width: 4.4,
     deckThickness: 0.35,
     girderDepth: 1.8,
-    clearance: 6,
+    deckHeight: 9.4,
     pierSpacing: 30,
     pierSize: 1.6,
     parapetHeight: 1.6,
@@ -76,7 +79,7 @@ const PROFILE: Record<
     width: 9,
     deckThickness: 0.28,
     girderDepth: 1.6,
-    clearance: 7,
+    deckHeight: 8.9,
     pierSpacing: 32,
     pierSize: 1.8,
     parapetHeight: 1.1,
@@ -87,7 +90,7 @@ const PROFILE: Record<
     width: 9,
     deckThickness: 0.25,
     girderDepth: 1.4,
-    clearance: 3,
+    deckHeight: 4.65,
     pierSpacing: 30,
     pierSize: 1.5,
     parapetHeight: 1.0,
@@ -98,12 +101,17 @@ const PROFILE: Record<
     width: 3.5,
     deckThickness: 0.45,
     girderDepth: 0,
-    clearance: 5,
+    deckHeight: 5.45,
     pierSpacing: 18,
     pierSize: 0.5,
     parapetHeight: 1.2,
   },
 };
+
+/** 線路 1 本あたりの軌道中心間隔 (m)。在来線 3.8〜4.0 / 新幹線 4.3 */
+const TRACK_SPACING = 4.1;
+/** 軌道の中心から床版の縁までの余裕 (m) */
+const TRACK_MARGIN = 2.2;
 
 /** 1 車線あたりの幅 (m)。日本の一般道の標準 */
 const LANE_WIDTH = 3.25;
@@ -164,10 +172,14 @@ export function classify(tags: Record<string, string>, lengthM = 0): StructureKi
   const hw = tags.highway;
   if (!hw) return null;
   if (['footway', 'path', 'pedestrian', 'steps', 'cycleway'].includes(hw)) return 'footbridge';
-  if (isViaduct || (elevated && !isBridge)) {
-    return ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'secondary'].includes(hw)
-      ? 'road-elevated'
-      : 'road-bridge';
+  // 高架道路として扱うのは都市高速など自動車専用道路だけにする。
+  // 一般道は長い橋でも路面の高さが桁橋と変わらないので、
+  // ここを広げると普通の橋との接続部が段差になる
+  if (
+    (isViaduct || (elevated && !isBridge)) &&
+    ['motorway', 'motorway_link', 'trunk', 'trunk_link'].includes(hw)
+  ) {
+    return 'road-elevated';
   }
   return 'road-bridge';
 }
@@ -178,10 +190,11 @@ export function widthOf(kind: StructureKind, tags: Record<string, string>): numb
 
   const base = PROFILE[kind].width;
   if (kind === 'rail-elevated' || kind === 'rail-bridge') {
-    const tracks = parseIntTag(tags.tracks);
-    // 単線 5m、複線で 11m 程度
-    if (tracks) return Math.max(5, 5 + (tracks - 1) * 4.5);
-    return base;
+    // OSM の way は原則 1 本が線路 1 本。tracks が入っていればその本数ぶん。
+    // 複線が 2 本の way で表されている場合は、平行なものをまとめる段階で
+    // 実際の幅を計算するので、ここでは way 1 本ぶんに留める
+    const tracks = parseIntTag(tags.tracks) ?? 1;
+    return TRACK_MARGIN * 2 + (Math.max(1, tracks) - 1) * TRACK_SPACING;
   }
 
   const lanes = parseIntTag(tags.lanes);
@@ -204,11 +217,11 @@ export function toStructure(el: OverpassElement): ElevatedStructure | null {
   const width = widthOf(kind, tags);
 
   // layer が 2 以上なら他の構造物の上を通っているので、その分持ち上げる
-  const clearance = profile.clearance + Math.max(0, layer - 1) * 5;
+  const deckHeight = profile.deckHeight + Math.max(0, layer - 1) * 5;
 
   // 高さ 10m を超えるラーメン高架橋は柱の中間につなぎ梁が入る。
   // 柱が細長く見えないよう、高いものは柱を太くする
-  const pierSize = clearance > 10 ? profile.pierSize * 1.25 : profile.pierSize;
+  const pierSize = deckHeight > 12 ? profile.pierSize * 1.25 : profile.pierSize;
 
   return {
     id: `osm:way${el.id}`,
@@ -220,7 +233,7 @@ export function toStructure(el: OverpassElement): ElevatedStructure | null {
     layer,
     deckThickness: profile.deckThickness,
     girderDepth: profile.girderDepth,
-    clearance,
+    deckHeight,
     // 短い跨線橋に柱を並べると実物と違う見た目になる
     pierSpacing: kind === 'road-bridge' && layer <= 1 ? 0 : profile.pierSpacing,
     pierSize,
@@ -321,5 +334,7 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
     // 範囲を出入りする経路は区間ごとに分ける。ID が重ならないよう連番を付ける
     runs.forEach((path, i) => list.push({ ...s, id: `${s.id}#${i}`, path }));
   }
-  return list;
+  // OSM は線路を 1 本ずつ別の way にしているため、そのまま建てると
+  // 複線の高架が 4m 間隔で積み上がる。実際の構造物の単位にまとめる
+  return consolidateStructures(list);
 }

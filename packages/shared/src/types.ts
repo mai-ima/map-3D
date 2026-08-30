@@ -262,8 +262,16 @@ export interface ElevatedStructure {
   deckThickness: number;
   /** 縦梁の高さ (m)。0 なら梁を持たない構造 */
   girderDepth: number;
-  /** 地表から床版下端までの高さ (m) */
-  clearance: number;
+  /**
+   * 地表から路面（軌道面・車道面）までの高さ (m)。
+   *
+   * 高さの基準を「桁下」ではなく「路面」に取るのが要点。
+   * 同じ路線でも、市街地はラーメン高架橋、川をまたぐ区間は桁橋と
+   * 構造が変わり、桁の高さも違う。桁下を基準にすると接続部で
+   * 路面が段差になってしまう（実際に 1.2m の段ができていた）。
+   * 実物では路面が連続していて、その下の造りだけが変わる。
+   */
+  deckHeight: number;
   /** 柱・橋脚を立てる間隔 (m)。0 なら支柱なし */
   pierSpacing: number;
   /** 柱の断面の一辺 (m) */
@@ -272,4 +280,13 @@ export interface ElevatedStructure {
   parapetHeight: number;
   lanes?: number;
   tracks?: number;
+  /**
+   * この構造物にまとめた OSM の way。
+   *
+   * OSM は線路を 1 本ずつ別の way にしているため、複線の高架は
+   * 4m 間隔で並ぶ複数の way になる。そのまま 1 本ずつ橋を建てると
+   * 床版が重なって積み上がるので、平行に走るものは 1 つの高架にまとめる。
+   * 何をまとめた結果なのかを残しておく。
+   */
+  sourceIds?: string[];
 }

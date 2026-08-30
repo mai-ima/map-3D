@@ -40,17 +40,32 @@ test('幅は実データを優先し、無ければ車線数から求める', ()
   assert.equal(widthOf('road-bridge', { width: '14.5' }), 14.5);
   // 車線数から: 4 車線 × 3.25m + 路肩
   assert.equal(widthOf('road-bridge', { lanes: '4' }), 4 * 3.25 + 1.5);
-  // 線路数から: 複線
-  assert.equal(widthOf('rail-elevated', { tracks: '2' }), 9.5);
+  // 線路数から。OSM の way は原則 1 本が線路 1 本なので、既定は単線ぶん。
+  // 軌道中心から床版の縁まで 2.2m、軌道の間隔は 4.1m
+  assert.equal(widthOf('rail-elevated', {}), 4.4);
+  assert.equal(widthOf('rail-elevated', { tracks: '2' }), 8.5);
   // 情報が無ければ種別ごとの標準値
   assert.equal(widthOf('footbridge', {}), 3.5);
 });
 
-test('高い layer ほど桁下を高くする', () => {
+test('高い layer ほど路面を高くする', () => {
   const l1 = toStructure(way({ railway: 'rail', layer: '1' }));
   const l3 = toStructure(way({ railway: 'rail', layer: '3' }));
   assert.ok(l1 && l3);
-  assert.ok(l3.clearance > l1.clearance, 'layer が高いほど持ち上がるべき');
+  assert.ok(l3.deckHeight > l1.deckHeight, 'layer が高いほど持ち上がるべき');
+});
+
+test('同じ路線なら構造形式が変わっても路面の高さは同じ', () => {
+  // 市街地はラーメン高架橋、川をまたぐ区間は桁橋になる。
+  // 桁下を基準に高さを決めると、この境目で路面が段差になる
+  const viaduct = toStructure(way({ railway: 'rail', layer: '1' }, 40));
+  const bridge = toStructure(way({ railway: 'rail', bridge: 'yes' }));
+  assert.ok(viaduct && bridge);
+  assert.equal(viaduct.form, 'rigid-frame');
+  assert.equal(bridge.form, 'girder');
+  assert.equal(viaduct.deckHeight, bridge.deckHeight, '軌道面は連続していること');
+  // 一方で桁の高さは形式ごとに違う（＝桁下は変わる）
+  assert.notEqual(viaduct.girderDepth, bridge.girderDepth);
 });
 
 test('形状が 2 点未満のものは捨てる', () => {
@@ -80,8 +95,9 @@ test('鉄道高架はラーメン高架橋の実寸で組む', () => {
   const ratio = s.pierSpacing / s.girderDepth;
   assert.ok(ratio >= 7 && ratio <= 10, `縦梁が径間の 1/${ratio.toFixed(1)} は実物と違う`);
 
-  // 梁下高 8.0〜8.5m
-  assert.ok(s.clearance >= 8 && s.clearance <= 8.5);
+  // 梁下高 8.0〜8.5m。路面から版と梁を引いた高さ
+  const beamBottom = s.deckHeight - s.deckThickness - s.girderDepth;
+  assert.ok(beamBottom >= 8 && beamBottom <= 8.5, `梁下 ${beamBottom.toFixed(2)}m`);
 
   // 防音壁は高欄より高い
   const road = toStructure(way({ highway: 'motorway', layer: '1' }));
@@ -120,7 +136,7 @@ test('高い高架ほど柱を太くする', () => {
   const low = toStructure(way({ railway: 'rail', layer: '1' }));
   const high = toStructure(way({ railway: 'rail', layer: '3' }));
   assert.ok(low && high);
-  assert.ok(high.clearance > 10);
+  assert.ok(high.deckHeight > 12);
   assert.ok(high.pierSize > low.pierSize);
 });
 
@@ -133,8 +149,11 @@ test('長く続く鉄道の橋はラーメン高架橋として扱う', () => {
   assert.equal(classify({ railway: 'rail', bridge: 'yes', layer: '1' }, 120), 'rail-bridge');
   // viaduct と明記されていれば長さによらず高架
   assert.equal(classify({ railway: 'rail', bridge: 'viaduct' }, 60), 'rail-elevated');
-  // 道路も同じ
-  assert.equal(classify({ highway: 'primary', bridge: 'yes', layer: '1' }, 900), 'road-elevated');
+  // 道路で高架として扱うのは自動車専用道路だけ。
+  // 一般道は長い橋でも路面の高さが桁橋と変わらないので、ここを広げると
+  // 普通の橋との接続部が段差になる
+  assert.equal(classify({ highway: 'motorway', bridge: 'yes', layer: '1' }, 900), 'road-elevated');
+  assert.equal(classify({ highway: 'primary', bridge: 'yes', layer: '1' }, 900), 'road-bridge');
   assert.equal(classify({ highway: 'primary', bridge: 'yes', layer: '1' }, 90), 'road-bridge');
 });
 

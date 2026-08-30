@@ -72,11 +72,24 @@ const MATERIAL: Record<StructureKind, { deck: Cesium.Color; pier: Cesium.Color }
  */
 const MAX_FRAME_INSTANCES = 6000;
 
-/** 1 構造物あたりの地形サンプル数。全頂点を取ると数が多すぎる */
-const TERRAIN_SAMPLES_PER_PATH = 12;
+/**
+ * 地形サンプルの間隔 (m) と 1 構造物あたりの上限。
+ *
+ * 以前は長さによらず 12 点だったため、1.7km の高架では 145m ごとにしか
+ * 標高を取れず、その間を直線で結ぶので路面が折れ線状にでこぼこしていた。
+ */
+const TERRAIN_SAMPLE_INTERVAL_M = 60;
+const MAX_TERRAIN_SAMPLES_PER_PATH = 48;
 
-/** 桁下高を確保するために地表を均す距離 (m) */
-const GRADE_WINDOW_M = 60;
+/**
+ * 縦断勾配を作るときの窓幅 (m)。
+ *
+ * 高架は地表の起伏に追従せず、緩やかな勾配で通る。
+ * 桁下を確保するために近傍の最大標高を取り（RISE）、
+ * そのあと長い窓で均して滑らかな勾配にする（SMOOTH）。
+ */
+const GRADE_RISE_WINDOW_M = 50;
+const GRADE_SMOOTH_WINDOW_M = 220;
 
 /**
  * 断面を Cesium の座標に直す。
@@ -220,28 +233,57 @@ function headingAtDistance(path: LatLng[], cumulative: number[], d: number): num
   return headingAt(path, path.length - 1);
 }
 
+/** 窓内の値を集計する（等間隔でない頂点に対応するため距離で窓を取る） */
+function windowed(
+  values: number[],
+  cumulative: number[],
+  halfWidth: number,
+  reduce: (acc: number, v: number, count: number) => number,
+  init: (v: number) => number,
+): number[] {
+  const out: number[] = [];
+  let lo = 0;
+  let hi = 0;
+  for (let i = 0; i < values.length; i += 1) {
+    while (lo < i && cumulative[i] - cumulative[lo] > halfWidth) lo += 1;
+    while (hi < values.length - 1 && cumulative[hi + 1] - cumulative[i] <= halfWidth) hi += 1;
+    let acc = init(values[lo]);
+    let count = 0;
+    for (let j = lo; j <= hi; j += 1) {
+      count += 1;
+      acc = reduce(acc, values[j], count);
+    }
+    out.push(acc);
+  }
+  return out;
+}
+
 /**
  * 地形を均した「路盤の高さ」を作る。
  *
- * 高架は地表の細かい起伏には追従せず、緩やかな縦断勾配で通る。
- * 窓内の最大標高を取ることで、どの地点でも桁下高を割らないようにする。
+ * 高架は地表の細かい起伏には追従せず、長い距離を緩やかな勾配で通る。
+ * 地表をそのままなぞると路面が波打ち、実物と似ても似つかなくなる。
+ *
+ *   1. 近傍の最大標高まで持ち上げる … どの地点でも桁下高を割らないように
+ *   2. 長い窓で平均する             … 滑らかな縦断勾配にする
+ *   3. 地表を下回らないよう戻す     … 平均で沈んだ箇所を救う
  */
 function gradeProfile(ground: number[], cumulative: number[]): number[] {
-  const raised = ground.map((_, i) => {
-    let max = ground[i];
-    for (let j = 0; j < ground.length; j += 1) {
-      if (Math.abs(cumulative[j] - cumulative[i]) <= GRADE_WINDOW_M) {
-        max = Math.max(max, ground[j]);
-      }
-    }
-    return max;
-  });
-  // 段差が残るので一度ならす
-  return raised.map((v, i) => {
-    const prev = raised[Math.max(0, i - 1)];
-    const next = raised[Math.min(raised.length - 1, i + 1)];
-    return (prev + v * 2 + next) / 4;
-  });
+  const raised = windowed(
+    ground,
+    cumulative,
+    GRADE_RISE_WINDOW_M,
+    (acc, v) => Math.max(acc, v),
+    (v) => v,
+  );
+  const smoothed = windowed(
+    raised,
+    cumulative,
+    GRADE_SMOOTH_WINDOW_M,
+    (acc, v, count) => acc + (v - acc) / count,
+    (v) => v,
+  );
+  return smoothed.map((v, i) => Math.max(v, ground[i]));
 }
 
 /** 等間隔で並ぶ柱の位置（累積距離）。両端には必ず柱を置く */
@@ -305,13 +347,15 @@ export class ElevatedStructureLayer {
       const grade = gradeProfile(ground[index], metrics.cumulative);
       const material = MATERIAL[s.kind];
 
-      // 高さの基準（下から順に）:
-      //   beamBottom = grade + clearance   … 梁下（桁下高）。柱の頭でもある
-      //   slabBottom = + girderDepth       … 床版の下面 = 梁の上面
-      //   deckTop    = + deckThickness     … 路面
-      const beamBottom = grade.map((g) => g + s.clearance);
-      const slabBottom = beamBottom.map((h) => h + s.girderDepth);
-      const deckTop = slabBottom.map((h) => h + s.deckThickness);
+      // 高さは路面を基準に、上から下へ決める。
+      // 桁下を基準にすると、同じ路線でも構造形式が変わる接続部で
+      // 路面に段差ができてしまう（実際に 1.2m の段ができていた）。
+      //   deckTop    = grade + deckHeight  … 路面（軌道面・車道面）
+      //   slabBottom = − deckThickness     … 床版の下面 = 梁の上面
+      //   beamBottom = − girderDepth       … 梁下。柱の頭でもある
+      const deckTop = grade.map((g) => g + s.deckHeight);
+      const slabBottom = deckTop.map((h) => h - s.deckThickness);
+      const beamBottom = slabBottom.map((h) => h - s.girderDepth);
 
       this.addDeck(deckInstances, s, beamBottom, slabBottom, material.deck);
       this.addParapets(railInstances, s, deckTop, material.deck);
@@ -384,7 +428,12 @@ export class ElevatedStructureLayer {
     const requests: Cesium.Cartographic[] = [];
     const slots: { structure: number; vertex: number }[] = [];
     structures.forEach((s, si) => {
-      for (const vi of pickIndices(s.path.length, TERRAIN_SAMPLES_PER_PATH)) {
+      // 長い高架ほど多く取る。粗いと路面が折れ線状にでこぼこする
+      const wanted = Math.min(
+        MAX_TERRAIN_SAMPLES_PER_PATH,
+        Math.max(4, Math.ceil(measurePath(s.path).total / TERRAIN_SAMPLE_INTERVAL_M) + 1),
+      );
+      for (const vi of pickIndices(s.path.length, wanted)) {
         requests.push(Cesium.Cartographic.fromDegrees(s.path[vi].lng, s.path[vi].lat));
         slots.push({ structure: si, vertex: vi });
       }
@@ -445,10 +494,9 @@ export class ElevatedStructureLayer {
     const under = color.darken(0.18, new Cesium.Color());
 
     if (s.form === 'rigid-frame') {
-      const offset = this.girderOffset(s);
       const girderWidth = Math.max(0.7, s.pierSize * 1.1);
-      for (const side of [-1, 1]) {
-        const line = this.offsetPath(s.path, offset * side, beamBottom);
+      for (const offset of this.girderOffsets(s)) {
+        const line = this.offsetPath(s.path, offset, beamBottom);
         if (line.length < 2) continue;
         out.push(this.volume(line, girderShape(girderWidth, s.girderDepth), under));
       }
@@ -462,10 +510,19 @@ export class ElevatedStructureLayer {
     out.push(this.volume(line, girderShape(boxWidth, s.girderDepth), under));
   }
 
-  /** 縦梁・柱の中心線が中心からどれだけ外側にあるか (m) */
-  private girderOffset(s: ElevatedStructure): number {
+  /**
+   * 縦梁と柱を並べる位置（中心からの左右のずれ, m）。
+   *
+   * ラーメン高架橋は 2 線 2 柱式が基本だが、駅の前後など線路が増える区間では
+   * 床版が広くなり、柱の列も増える。2 本のまま広い床版を載せると、
+   * 見るからに支えきれない形になってしまう。
+   * 実物にならって、およそ 8m ごとに 1 列を目安にする。
+   */
+  private girderOffsets(s: ElevatedStructure): number[] {
     // 床版は柱の外側に張り出す。張り出し量は幅の 16% 程度
-    return Math.max(1, s.width / 2 - Math.max(1, s.width * 0.16));
+    const outer = Math.max(1, s.width / 2 - Math.max(1, s.width * 0.16));
+    const rows = Math.max(2, Math.round((outer * 2) / 8) + 1);
+    return Array.from({ length: rows }, (_, i) => -outer + (2 * outer * i) / (rows - 1));
   }
 
   /** 高欄・防音壁 */
@@ -514,7 +571,12 @@ export class ElevatedStructureLayer {
     // 予算が尽きて途中から柱が消えると、そこだけ床版が宙に浮いて見える。
     // 1 本ぶんまるごと入らないなら、その構造物には柱を付けない。
     // 並べ替えでカメラに近いものから処理しているので、手前の高架が優先される
-    const perBay = s.form === 'rigid-frame' ? 3 : s.form === 'girder' ? 2 : 1;
+    const perBay =
+      s.form === 'rigid-frame'
+        ? 1 + this.girderOffsets(s).length
+        : s.form === 'girder'
+          ? 2
+          : 1;
     if (bays.length * perBay > budget) return 0;
 
     const lats = s.path.map((p) => p.lat);
@@ -545,12 +607,11 @@ export class ElevatedStructureLayer {
         );
         added += 1;
 
-        // 2 本の柱
-        const offset = this.girderOffset(s);
-        for (const side of [-1, 1]) {
+        // 柱。縦梁の真下に 1 本ずつ立てる
+        for (const offset of this.girderOffsets(s)) {
           if (added >= budget) break;
           out.push(
-            this.box(this.shift(point, offset * side, heading), heading, {
+            this.box(this.shift(point, offset, heading), heading, {
               halfX: s.pierSize * 0.5,
               halfY: s.pierSize * 0.6,
               halfZ: columnHeight / 2,
