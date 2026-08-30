@@ -297,6 +297,23 @@ function bayPositions(total: number, spacing: number): number[] {
   return out;
 }
 
+/**
+ * 距離に応じて柱を何本に 1 本描くか。
+ *
+ * ラーメン高架橋の径間は 8.9m。浜松の実測では、この柱だけで
+ * 描画するかたまりの 84%（4,111 個）を占めていた。
+ * 一方、径間 8.9m の柱が 1 本おきに見えるかどうかは、
+ * 数百メートル離れると人の目には分からない。
+ *
+ * 2 の冪で間引くのは、近づいて精細に戻したときに
+ * 残っていた柱の位置がそのまま使われ、柱が横滑りしないようにするため。
+ */
+function pierStride(distanceM: number): number {
+  if (distanceM < 250) return 1;
+  if (distanceM < 600) return 2;
+  return 4;
+}
+
 /** 等間隔に選んだ添字（地形サンプルの間引き） */
 function pickIndices(length: number, max: number): number[] {
   if (length <= max) return Array.from({ length }, (_, i) => i);
@@ -332,6 +349,7 @@ export class ElevatedStructureLayer {
     // 柱の予算は限られているので、カメラに近いものから使う。
     // 床版と壁は全部に付けるので、遠くの高架が消えることはない
     const ordered = this.sortByDistance(structures);
+    const distances = this.distancesFrom(ordered);
     const ground = await this.sampleGround(ordered);
 
     const deckInstances: Cesium.GeometryInstance[] = [];
@@ -369,6 +387,7 @@ export class ElevatedStructureLayer {
         slabBottom,
         material,
         frameBudget,
+        distances[index],
       );
       frameBudget -= used;
     });
@@ -405,6 +424,17 @@ export class ElevatedStructureLayer {
     const eye = { lat, lng };
 
     return [...structures].sort((a, b) => this.nearestOf(a, eye) - this.nearestOf(b, eye));
+  }
+
+  /** 各構造物までの距離 (m)。視点が取れなければ 0（＝最高精細） */
+  private distancesFrom(structures: ElevatedStructure[]): number[] {
+    const carto = this.viewer.camera?.positionCartographic;
+    if (!carto) return structures.map(() => 0);
+    const eye = {
+      lat: Cesium.Math.toDegrees(carto.latitude),
+      lng: Cesium.Math.toDegrees(carto.longitude),
+    };
+    return structures.map((s) => this.nearestOf(s, eye));
   }
 
   /** 経路の頂点のうち、視点にもっとも近いものまでの距離 (m) */
@@ -563,10 +593,14 @@ export class ElevatedStructureLayer {
     slabBottom: number[],
     material: { deck: Cesium.Color; pier: Cesium.Color },
     budget: number,
+    distanceM: number,
   ): number {
     if (s.pierSpacing <= 0 || budget <= 0) return 0;
 
-    const bays = bayPositions(metrics.total, s.pierSpacing);
+    // 離れた高架では柱を間引く。径間 8.9m の 1 本おきは
+    // 数百メートル先では見分けがつかない
+    const stride = pierStride(distanceM);
+    const bays = bayPositions(metrics.total, s.pierSpacing).filter((_, i) => i % stride === 0);
 
     // 予算が尽きて途中から柱が消えると、そこだけ床版が宙に浮いて見える。
     // 1 本ぶんまるごと入らないなら、その構造物には柱を付けない。

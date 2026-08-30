@@ -117,8 +117,13 @@ void main() {
 }
 `;
 
+/** 星空テクスチャの置き場所（Cesium の静的アセット） */
+const STAR_TEXTURE_BASE = '/cesium/Assets/Textures/SkyBox';
+
 export class EnvironmentController {
   private weatherStage: Cesium.PostProcessStage | null = null;
+  /** 夜になって初めて作る星空。作った後は使い回す */
+  private starField: Cesium.SkyBox | null = null;
   private state: EnvironmentState;
 
   constructor(
@@ -246,6 +251,38 @@ export class EnvironmentController {
     } else {
       scene.globe.lambertDiffuseMultiplier = 0.9;
     }
+
+    this.applyStarField(night);
+  }
+
+  /**
+   * 星空を夜だけ用意する。
+   *
+   * 星空のテクスチャは 6 面で 864KB ある。Cesium は Viewer を作った時点で
+   * これを読みに行くが、昼間は空の大気に隠れて 1 ピクセルも見えない。
+   * 夜になって初めて作ることで、昼しか使わない人はこれを読まずに済む。
+   */
+  private applyStarField(night: boolean): void {
+    const scene = this.viewer.scene;
+    if (!night) {
+      if (scene.skyBox) scene.skyBox.show = false;
+      return;
+    }
+    if (!this.starField) {
+      const base = `${STAR_TEXTURE_BASE}/tycho2t3_80_`;
+      this.starField = new Cesium.SkyBox({
+        sources: {
+          positiveX: `${base}px.jpg`,
+          negativeX: `${base}mx.jpg`,
+          positiveY: `${base}py.jpg`,
+          negativeY: `${base}my.jpg`,
+          positiveZ: `${base}pz.jpg`,
+          negativeZ: `${base}mz.jpg`,
+        },
+      });
+    }
+    scene.skyBox = this.starField;
+    scene.skyBox.show = true;
   }
 
   setWeather(weather: WeatherKind): void {

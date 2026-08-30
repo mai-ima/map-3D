@@ -39,17 +39,39 @@ const DIRECTORIES = ['Workers', 'Assets', 'ThirdParty', 'Widgets'];
  *   Widgets/Images … Cesium 標準 UI の画像。UI は全て自前で、
  *                    widgets.css が使う画像は data URI で埋め込まれている
  *
+ *   GoogleEarthEnterprise … Google Earth Enterprise 形式のタイル。使わない
+ *   decodeI3S             … Esri の I3S 形式。使わない
+ *   gaussianSplat / wasm_splats … 3D Gaussian Splatting。使わない
+ *   zip-module.wasm       … Cesium ion の ZIP 入りアセット用。使わない
+ *   waterNormals          … 地形の water mask による水面表現。
+ *                           地理院・PLATEAU の地形は water mask を持たず、
+ *                           engine 側でも showWaterEffect を切っている
+ *
  * 残すもの:
  *   SkyBox                      夜間の星空（時間帯の演出で使う）
  *   approximateTerrainHeights   地面へのクランプ（経路表示に必須）
- *   IAU2006_XYS                 地球の歳差・章動（太陽位置の計算に使う）
- *   Workers / ThirdParty        タイルのデコード処理。必須
+ *   IAU2006_XYS                 太陽・月の方向の計算に毎フレーム使われる
+ *                               （setSunAndMoonDirections が参照する）
+ *   draco_decoder.wasm          PLATEAU の 3D Tiles は Draco 圧縮
+ *   basis_transcoder / transcodeKTX2
+ *                               KTX2 テクスチャのデコード。PLATEAU の
+ *                               年度・地域によって使われることがあるので残す
  */
 const EXCLUDED = [
   'Assets/Textures/NaturalEarthII',
   'Assets/Textures/maki',
   'Assets/Textures/LensFlare',
+  'Assets/Textures/waterNormals.jpg',
+  'Assets/Textures/waterNormalsSmall.jpg',
   'Widgets/Images',
+  'Workers/createVerticesFromGoogleEarthEnterpriseBuffer.js',
+  'Workers/decodeGoogleEarthEnterprisePacket.js',
+  'Workers/decodeI3S.js',
+  'Workers/gaussianSplatSorter.js',
+  'Workers/gaussianSplatTextureGenerator.js',
+  'ThirdParty/google-earth-dbroot-parser.js',
+  'ThirdParty/wasm_splats_bg.wasm',
+  'ThirdParty/zip-module.wasm',
 ];
 
 async function main() {
@@ -96,12 +118,14 @@ function mb(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }
 
-async function directorySize(dir) {
+/** ファイル 1 つでもディレクトリでも合計サイズを返す */
+async function directorySize(target) {
+  const info = await stat(target);
+  if (!info.isDirectory()) return info.size;
+
   let total = 0;
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) total += await directorySize(full);
-    else total += (await stat(full)).size;
+  for (const entry of await readdir(target, { withFileTypes: true })) {
+    total += await directorySize(path.join(target, entry.name));
   }
   return total;
 }

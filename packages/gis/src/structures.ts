@@ -117,6 +117,59 @@ const TRACK_MARGIN = 2.2;
 const LANE_WIDTH = 3.25;
 
 /**
+ * 道路種別ごとの標準的な幅員 (m)。lanes が入っていないときに使う。
+ *
+ * 一律 9m にしていたため、幅 6m の生活道路に架かる橋まで 9m の床版になり、
+ * 橋だけが道路より太く見えていた。
+ */
+const ROAD_WIDTH: Record<string, number> = {
+  motorway: 10.5,
+  motorway_link: 7,
+  trunk: 10,
+  trunk_link: 7,
+  primary: 9.5,
+  primary_link: 6.5,
+  secondary: 8.5,
+  secondary_link: 6,
+  tertiary: 7.5,
+  unclassified: 6,
+  residential: 6,
+  living_street: 4.5,
+  service: 4.5,
+  track: 3.5,
+};
+
+/**
+ * 路面の地上高 (m)。
+ *
+ * 浜松の実測（2026-08）で分かったこと:
+ *   道路橋 57 本の長さは中央値 10m・最大 68m で、その大半が
+ *   馬込川などを渡る「川の橋」だった（八幡橋・諏訪橋など）。
+ *   OSM ではこれらにも layer=1 が付く。水路が layer 0 だからで、
+ *   「道路の上をまたいでいる」という意味ではない。
+ *   layer だけで高さを決めると、川の橋が 4.65m 浮いて道路から離れる。
+ *
+ * そこで「何をまたいでいるか」で決める。水路をまたぐ橋は路面が
+ * 前後の道路と続いており、地上高はほとんど無い。
+ */
+const DECK_HEIGHT = {
+  /** 水路をまたぐ橋。前後の道路と同じ高さで渡る */
+  overWater: { road: 1.2, foot: 1.6, rail: 1.8 },
+  /** 道路や線路をまたぐ橋。建築限界を確保する */
+  overTraffic: { road: 5.6, foot: 5.6, rail: 6.5 },
+  /** layer が 1 増えるごとに積み増す高さ */
+  perLayer: 5,
+} as const;
+
+/**
+ * 桁を持たない板橋として組む長さの上限 (m)。
+ *
+ * 支間 30m ほどまでは床版橋・中空床版橋が使われる。
+ * 短い橋に箱桁と橋脚を付けると、実物と違ううえに描画も重くなる。
+ */
+const SLAB_BRIDGE_MAX_M = { road: 30, foot: 40 } as const;
+
+/**
  * ラーメン高架橋とみなす最小の長さ (m)。
  *
  * OSM では市街地を貫く鉄道高架も bridge=yes で入っている。
@@ -184,6 +237,126 @@ export function classify(tags: Record<string, string>, lengthM = 0): StructureKi
   return 'road-bridge';
 }
 
+/**
+ * 橋の造りを決める文脈。
+ *
+ * どれも OSM から読み取れる事実で、こちらで創作しているものはない。
+ */
+export interface StructureContext {
+  /** 経路の長さ (m) */
+  lengthM: number;
+  /** 川・水路をまたいでいるか（水路の線と交差するかで判定） */
+  overWater: boolean;
+}
+
+/** 路面の地上高を決める */
+export function deckHeightOf(
+  kind: StructureKind,
+  layer: number,
+  context: StructureContext,
+): number {
+  // 高架は橋とは別。市街地を貫く構造なので、またぐものによらず高い
+  if (kind === 'rail-elevated') return PROFILE[kind].deckHeight + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
+  if (kind === 'road-elevated') return PROFILE[kind].deckHeight + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
+
+  const family = kind === 'footbridge' ? 'foot' : kind === 'rail-bridge' ? 'rail' : 'road';
+  // 水路をまたぐ橋は、前後の道路と同じ高さで渡る
+  if (context.overWater) {
+    return DECK_HEIGHT.overWater[family] + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
+  }
+  // 道路や線路をまたぐ橋。layer が無いなら渡っている相手も分からないので、
+  // 平面交差に近いものとして低く置く
+  if (layer <= 0) return DECK_HEIGHT.overWater[family];
+  return DECK_HEIGHT.overTraffic[family] + (layer - 1) * DECK_HEIGHT.perLayer;
+}
+
+/**
+ * 構造形式を決める。
+ *
+ * 短い橋は床版橋（桁を持たない板）。実物がそうであるうえに、
+ * 箱桁と橋脚を作らないぶん描画も軽くなる。
+ */
+export function formOf(kind: StructureKind, context: StructureContext): StructureForm {
+  // 市街地を貫く鉄道高架はラーメン高架橋、都市高速は桁橋。
+  // どちらも長い構造なので、長さでは切り替えない
+  if (kind === 'rail-elevated') return 'rigid-frame';
+  if (kind === 'road-elevated') return 'girder';
+  // 歩道橋は桁を持たない薄い床版
+  if (kind === 'footbridge') return 'slab';
+  // 道路橋・鉄道橋は支間が短ければ床版橋
+  return context.lengthM <= SLAB_BRIDGE_MAX_M.road ? 'slab' : 'girder';
+}
+
+/** 2 つの線分が交差するか（水路をまたいでいるかの判定に使う） */
+function segmentsCross(
+  a1: LatLng,
+  a2: LatLng,
+  b1: LatLng,
+  b2: LatLng,
+): boolean {
+  const cross = (o: LatLng, p: LatLng, q: LatLng): number =>
+    (p.lng - o.lng) * (q.lat - o.lat) - (p.lat - o.lat) * (q.lng - o.lng);
+  const d1 = cross(b1, b2, a1);
+  const d2 = cross(b1, b2, a2);
+  const d3 = cross(a1, a2, b1);
+  const d4 = cross(a1, a2, b2);
+  return d1 * d2 < 0 && d3 * d4 < 0;
+}
+
+/** 経路を囲む矩形 [minLng, minLat, maxLng, maxLat] */
+function boundsOf(path: LatLng[]): BBox {
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  for (const p of path) {
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+  }
+  return [minLng, minLat, maxLng, maxLat];
+}
+
+function boundsOverlap(a: BBox, b: BBox): boolean {
+  return !(a[2] < b[0] || b[2] < a[0] || a[3] < b[1] || b[3] < a[1]);
+}
+
+/** 水路の矩形は橋の本数ぶん繰り返し要るので、一度だけ求めて覚えておく */
+const boundsCache = new WeakMap<LatLng[], BBox>();
+function cachedBounds(path: LatLng[]): BBox {
+  const hit = boundsCache.get(path);
+  if (hit) return hit;
+  const bounds = boundsOf(path);
+  boundsCache.set(path, bounds);
+  return bounds;
+}
+
+/**
+ * 水路をまたいでいるか。
+ *
+ * 「川の橋」と「道路をまたぐ跨道橋」は、OSM のタグだけでは区別できない
+ * （どちらも bridge=yes + layer=1 になる）。実際に水路の線と交差するかで見る。
+ *
+ * 総当たりだと橋 153 本 × 水路の線分すべてで 154ms かかっていた。
+ * 先に矩形が重なるかだけを見て、ほとんどの組み合わせを弾く。
+ */
+export function crossesWaterway(path: LatLng[], waterways: LatLng[][]): boolean {
+  if (path.length < 2) return false;
+  const bounds = boundsOf(path);
+
+  for (const water of waterways) {
+    if (water.length < 2) continue;
+    if (!boundsOverlap(bounds, cachedBounds(water))) continue;
+    for (let i = 1; i < path.length; i += 1) {
+      for (let j = 1; j < water.length; j += 1) {
+        if (segmentsCross(path[i - 1], path[i], water[j - 1], water[j])) return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function widthOf(kind: StructureKind, tags: Record<string, string>): number {
   const explicit = Number.parseFloat(tags.width ?? '');
   if (Number.isFinite(explicit) && explicit > 1) return explicit;
@@ -199,43 +372,65 @@ export function widthOf(kind: StructureKind, tags: Record<string, string>): numb
 
   const lanes = parseIntTag(tags.lanes);
   if (lanes) return Math.max(4, lanes * LANE_WIDTH + 1.5);
-  return base;
+  // 道路種別ごとの標準幅員。一律だと生活道路の橋まで幹線道路の幅になる
+  return ROAD_WIDTH[tags.highway ?? ''] ?? base;
 }
 
-export function toStructure(el: OverpassElement): ElevatedStructure | null {
+export function toStructure(
+  el: OverpassElement,
+  waterways: LatLng[][] = [],
+): ElevatedStructure | null {
   const tags = el.tags ?? {};
   const geometry = el.geometry ?? [];
   // 2 点未満では線にならない
   if (geometry.length < 2) return null;
 
+  const path = geometry.map((p) => ({ lat: p.lat, lng: p.lon }));
+  const lengthM = pathLength(geometry);
   // 長さは形式の判定に要る。市街地を貫く高架は 1km を超える 1 本の way になっている
-  const kind = classify(tags, pathLength(geometry));
+  const kind = classify(tags, lengthM);
   if (!kind) return null;
 
+  const context: StructureContext = {
+    lengthM,
+    overWater: crossesWaterway(path, waterways),
+  };
   const profile = PROFILE[kind];
-  const layer = parseIntTag(tags.layer) ?? (tags.bridge && tags.bridge !== 'no' ? 1 : 0);
+  const layer = parseIntTag(tags.layer) ?? 0;
   const width = widthOf(kind, tags);
+  const form = formOf(kind, context);
+  const deckHeight = deckHeightOf(kind, layer, context);
 
-  // layer が 2 以上なら他の構造物の上を通っているので、その分持ち上げる
-  const deckHeight = profile.deckHeight + Math.max(0, layer - 1) * 5;
+  // 床版橋は桁を持たず、そのぶん版が厚い（中空床版橋で支間の 1/20 前後）
+  const deckThickness =
+    form === 'slab' && kind !== 'footbridge'
+      ? Math.min(1.2, Math.max(0.45, lengthM / 22))
+      : profile.deckThickness;
+  const girderDepth = form === 'slab' ? 0 : profile.girderDepth;
 
-  // 高さ 10m を超えるラーメン高架橋は柱の中間につなぎ梁が入る。
+  // 高さ 12m を超えるラーメン高架橋は柱の中間につなぎ梁が入る。
   // 柱が細長く見えないよう、高いものは柱を太くする
   const pierSize = deckHeight > 12 ? profile.pierSize * 1.25 : profile.pierSize;
+
+  // 橋脚を立てるのは、支える相手が要るときだけ。
+  // 短い橋は両岸の橋台で支えており、川の中に橋脚は立っていない
+  const needsPiers =
+    form === 'rigid-frame' ||
+    (form === 'girder' && lengthM > profile.pierSpacing * 1.5) ||
+    (kind === 'footbridge' && deckHeight > 3 && lengthM > profile.pierSpacing * 1.5);
 
   return {
     id: `osm:way${el.id}`,
     kind,
-    form: profile.form,
+    form,
     name: tags.name,
-    path: geometry.map((p) => ({ lat: p.lat, lng: p.lon })),
+    path,
     width,
     layer,
-    deckThickness: profile.deckThickness,
-    girderDepth: profile.girderDepth,
+    deckThickness,
+    girderDepth,
     deckHeight,
-    // 短い跨線橋に柱を並べると実物と違う見た目になる
-    pierSpacing: kind === 'road-bridge' && layer <= 1 ? 0 : profile.pierSpacing,
+    pierSpacing: needsPiers ? profile.pierSpacing : 0,
     pierSize,
     parapetHeight: profile.parapetHeight,
     lanes: parseIntTag(tags.lanes),
@@ -298,6 +493,9 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
   const [minLng, minLat, maxLng, maxLat] = bbox;
   const b = `${minLat},${minLng},${maxLat},${maxLng}`;
 
+  // 水路も一緒に取る。「川を渡る橋」と「道路をまたぐ跨道橋」は
+  // タグでは区別できず、実際に交差するかどうかでしか分からない。
+  // これが分からないと川の橋まで 5m 持ち上がり、道路から浮いてしまう
   const query = `
     [out:json][timeout:60];
     (
@@ -305,6 +503,7 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
       way["bridge"]["bridge"!="no"]["railway"](${b});
       way["layer"]["highway"](${b});
       way["layer"]["railway"](${b});
+      way["waterway"~"^(river|stream|canal|drain|ditch)$"](${b});
     );
     out geom;
   `;
@@ -321,10 +520,17 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
     }
   }
 
+  const waterways: LatLng[][] = [];
+  for (const el of elements) {
+    if (el.type !== 'way' || !el.tags?.waterway) continue;
+    const geometry = el.geometry ?? [];
+    if (geometry.length >= 2) waterways.push(geometry.map((p) => ({ lat: p.lat, lng: p.lon })));
+  }
+
   const list: ElevatedStructure[] = [];
   for (const el of elements) {
     if (el.type !== 'way') continue;
-    const s = toStructure(el);
+    const s = toStructure(el, waterways);
     if (!s) continue;
     const runs = clipPathToBBox(s.path, bbox);
     if (runs.length === 1) {

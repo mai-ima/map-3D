@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BBox } from '@ijm/shared';
+import { alignDeckHeights } from '../structure-merge';
 import { classify, clipPathToBBox, toStructure, widthOf } from '../structures';
+
+/** 20m ほどの短い橋（浜松の道路橋の長さ中央値は 10m） */
+const shortWay = (tags: Record<string, string>) => ({
+  type: 'way' as const,
+  id: 124,
+  tags,
+  geometry: [
+    { lat: 34.7, lon: 137.73 },
+    { lat: 34.70018, lon: 137.73 },
+  ],
+});
 
 const way = (tags: Record<string, string>, points = 3) => ({
   type: 'way' as const,
@@ -55,17 +67,49 @@ test('高い layer ほど路面を高くする', () => {
   assert.ok(l3.deckHeight > l1.deckHeight, 'layer が高いほど持ち上がるべき');
 });
 
-test('同じ路線なら構造形式が変わっても路面の高さは同じ', () => {
-  // 市街地はラーメン高架橋、川をまたぐ区間は桁橋になる。
-  // 桁下を基準に高さを決めると、この境目で路面が段差になる
+test('橋は何をまたぐかで高さが決まる', () => {
+  // OSM では川の橋にも layer=1 が付く（水路が layer 0 だから）。
+  // 浜松の道路橋 57 本は長さ中央値 10m で、その大半が馬込川などを渡る橋だった。
+  // layer だけで高さを決めると、川の橋が 5m 浮いて道路から離れてしまう
+  // way は南北に伸びるので、川は東西に横切らせる
+  const river = [
+    { lat: 34.7008, lng: 137.7280 },
+    { lat: 34.7008, lng: 137.7320 },
+  ];
+  const overWater = toStructure(way({ highway: 'residential', bridge: 'yes', layer: '1' }), [river]);
+  const overRoad = toStructure(way({ highway: 'residential', bridge: 'yes', layer: '1' }), []);
+  assert.ok(overWater && overRoad);
+
+  // 川を渡る橋は前後の道路と同じ高さ
+  assert.ok(overWater.deckHeight < 2, `川の橋が ${overWater.deckHeight}m は浮きすぎ`);
+  // 道路をまたぐ橋は建築限界ぶん持ち上がる
+  assert.ok(overRoad.deckHeight > 5, `跨道橋が ${overRoad.deckHeight}m では低すぎ`);
+});
+
+test('つながっている構造物は路面の高さが揃う', () => {
+  // 市街地はラーメン高架橋、川をまたぐ区間は橋と造りが変わる。
+  // 造りだけで高さを決めると、境目で 7m を超える段差になる
+  const at = (lat: number, lng: number) => ({ lat, lng });
   const viaduct = toStructure(way({ railway: 'rail', layer: '1' }, 40));
-  const bridge = toStructure(way({ railway: 'rail', bridge: 'yes' }));
-  assert.ok(viaduct && bridge);
-  assert.equal(viaduct.form, 'rigid-frame');
-  assert.equal(bridge.form, 'girder');
-  assert.equal(viaduct.deckHeight, bridge.deckHeight, '軌道面は連続していること');
+  assert.ok(viaduct);
+  const bridge = {
+    ...viaduct,
+    id: 'bridge',
+    kind: 'rail-bridge' as const,
+    form: 'girder' as const,
+    deckHeight: 1.8,
+    girderDepth: 1.8,
+    // 高架の終点から続く
+    path: [
+      viaduct.path[viaduct.path.length - 1],
+      at(viaduct.path[viaduct.path.length - 1].lat + 0.0005, 137.73),
+    ],
+  };
+  const aligned = alignDeckHeights([viaduct, bridge]);
+  assert.equal(aligned[0].deckHeight, aligned[1].deckHeight, '軌道面は連続していること');
+  assert.equal(aligned[1].deckHeight, viaduct.deckHeight, '高いほうに合わせる');
   // 一方で桁の高さは形式ごとに違う（＝桁下は変わる）
-  assert.notEqual(viaduct.girderDepth, bridge.girderDepth);
+  assert.notEqual(aligned[0].girderDepth, aligned[1].girderDepth);
 });
 
 test('形状が 2 点未満のものは捨てる', () => {
@@ -203,11 +247,22 @@ test('表示範囲の外へ伸びた経路を切り落とす', () => {
   );
 });
 
-test('一般道の橋には橋脚を立てない', () => {
-  // 短い跨線橋に橋脚を並べると実物と違う見た目になる
-  const bridge = toStructure(way({ highway: 'secondary', bridge: 'yes' }));
-  assert.ok(bridge);
-  assert.equal(bridge.pierSpacing, 0);
+test('短い橋は床版橋にして橋脚を立てない', () => {
+  // 浜松の道路橋は長さ中央値 10m。両岸の橋台で支えており、
+  // 川の中に橋脚は立っていない。箱桁と橋脚を付けると実物と違ううえに重い
+  const short = toStructure(shortWay({ highway: 'secondary', bridge: 'yes' }));
+  assert.ok(short);
+  assert.equal(short.form, 'slab', '短い橋は床版橋');
+  assert.equal(short.girderDepth, 0, '桁を持たない');
+  assert.equal(short.pierSpacing, 0, '橋脚を立てない');
+  // 床版橋は桁が無いぶん版が厚い
+  assert.ok(short.deckThickness > 0.4);
+
+  // 支間を超える長さなら桁橋になり、橋脚が入る
+  const long = toStructure(way({ highway: 'secondary', bridge: 'yes' }));
+  assert.ok(long);
+  assert.equal(long.form, 'girder');
+  assert.ok(long.pierSpacing > 0);
 
   // 高架は連続した橋脚で支えられている
   const elevated = toStructure(way({ railway: 'rail', layer: '1' }));

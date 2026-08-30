@@ -595,7 +595,54 @@ export function mergeParallel(structures: ElevatedStructure[]): ElevatedStructur
   return out;
 }
 
-/** 縦につないでから横にまとめる */
+/** つながっているとみなす端点の距離 (m)。まとめた床版は横にずれるぶん緩めに取る */
+const JOIN_TOLERANCE_M = 10;
+
+/** 端点でつながり、かつ同じ向きに続いているか */
+function joins(a: ElevatedStructure, b: ElevatedStructure): boolean {
+  const family = (s: ElevatedStructure) => (s.kind.startsWith('rail') ? 'rail' : s.kind);
+  if (family(a) !== family(b)) return false;
+
+  const cos = Math.cos((a.path[0].lat * Math.PI) / 180) || 1;
+  const gap = (p: LatLng, q: LatLng) =>
+    Math.hypot((q.lat - p.lat) * M_PER_DEG, (q.lng - p.lng) * M_PER_DEG * cos);
+  const ends = [a.path[0], a.path[a.path.length - 1]];
+  const others = [b.path[0], b.path[b.path.length - 1]];
+  return ends.some((p) => others.some((q) => gap(p, q) < JOIN_TOLERANCE_M));
+}
+
+/**
+ * つながっている構造物の路面の高さを揃える。
+ *
+ * 同じ路線でも、川をまたぐ区間は橋、市街地はラーメン高架橋と構造が変わる。
+ * 高さをそれぞれの造りだけで決めると、接続部で路面が段差になる
+ * （鉄道では 7m を超える段ができうる）。実物では路面は連続していて、
+ * 変わるのはその下の造りだけなので、つながっている側の高いほうに合わせる。
+ */
+export function alignDeckHeights(structures: ElevatedStructure[]): ElevatedStructure[] {
+  const heights = structures.map((s) => s.deckHeight);
+  // 端点の一致は推移する（A-B-C）ので、変化が無くなるまで繰り返す。
+  // 構造物の数だけ回れば必ず収束する
+  for (let pass = 0; pass < structures.length; pass += 1) {
+    let changed = false;
+    for (let i = 0; i < structures.length; i += 1) {
+      for (let j = i + 1; j < structures.length; j += 1) {
+        if (heights[i] === heights[j]) continue;
+        if (!joins(structures[i], structures[j])) continue;
+        const top = Math.max(heights[i], heights[j]);
+        heights[i] = top;
+        heights[j] = top;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return structures.map((s, i) =>
+    heights[i] === s.deckHeight ? s : { ...s, deckHeight: heights[i] },
+  );
+}
+
+/** 縦につないで、横にまとめて、つながり先と高さを揃える */
 export function consolidateStructures(structures: ElevatedStructure[]): ElevatedStructure[] {
-  return mergeParallel(stitchStructures(structures));
+  return alignDeckHeights(mergeParallel(stitchStructures(structures)));
 }

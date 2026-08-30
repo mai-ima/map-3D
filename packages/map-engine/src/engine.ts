@@ -144,6 +144,14 @@ const RECOVERY_STREAK = 10;
  */
 const MAX_CAMERA_HEIGHT_M = 25_000_000;
 
+/**
+ * 地表大気を描き始める高度 (m)。
+ *
+ * 地球の縁が青くにじむ表現なので、地平線が丸く見え始める高さより
+ * 下では画面に現れない。街を見ている間は計算するだけ無駄になる。
+ */
+const GROUND_ATMOSPHERE_MIN_HEIGHT_M = 30_000;
+
 export class MapEngine {
   readonly viewer: Cesium.Viewer;
   readonly buildings: BuildingLayerManager;
@@ -227,6 +235,10 @@ export class MapEngine {
       infoBox: false,
       selectionIndicator: false,
       shouldAnimate: false,
+      // 星空は夜になってから作る（テクスチャ 6 面で 864KB あり、
+      // 昼は空の大気に隠れて 1 ピクセルも見えない）。
+      // EnvironmentController が時間帯に応じて用意する
+      skyBox: false,
       msaaSamples: this.quality.msaaSamples,
       useBrowserRecommendedResolution: false,
       requestRenderMode: true,
@@ -430,6 +442,25 @@ export class MapEngine {
     const far = Math.max(this.quality.viewDistance, height * 8);
     // 地球全体が入る距離が上限（これ以上伸ばしても見えるものは増えない）
     frustum.far = Math.min(far, 5e7);
+
+    this.applyAtmosphereForHeight(height);
+  }
+
+  /**
+   * 高度に応じて大気の描画を切り替える。
+   *
+   * 地表大気（showGroundAtmosphere）は、地球を宇宙から見たときに
+   * 縁が青くにじむ表現。街を見ている高さでは画面に一切現れないのに、
+   * 地形のフラグメントシェーダには散乱の計算が常に入っている。
+   * 見えない高さでは切り、引いたら戻すことで、街を見ている間の
+   * 地形描画を軽くする。見た目は変わらない。
+   */
+  private applyAtmosphereForHeight(height: number): void {
+    const globe = this.viewer.scene.globe;
+    const wanted = height > GROUND_ATMOSPHERE_MIN_HEIGHT_M;
+    if (globe.showGroundAtmosphere === wanted) return;
+    globe.showGroundAtmosphere = wanted;
+    this.requestRender();
   }
 
   /**
@@ -516,6 +547,19 @@ export class MapEngine {
     globe.tileCacheSize = this.quality.globeTileCacheSize;
     // 画面外の地形タイルを保持しない
     globe.preloadSiblings = false;
+
+    /**
+     * 見た目に寄与しない描画をやめる。
+     *
+     * Cesium は水面の反射を地形タイルの water mask で描く。国土地理院・
+     * PLATEAU の地形タイルは water mask を持たないので、この計算は
+     * 常に「水ではない」を返すだけの空回りになる。それでも地形の
+     * フラグメントシェーダには法線の読み出しと合成が組み込まれる。
+     * 切っても見た目は 1 ピクセルも変わらず、地形の描画だけが軽くなる。
+     */
+    globe.showWaterEffect = false;
+    // 地形の裏面は見えない
+    globe.backFaceCulling = true;
     // 半透明の順序保証は中間バッファを増やす。建物は不透明が主なので無効化する
     // （Cesium のバージョンによっては読み取り専用なので、存在確認してから触る）
     const oit = (
