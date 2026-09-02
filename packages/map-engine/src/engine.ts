@@ -28,6 +28,7 @@ import {
   GSI_IMAGERY,
   categoryIcon,
   crossingShapes,
+  detailForHeight,
   getImagery,
   type ImageryDefinition,
   railShapes,
@@ -233,6 +234,8 @@ export class MapEngine {
   private structuresCentre: LatLng | null = null;
   /** 道路を読み込んだときのカメラ位置。ここから離れたら取り直す */
   private roadsCentre: LatLng | null = null;
+  /** いま区画線まで描いているか（上空では描かない） */
+  private roadsDetailFull = true;
   private lastSseChangeAt = 0;
   private fps = 0;
   private fpsLastSample = 0;
@@ -580,11 +583,19 @@ export class MapEngine {
    * 点ごとに問い合わせると要求が数千件になる。
    */
   async showRoadScene(scene: RoadScene, bbox: BBox, key: string): Promise<void> {
-    if (this.roads.hasLoaded(key)) return;
+    // 上空から見ているときは区画線を組み立てない（見えないものは描かない）。
+    // 詳細度を鍵に含めるので、高度が変われば組み直しが走る
+    const detail = detailForHeight(this.viewer.camera.positionCartographic?.height ?? 0);
+    const fullKey = `${key}@${detail.laneMarkings ? 'full' : 'plain'}`;
+    if (this.roads.hasLoaded(fullKey)) return;
 
     const shapes: SceneShape[] = [];
     for (const road of scene.roads) {
-      shapes.push(...(road.cls === 'crossing' ? crossingShapes(road) : roadShapes(road)));
+      shapes.push(
+        ...(road.cls === 'crossing'
+          ? crossingShapes(road, detail)
+          : roadShapes(road, detail)),
+      );
     }
 
     // 地表の線路と信号だけが標高を要る。どちらも無いなら取りに行かない
@@ -599,14 +610,29 @@ export class MapEngine {
     }
 
     const centre = this.cameraGroundPosition();
-    await this.roads.render(shapes, key);
+    await this.roads.render(shapes, fullKey);
     this.roadsCentre = centre;
+    this.roadsDetailFull = detail.laneMarkings;
     this.requestRender();
+  }
+
+  /**
+   * 道路の詳細度を切り替えるべきか。
+   *
+   * 上空から降りてきたら区画線を出し、上がったら消す。
+   * 範囲そのものは変わっていないので、通信は要らない
+   * （呼び出し側が持っている道路データをそのまま渡し直せばよい）。
+   */
+  needsRoadDetailChange(): boolean {
+    if (this.roadsCentre === null) return false;
+    const height = this.viewer.camera.positionCartographic?.height ?? 0;
+    return detailForHeight(height).laneMarkings !== this.roadsDetailFull;
   }
 
   clearRoadScene(): void {
     this.roads.clear();
     this.roadsCentre = null;
+    this.roadsDetailFull = true;
     this.requestRender();
   }
 

@@ -458,12 +458,42 @@ function offsetPath(path: LatLng[], offsetM: number): LatLng[] {
 }
 
 /**
+ * どこまで細かく組み立てるか。
+ *
+ * 上空から街全体を見ているとき、区画線は幅 15cm しかなく、
+ * 描いても線が密集した灰色の帯にしかならない。
+ * 市販のカーナビや地図アプリも、引くと区画線を消している。
+ *
+ * 部品を減らしているのではなく、見えないものを描いていない。
+ * 近づけば元どおり出る。
+ */
+export interface RoadDetail {
+  /** 区画線（外側線・中央線・車線境界線）と横断歩道を引くか */
+  laneMarkings: boolean;
+}
+
+export const FULL_DETAIL: RoadDetail = { laneMarkings: true };
+
+/**
+ * 区画線を描く上限のカメラ高度 (m)。
+ *
+ * これより上から見ると、区画線は互いに近すぎて分離して見えない。
+ * 街区の形が分かればよい高さなので、舗装だけで足りる。
+ */
+export const LANE_MARKING_MAX_HEIGHT_M = 800;
+
+/** カメラ高度から詳細度を決める */
+export function detailForHeight(heightMeters: number): RoadDetail {
+  return { laneMarkings: heightMeters <= LANE_MARKING_MAX_HEIGHT_M };
+}
+
+/**
  * 車道 1 本ぶんの地表の形。
  *
  * 舗装の帯を敷き、その上に区画線を重ねる。
  * 車線が 2 以上あるときだけ中央線を引く（1 車線の道に中央線は無い）。
  */
-export function roadShapes(road: RoadPiece): SceneShape[] {
+export function roadShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL): SceneShape[] {
   if (road.underground || road.elevated) return [];
   const spec = ROAD_SPEC[road.cls];
   const out: SceneShape[] = [];
@@ -478,8 +508,9 @@ export function roadShapes(road: RoadPiece): SceneShape[] {
   } as GroundRibbon;
   out.push(pavement);
 
-  // 歩行者用の道には区画線を引かない
-  if (spec.lanes === 0) return out;
+  // 歩行者用の道には区画線を引かない。
+  // 上空から見ているときも、区画線は見えないので組み立てない
+  if (spec.lanes === 0 || !detail.laneMarkings) return out;
 
   // 外側線（車道外側線）。車道の両端から 0.5m 内側。
   // 引くのは幹線の道だけ。住宅街の道や区画内の通路には引かれていない。
@@ -533,8 +564,10 @@ export function roadShapes(road: RoadPiece): SceneShape[] {
 }
 
 /** 横断歩道。等間隔の白い帯を並べる（実物と同じゼブラ） */
-export function crossingShapes(road: RoadPiece): SceneShape[] {
+export function crossingShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL): SceneShape[] {
   if (road.cls !== 'crossing' || road.underground) return [];
+  // 45cm の縞は上空からは分離して見えない
+  if (!detail.laneMarkings) return [];
   return [
     {
       kind: 'ribbon',

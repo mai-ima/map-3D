@@ -16,7 +16,7 @@ import { BASE_ATTRIBUTION_IDS, getDefaultCity, resolveAttributions } from '@ijm/
 import type { MapEngine, OptionalLayerId, QualityTier } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
-import { nearestRoad, type RoadPiece } from '@ijm/gis';
+import { nearestRoad, type RailPiece, type RoadPiece, type RoadPoint } from '@ijm/gis';
 import { Icon } from '@ijm/ui';
 import {
   askAI,
@@ -104,6 +104,16 @@ export default function AppShell() {
    * tick は毎秒走るので、再生成されない ref に置く。
    */
   const roadPiecesRef = useRef<RoadPiece[]>([]);
+  /**
+   * 最後に読み込んだ道路のひとまとまりと、その範囲。
+   * 上空へ引いたときに区画線を落とす切り替えで、
+   * 取り直さずに組み直すために持っておく。
+   */
+  const roadSceneRef = useRef<{
+    scene: { roads: RoadPiece[]; rails: RailPiece[]; points: RoadPoint[] };
+    bbox: [number, number, number, number];
+    key: string;
+  } | null>(null);
   /** いま走っている道の制限速度 (km/h)。OSM に入っているときだけ */
   const [speedLimit, setSpeedLimit] = useState<number | null>(null);
   // iPhone などのタッチ端末では、片手で操作できるボトムシート主体の画面に切り替える
@@ -503,8 +513,10 @@ export default function AppShell() {
     try {
       const res = await fetchRoads(bbox);
       if (res.roads.length === 0 && res.rails.length === 0) return;
-      await engine.showRoadScene(res, bbox, bbox.join(','));
+      const key = bbox.join(',');
+      await engine.showRoadScene(res, bbox, key);
       roadPiecesRef.current = res.roads;
+      roadSceneRef.current = { scene: res, bbox, key };
       setRoadsEnabled(true);
     } catch {
       // 道が出なくても地図とナビは成立する
@@ -528,7 +540,14 @@ export default function AppShell() {
       if (engine.needsStructureRefresh()) void loadStructuresForView();
     }
     if (roadsEnabledRef.current && !roadsLoadingRef.current) {
-      if (engine.needsRoadRefresh()) void loadRoadsForView();
+      if (engine.needsRoadRefresh()) {
+        void loadRoadsForView();
+      } else if (engine.needsRoadDetailChange()) {
+        // 高度が変わっただけ。範囲は同じなので取り直さず、
+        // 手元のデータで組み直す（通信も待ちも要らない）
+        const held = roadSceneRef.current;
+        if (held) void engine.showRoadScene(held.scene, held.bbox, held.key);
+      }
     }
     // loadStructuresForView / loadRoadsForView は再生成されない
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -577,6 +596,7 @@ export default function AppShell() {
     if (roadsEnabled) {
       engine.clearRoadScene();
       roadPiecesRef.current = [];
+      roadSceneRef.current = null;
       setRoadsEnabled(false);
       setSpeedLimit(null);
       return;
@@ -595,8 +615,10 @@ export default function AppShell() {
         notify('この範囲に道路データがありません');
         return;
       }
-      await engine.showRoadScene(res, bbox, bbox.join(','));
+      const key = bbox.join(',');
+      await engine.showRoadScene(res, bbox, key);
       roadPiecesRef.current = res.roads;
+      roadSceneRef.current = { scene: res, bbox, key };
       setRoadsEnabled(true);
       // 速度制限は OSM に入っている道だけ。何本に入っていたかを伝える
       const withSpeed = res.roads.filter((r) => r.speedLimit !== undefined).length;

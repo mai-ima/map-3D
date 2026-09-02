@@ -14,8 +14,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { GroundRibbon, LatLng } from '@ijm/shared';
 import {
+  LANE_MARKING_MAX_HEIGHT_M,
   buildRoadScene,
   crossingShapes,
+  detailForHeight,
   laneCountOf,
   nearestRoad,
   railShapes,
@@ -398,4 +400,46 @@ test('住宅街の道には外側線を引かない', () => {
       `${cls} の外側線`,
     );
   }
+});
+
+// ---- 上空では区画線を描かない ------------------------------------------
+
+test('上空から見ているときは区画線を組み立てない', () => {
+  // 幅 15cm の線は上空からは分離して見えず、灰色の帯にしかならない。
+  // 部品を減らしているのではなく、見えないものを描いていない
+  const plain = { laneMarkings: false };
+  const shapes = ribbons(roadShapes(road({ lanes: 4, width: 13 }), plain));
+  assert.equal(shapes.length, 1, '舗装だけになる');
+  assert.equal(shapes[0].order, 0);
+
+  // 近づけば元どおり出る
+  const close = ribbons(roadShapes(road({ lanes: 4, width: 13 })));
+  assert.ok(close.length > 1, '近くでは区画線が出る');
+});
+
+test('上空では横断歩道の縞も組み立てない', () => {
+  assert.equal(crossingShapes(road({ cls: 'crossing' }), { laneMarkings: false }).length, 0);
+  assert.equal(crossingShapes(road({ cls: 'crossing' })).length, 1);
+});
+
+test('詳細度はカメラ高度で決まる', () => {
+  // 800m を境にする。街区の形が分かればよい高さ
+  assert.equal(detailForHeight(0).laneMarkings, true);
+  assert.equal(detailForHeight(400).laneMarkings, true);
+  assert.equal(detailForHeight(LANE_MARKING_MAX_HEIGHT_M).laneMarkings, true);
+  assert.equal(detailForHeight(LANE_MARKING_MAX_HEIGHT_M + 1).laneMarkings, false);
+  assert.equal(detailForHeight(5000).laneMarkings, false);
+});
+
+test('上空でも線路と信号は出す', () => {
+  // 線路の道床は幅 4.4m、信号の灯器は 0.95m。どちらも上空から見える
+  assert.equal(
+    railShapes({ id: 'r', path: line, tracks: 1, elevated: false, underground: false }, () => 0)
+      .length,
+    3,
+  );
+  assert.equal(
+    signalShapes({ id: 'n', kind: 'traffic_signal', position: line[0] }, () => 0).length,
+    2,
+  );
 });
