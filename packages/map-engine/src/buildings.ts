@@ -11,6 +11,7 @@ import type { BBox, City, LatLng } from '@ijm/shared';
 import { bboxAround, bboxIntersects, isDirectTileset } from '@ijm/shared';
 import { untexturedBuildingStyle } from './building-style';
 import type { QualitySettings } from './quality';
+import { liveScene } from './primitive-swap';
 
 /**
  * tileset.json の取得先。
@@ -282,7 +283,15 @@ export class BuildingLayerManager {
     this.watchLoadProgress(near);
     // 近景にはスタイルを当てない = PLATEAU の実写テクスチャの色をそのまま出す
     this.applyRealisticLighting(near);
-    this.viewer.scene.primitives.add(near);
+
+    // タイルセットの取得中に画面を離れているかもしれない。
+    // 破棄済みの scene に足すと例外になる
+    const scene = liveScene(this.viewer);
+    if (!scene) {
+      near.destroy();
+      throw new Error('読み込み中に地図が閉じられました');
+    }
+    scene.primitives.add(near);
 
     this.loaded = { city, near };
 
@@ -322,7 +331,12 @@ export class BuildingLayerManager {
       if (hole) far.clippingPlanes = hole;
       this.watchLoadProgress(far);
       this.applyRealisticLighting(far);
-      this.viewer.scene.primitives.add(far);
+      const scene = liveScene(this.viewer);
+      if (!scene) {
+        far.destroy();
+        return;
+      }
+      scene.primitives.add(far);
       this.loaded = { ...this.loaded, far };
     } catch {
       // 遠景が無くても近景だけで成立する
@@ -349,8 +363,9 @@ export class BuildingLayerManager {
 
   unload(): void {
     this.activeBBox = null;
+    const scene = liveScene(this.viewer);
     for (const tileset of this.optionalLayers.values()) {
-      this.viewer.scene.primitives.remove(tileset);
+      scene?.primitives.remove(tileset);
     }
     this.optionalLayers.clear();
     for (const remove of this.removeProgressListeners) remove();
@@ -359,8 +374,8 @@ export class BuildingLayerManager {
     this.tilesProcessing = 0;
     if (!this.loaded) return;
     this.restoreAll();
-    this.viewer.scene.primitives.remove(this.loaded.near);
-    if (this.loaded.far) this.viewer.scene.primitives.remove(this.loaded.far);
+    scene?.primitives.remove(this.loaded.near);
+    if (this.loaded.far) scene?.primitives.remove(this.loaded.far);
     this.loaded = null;
   }
 
@@ -448,7 +463,12 @@ export class BuildingLayerManager {
         this.applyStyle(tileset, untexturedBuildingStyle);
       }
       this.applyRealisticLighting(tileset);
-      this.viewer.scene.primitives.add(tileset);
+      const scene = liveScene(this.viewer);
+      if (!scene) {
+        tileset.destroy();
+        return false;
+      }
+      scene.primitives.add(tileset);
 
       const previous = this.loaded.near;
       this.loaded = { ...this.loaded, near: tileset };
@@ -534,7 +554,12 @@ export class BuildingLayerManager {
       tileset.shadows = Cesium.ShadowMode.DISABLED;
       this.applyRealisticLighting(tileset);
       this.watchLoadProgress(tileset);
-      this.viewer.scene.primitives.add(tileset);
+      const scene = liveScene(this.viewer);
+      if (!scene) {
+        tileset.destroy();
+        return false;
+      }
+      scene.primitives.add(tileset);
       this.optionalLayers.set(id, tileset);
       return true;
     } catch {
