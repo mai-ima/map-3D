@@ -85,9 +85,22 @@
 
 - [x] `packages/shared/src/scene.ts` … 描画エンジン非依存の「形の記述」
 - [x] `packages/gis/src/road-geometry.ts` … Cesium を import しない
-- [ ] 高架の組み立て（`elevated-structures.ts`）も `SceneShape` を返す形に寄せる
-      いまは Cesium の `GeometryInstance` を直接作っている。
-      形の記述を返すようにすれば、そのまま Swift へ移せる。
+- [x] 高架の組み立てを `SceneShape` を返す形に寄せた
+      （`packages/gis/src/structure-geometry.ts`、679 行）。
+      `elevated-structures.ts` は 877 → 220 行になり、
+      残っているのは地形の標高取得と描画だけ。
+- [x] `packages/gis` と `packages/shared` から Cesium 依存が完全に消えた
+
+### いま Cesium に依存しているのは packages/map-engine だけ
+
+```
+packages/gis/          OSM/PLATEAU の解釈、寸法の決定    … Cesium なし
+packages/shared/       型と「形の記述」(scene.ts)        … Cesium なし
+packages/map-engine/   形の記述を Cesium で描く          … ここだけ
+```
+
+Swift へ移すときは `map-engine` を置き換えれば、
+寸法の決め方（何を描くか）はそのまま持っていける。
 
 ---
 

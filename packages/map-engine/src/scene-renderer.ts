@@ -306,6 +306,99 @@ export function batchShapes(shapes: SceneShape[]): Batches {
 }
 
 /**
+ * 振り分けた GeometryInstance を Primitive にして scene に足す。
+ *
+ * 高架のレイヤからも使う。追加した順が重なり順になるので、
+ * 地表の面を order の小さいものから先に足す。
+ */
+export function buildPrimitives(
+  scene: Cesium.Scene,
+  batches: Batches,
+  shadows: Cesium.ShadowMode,
+): AnyPrimitive[] {
+  const out: AnyPrimitive[] = [];
+
+  // 地表に貼る面。order の小さいものから追加して重なり順を作る
+  // （舗装 → 外側線 → 車線境界線 → 中央線 → 横断歩道）
+  // 対応の可否は描くものがあるときだけ調べる。isSupported は
+  // WebGL の文脈を覗きに行くので、立体しか無いときに呼ぶ理由がない
+  if (batches.corridors.size > 0 && Cesium.GroundPrimitive.isSupported(scene)) {
+    for (const order of [...batches.corridors.keys()].sort((a, b) => a - b)) {
+      const instances = batches.corridors.get(order) ?? [];
+      if (instances.length === 0) continue;
+      out.push(
+        scene.primitives.add(
+          new Cesium.GroundPrimitive({
+            geometryInstances: instances,
+            // 建物には貼らない。道路の舗装が建物の壁を這い上がって見える
+            classificationType: Cesium.ClassificationType.TERRAIN,
+            asynchronous: true,
+          }),
+        ),
+      );
+    }
+  }
+
+  const hasLines = batches.lines.length > 0 || batches.dashed.length > 0;
+  if (hasLines && Cesium.GroundPolylinePrimitive.isSupported(scene)) {
+    if (batches.lines.length > 0) {
+      out.push(
+        scene.primitives.add(
+          new Cesium.GroundPolylinePrimitive({
+            geometryInstances: batches.lines,
+            appearance: new Cesium.PolylineColorAppearance(),
+            classificationType: Cesium.ClassificationType.TERRAIN,
+            asynchronous: true,
+          }),
+        ),
+      );
+    }
+    if (batches.dashed.length > 0) {
+      out.push(
+        scene.primitives.add(
+          new Cesium.GroundPolylinePrimitive({
+            geometryInstances: batches.dashed,
+            appearance: new Cesium.PolylineMaterialAppearance({
+              material: Cesium.Material.fromType('PolylineDash', {
+                color: colorOf('#dcd9d0'),
+                gapColor: Cesium.Color.TRANSPARENT,
+                dashLength: DASH_LENGTH_PX,
+                dashPattern: DASH_PATTERN,
+              }),
+            }),
+            classificationType: Cesium.ClassificationType.TERRAIN,
+            asynchronous: true,
+          }),
+        ),
+      );
+    }
+  }
+
+  for (const [instances, mode] of [
+    [batches.solids, shadows],
+    [batches.flatSolids, Cesium.ShadowMode.DISABLED],
+  ] as const) {
+    if (instances.length === 0) continue;
+    out.push(
+      scene.primitives.add(
+        new Cesium.Primitive({
+          geometryInstances: instances,
+          appearance: new Cesium.PerInstanceColorAppearance({
+            flat: false,
+            translucent: false,
+            closed: true,
+          }),
+          shadows: mode,
+          asynchronous: true,
+        }),
+      ),
+    );
+  }
+
+  return out;
+}
+
+/**
  * 形の記述をひとまとまりとして出し入れするレイヤ。
  *
  * 高架や街路の設備と同じく、新しいものが描けるようになってから
@@ -351,83 +444,8 @@ export class SceneShapeLayer {
       return;
     }
 
-    const batches = batchShapes(shapes);
-    const next: AnyPrimitive[] = [];
     const scene = this.viewer.scene;
-
-    // 地表に貼る面。order の小さいものから追加して重なり順を作る
-    // （舗装 → 外側線 → 車線境界線 → 中央線 → 横断歩道）
-    if (Cesium.GroundPrimitive.isSupported(scene)) {
-      for (const order of [...batches.corridors.keys()].sort((a, b) => a - b)) {
-        const instances = batches.corridors.get(order) ?? [];
-        if (instances.length === 0) continue;
-        next.push(
-          scene.primitives.add(
-            new Cesium.GroundPrimitive({
-              geometryInstances: instances,
-              // 建物には貼らない。道路の舗装が建物の壁を這い上がって見える
-              classificationType: Cesium.ClassificationType.TERRAIN,
-              asynchronous: true,
-            }),
-          ),
-        );
-      }
-    }
-
-    if (Cesium.GroundPolylinePrimitive.isSupported(scene)) {
-      if (batches.lines.length > 0) {
-        next.push(
-          scene.primitives.add(
-            new Cesium.GroundPolylinePrimitive({
-              geometryInstances: batches.lines,
-              appearance: new Cesium.PolylineColorAppearance(),
-              classificationType: Cesium.ClassificationType.TERRAIN,
-              asynchronous: true,
-            }),
-          ),
-        );
-      }
-      if (batches.dashed.length > 0) {
-        next.push(
-          scene.primitives.add(
-            new Cesium.GroundPolylinePrimitive({
-              geometryInstances: batches.dashed,
-              appearance: new Cesium.PolylineMaterialAppearance({
-                material: Cesium.Material.fromType('PolylineDash', {
-                  color: colorOf('#dcd9d0'),
-                  gapColor: Cesium.Color.TRANSPARENT,
-                  dashLength: DASH_LENGTH_PX,
-                  dashPattern: DASH_PATTERN,
-                }),
-              }),
-              classificationType: Cesium.ClassificationType.TERRAIN,
-              asynchronous: true,
-            }),
-          ),
-        );
-      }
-    }
-
-    for (const [instances, shadows] of [
-      [batches.solids, this.shadows],
-      [batches.flatSolids, Cesium.ShadowMode.DISABLED],
-    ] as const) {
-      if (instances.length === 0) continue;
-      next.push(
-        scene.primitives.add(
-          new Cesium.Primitive({
-            geometryInstances: instances,
-            appearance: new Cesium.PerInstanceColorAppearance({
-              flat: false,
-              translucent: false,
-              closed: true,
-            }),
-            shadows,
-            asynchronous: true,
-          }),
-        ),
-      );
-    }
+    const next = buildPrimitives(scene, batchShapes(shapes), this.shadows);
 
     this.pending = next;
     await waitForPrimitives(scene, next);

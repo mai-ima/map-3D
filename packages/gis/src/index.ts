@@ -4,6 +4,7 @@ export * from './osm-api';
 export * from './overpass';
 export * from './structures';
 export * from './structure-merge';
+export * from './structure-geometry';
 export * from './road-geometry';
 export * from './poi-categories';
 export * from './gsi';

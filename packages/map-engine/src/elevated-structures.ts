@@ -1,335 +1,47 @@
 /**
- * 高架・橋梁を立体として描く。
+ * 高架・橋梁を描く。
+ *
+ * 寸法を決めるところは `@ijm/gis` の structure-geometry にあり、
+ * ここは「地形の標高を取ってきて渡す」ことと「描く」ことだけを行う。
+ * この分け方にしてあるのは、将来 Swift（SceneKit / RealityKit）へ移すとき、
+ * 寸法の決め方をそのまま持っていけるようにするため。
  *
  * PLATEAU の橋梁モデルが無い地域（浜松市など）では、街の骨格である
  * 高架がまったく見えず、線路や道路が地面に張り付いたままになってしまう。
  * OpenStreetMap の bridge / layer から構造を組み立てて補う。
- *
- * 実データと補完の切り分け:
- *   - 位置・形状・幅（車線数/線路数）・上下関係（layer）… OSM の実データ
- *   - 床版の厚み・梁の高さ・柱の間隔と断面 … 種別ごとの標準的な設計値
- * 形状そのものを創作しているわけではなく、断面の寸法を標準値で補っている。
- *
- * 形式ごとに造りが違うので、それぞれ別の組み立てをする:
- *
- *   rigid-frame（ラーメン高架橋 / 都市部の鉄道高架）
- *     床版 + 縦梁 2 本 + 横梁 + 柱 2 本を 1 径間として繰り返す。
- *     径間が 8.9m と短く、柱が細かく連続するのがこの形式の見た目そのもの。
- *
- *   girder（桁橋 / 道路橋・鉄道橋）
- *     床版 + 箱桁 1 本 + 柱頭部 + 柱。支間 30m 前後で柱はまばら。
- *
- *   slab（歩道橋）
- *     薄い床版 + 細い柱。
  */
 
 import * as Cesium from 'cesium';
-import type { ElevatedStructure, LatLng, StructureKind } from '@ijm/shared';
+import type { ElevatedStructure, LatLng } from '@ijm/shared';
 import { distanceMeters } from '@ijm/shared';
+import {
+  MAX_FRAME_SHAPES,
+  buildStructureShapes,
+  measurePath,
+  pickIndices,
+  valueAt,
+} from '@ijm/gis';
+import { batchShapes, buildPrimitives } from './scene-renderer';
 import { waitForPrimitives } from './primitive-swap';
 
 /**
- * 材質。
+ * 地形の標高を取る間隔 (m)。
  *
- * 実際の構造物に塗られている色は OSM には入っていないため、
- * 「コンクリート」「鋼」といった一般的な材質の色に留めている。
- * 特定の構造物の色を創作しないという方針による。
- */
-const MATERIAL: Record<StructureKind, { deck: Cesium.Color; pier: Cesium.Color }> = {
-  'rail-elevated': {
-    deck: Cesium.Color.fromCssColorString('#b8b4ad'),
-    pier: Cesium.Color.fromCssColorString('#aca8a1'),
-  },
-  'rail-bridge': {
-    deck: Cesium.Color.fromCssColorString('#9d9a95'),
-    pier: Cesium.Color.fromCssColorString('#aca8a1'),
-  },
-  'road-elevated': {
-    deck: Cesium.Color.fromCssColorString('#bcb8b1'),
-    pier: Cesium.Color.fromCssColorString('#b0aca5'),
-  },
-  'road-bridge': {
-    deck: Cesium.Color.fromCssColorString('#b5b1aa'),
-    pier: Cesium.Color.fromCssColorString('#aaa6a0'),
-  },
-  footbridge: {
-    deck: Cesium.Color.fromCssColorString('#c2beb7'),
-    pier: Cesium.Color.fromCssColorString('#b4b0a9'),
-  },
-};
-
-/**
- * 柱・梁の総数の上限。
- *
- * 径間 8.9m のラーメン高架橋は 100m で 11 径間ぶんの柱が並ぶ。
- * 浜松駅周辺 1.7km 四方の実測では、東海道本線・新幹線の高架だけで
- * 7,000 個を超える。
- *
- * まとめる処理の実測コスト（Cesium の GeometryPipeline）:
- *   1,000 個 34ms / 0.6MB、6,000 個 74ms / 3.8MB、9,000 個 77ms / 5.8MB
- * 個数にはほぼ比例しないが、頂点バッファはそのまま増える。
- * iPhone のメモリ予算（3D タイルで 160MB）を考えて 6,000 個で止める。
- * 足りない場合はカメラから遠い構造物の柱から省く。
- */
-const MAX_FRAME_INSTANCES = 6000;
-
-/**
- * 地形サンプルの間隔 (m) と 1 構造物あたりの上限。
- *
- * 以前は長さによらず 12 点だったため、1.7km の高架では 145m ごとにしか
- * 標高を取れず、その間を直線で結ぶので路面が折れ線状にでこぼこしていた。
+ * 高架は長いものだと 1km を超える。頂点ごとに取ると数千件になるが、
+ * 標高そのものは数十メートル単位でしか変わらない。
+ * 代表点だけ取って間を補間する。
  */
 const TERRAIN_SAMPLE_INTERVAL_M = 60;
+/** 1 本の経路から取る標高の上限 */
 const MAX_TERRAIN_SAMPLES_PER_PATH = 48;
 
-/**
- * 縦断勾配を作るときの窓幅 (m)。
- *
- * 高架は地表の起伏に追従せず、緩やかな勾配で通る。
- * 桁下を確保するために近傍の最大標高を取り（RISE）、
- * そのあと長い窓で均して滑らかな勾配にする（SMOOTH）。
- */
-const GRADE_RISE_WINDOW_M = 50;
-const GRADE_SMOOTH_WINDOW_M = 220;
-
-/**
- * 断面を Cesium の座標に直す。
- *
- * PolylineVolumeGeometry は断面の外接矩形を基準に位置を決める。
- * 中心線には矩形の「左右中央」と「下端」が合わせられ、そこから上へ立ち上がる
- * （Workers/chunk の convertShapeTo3D が x も y も外接矩形ぶん引いている）。
- * つまり断面に書いた y の絶対値は無視され、形だけが使われる。
- *
- * そのため断面は必ず y = 0 を下端として書き、
- * 中心線の高さにはその部材の「下面」を渡す。
- * これを取り違えると、防音壁が床版の裏にぶら下がる。
- */
-function section(points: [number, number][]): Cesium.Cartesian2[] {
-  return points.map(([x, y]) => new Cesium.Cartesian2(x, y));
-}
-
-/**
- * 床版の断面。下端が床版の下面、上端が路面。
- * 張り出し部の先端を薄くして、拡大したときに板が浮いて見えないようにする。
- */
-function slabShape(width: number, thickness: number): Cesium.Cartesian2[] {
-  const hw = width / 2;
-  const tipT = thickness * 0.55;
-  const haunch = Math.min(hw * 0.35, 1.2);
-  return section([
-    [-hw, thickness],
-    [hw, thickness],
-    [hw, thickness - tipT],
-    [hw - haunch, 0],
-    [-hw + haunch, 0],
-    [-hw, thickness - tipT],
-  ]);
-}
-
-/** 縦梁・箱桁の断面。下端が梁の下面。下側をわずかに絞る */
-function girderShape(width: number, depth: number): Cesium.Cartesian2[] {
-  const hw = width / 2;
-  const bw = hw * 0.86;
-  const chamfer = Math.min(0.3, depth * 0.2);
-  return section([
-    [-hw, depth],
-    [hw, depth],
-    [hw, chamfer],
-    [bw, 0],
-    [-bw, 0],
-    [-hw, chamfer],
-  ]);
-}
-
-/**
- * 高欄・防音壁の断面。下端が床版の上面。
- *
- * 壁を床版の縁にそのまま立てると、遠目には床版と一体の厚い板に見えてしまう。
- * 実物と同じく、縁の地覆（低い立ち上がり）の上に一段細い壁を載せる。
- * この段差が側面に影の線を作り、拡大したときに造りが読み取れるようになる。
- */
-function parapetShape(height: number, thickness: number, curbWidth: number): Cesium.Cartesian2[] {
-  const t = thickness / 2;
-  const cw = Math.max(curbWidth, thickness * 1.8) / 2;
-  const curbH = Math.min(0.4, height * 0.3);
-  const cap = height - 0.12; // 笠木
-  return section([
-    [-cw, 0],
-    [cw, 0],
-    [cw, curbH],
-    [t, curbH],
-    [t, cap],
-    [t * 1.6, cap],
-    [t * 1.6, height],
-    [-t * 1.6, height],
-    [-t * 1.6, cap],
-    [-t, cap],
-    [-t, curbH],
-    [-cw, curbH],
-  ]);
-}
-
-interface PathMetrics {
-  /** 始点からの累積距離 (m)。頂点数と同じ長さ */
-  cumulative: number[];
-  total: number;
-}
-
-function measurePath(path: LatLng[]): PathMetrics {
-  const cumulative = [0];
-  let total = 0;
-  for (let i = 1; i < path.length; i += 1) {
-    total += distanceMeters(path[i - 1], path[i]);
-    cumulative.push(total);
-  }
-  return { cumulative, total };
-}
-
-/** 累積距離 d の位置における値を線形補間する */
-function valueAt(values: number[], cumulative: number[], d: number): number {
-  if (values.length === 0) return 0;
-  if (d <= cumulative[0]) return values[0];
-  const last = cumulative.length - 1;
-  if (d >= cumulative[last]) return values[last];
-  for (let i = 1; i <= last; i += 1) {
-    if (d <= cumulative[i]) {
-      const span = cumulative[i] - cumulative[i - 1];
-      if (span <= 0) return values[i];
-      const r = (d - cumulative[i - 1]) / span;
-      return values[i - 1] + (values[i] - values[i - 1]) * r;
-    }
-  }
-  return values[last];
-}
-
-/** 累積距離 d の位置の座標を線形補間する */
-function pointAt(lats: number[], lngs: number[], cumulative: number[], d: number): LatLng {
-  return {
-    lat: valueAt(lats, cumulative, d),
-    lng: valueAt(lngs, cumulative, d),
-  };
-}
-
-/**
- * 真北を 0 とし東回りを正とする方位角 (rad)。
- *
- * 経度差はそのままでは距離にならないので cos(緯度) を掛ける。
- * これを忘れると柱が線路に対して斜めを向く。
- */
-function headingAt(path: LatLng[], index: number): number {
-  const prev = path[Math.max(0, index - 1)];
-  const next = path[Math.min(path.length - 1, index + 1)];
-  const cos = Math.cos((path[index].lat * Math.PI) / 180) || 1;
-  const east = (next.lng - prev.lng) * cos;
-  const north = next.lat - prev.lat;
-  if (east === 0 && north === 0) return 0;
-  return Math.atan2(east, north);
-}
-
-/** 累積距離 d における方位角 */
-function headingAtDistance(path: LatLng[], cumulative: number[], d: number): number {
-  for (let i = 1; i < cumulative.length; i += 1) {
-    if (d <= cumulative[i]) return headingAt(path, i - 1);
-  }
-  return headingAt(path, path.length - 1);
-}
-
-/** 窓内の値を集計する（等間隔でない頂点に対応するため距離で窓を取る） */
-function windowed(
-  values: number[],
-  cumulative: number[],
-  halfWidth: number,
-  reduce: (acc: number, v: number, count: number) => number,
-  init: (v: number) => number,
-): number[] {
-  const out: number[] = [];
-  let lo = 0;
-  let hi = 0;
-  for (let i = 0; i < values.length; i += 1) {
-    while (lo < i && cumulative[i] - cumulative[lo] > halfWidth) lo += 1;
-    while (hi < values.length - 1 && cumulative[hi + 1] - cumulative[i] <= halfWidth) hi += 1;
-    let acc = init(values[lo]);
-    let count = 0;
-    for (let j = lo; j <= hi; j += 1) {
-      count += 1;
-      acc = reduce(acc, values[j], count);
-    }
-    out.push(acc);
-  }
-  return out;
-}
-
-/**
- * 地形を均した「路盤の高さ」を作る。
- *
- * 高架は地表の細かい起伏には追従せず、長い距離を緩やかな勾配で通る。
- * 地表をそのままなぞると路面が波打ち、実物と似ても似つかなくなる。
- *
- *   1. 近傍の最大標高まで持ち上げる … どの地点でも桁下高を割らないように
- *   2. 長い窓で平均する             … 滑らかな縦断勾配にする
- *   3. 地表を下回らないよう戻す     … 平均で沈んだ箇所を救う
- */
-function gradeProfile(ground: number[], cumulative: number[]): number[] {
-  const raised = windowed(
-    ground,
-    cumulative,
-    GRADE_RISE_WINDOW_M,
-    (acc, v) => Math.max(acc, v),
-    (v) => v,
-  );
-  const smoothed = windowed(
-    raised,
-    cumulative,
-    GRADE_SMOOTH_WINDOW_M,
-    (acc, v, count) => acc + (v - acc) / count,
-    (v) => v,
-  );
-  return smoothed.map((v, i) => Math.max(v, ground[i]));
-}
-
-/** 等間隔で並ぶ柱の位置（累積距離）。両端には必ず柱を置く */
-function bayPositions(total: number, spacing: number): number[] {
-  if (spacing <= 0 || total <= 0) return [];
-  // 端から端まで割り切れるように径間を微調整する（余りの半端な径間を作らない）
-  const bays = Math.max(1, Math.round(total / spacing));
-  const actual = total / bays;
-  const out: number[] = [];
-  for (let i = 0; i <= bays; i += 1) out.push(i * actual);
-  return out;
-}
-
-/**
- * 距離に応じて柱を何本に 1 本描くか。
- *
- * ラーメン高架橋の径間は 8.9m。浜松の実測では、この柱だけで
- * 描画するかたまりの 84%（4,111 個）を占めていた。
- * 一方、径間 8.9m の柱が 1 本おきに見えるかどうかは、
- * 数百メートル離れると人の目には分からない。
- *
- * 2 の冪で間引くのは、近づいて精細に戻したときに
- * 残っていた柱の位置がそのまま使われ、柱が横滑りしないようにするため。
- */
-function pierStride(distanceM: number): number {
-  if (distanceM < 250) return 1;
-  if (distanceM < 600) return 2;
-  return 4;
-}
-
-/** 等間隔に選んだ添字（地形サンプルの間引き） */
-function pickIndices(length: number, max: number): number[] {
-  if (length <= max) return Array.from({ length }, (_, i) => i);
-  const out: number[] = [];
-  for (let i = 0; i < max; i += 1) {
-    out.push(Math.round((i * (length - 1)) / (max - 1)));
-  }
-  return out;
-}
+type AnyPrimitive = Cesium.Primitive | Cesium.GroundPrimitive | Cesium.GroundPolylinePrimitive;
 
 export class ElevatedStructureLayer {
   /** いま表に出ているもの */
-  private primitives: Cesium.Primitive[] = [];
+  private primitives: AnyPrimitive[] = [];
   /** 組み立て中で、まだ入れ替えていないもの */
-  private pending: Cesium.Primitive[] = [];
+  private pending: AnyPrimitive[] = [];
   private loadedKey: string | null = null;
   private shadows: Cesium.ShadowMode = Cesium.ShadowMode.ENABLED;
 
@@ -339,7 +51,9 @@ export class ElevatedStructureLayer {
   setShadows(enabled: boolean): void {
     this.shadows = enabled ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
     // 組み立て中のものは生成時の設定のままなので、そちらにも反映する
-    for (const p of [...this.primitives, ...this.pending]) p.shadows = this.shadows;
+    for (const p of [...this.primitives, ...this.pending]) {
+      if (p instanceof Cesium.Primitive) p.shadows = this.shadows;
+    }
   }
 
   get count(): number {
@@ -360,6 +74,7 @@ export class ElevatedStructureLayer {
   async render(structures: ElevatedStructure[], key: string): Promise<void> {
     if (this.loadedKey === key) return;
     this.loadedKey = key;
+
     // 空になるときだけは、待つものが無いのですぐ消す
     // （clear() は loadedKey を消すので、消してから入れ直す）
     if (structures.length === 0) {
@@ -374,77 +89,28 @@ export class ElevatedStructureLayer {
     const distances = this.distancesFrom(ordered);
     const ground = await this.sampleGround(ordered);
 
-    const deckInstances: Cesium.GeometryInstance[] = [];
-    const frameInstances: Cesium.GeometryInstance[] = [];
-    const railInstances: Cesium.GeometryInstance[] = [];
-    let frameBudget = MAX_FRAME_INSTANCES;
-
-    ordered.forEach((s, index) => {
-      if (s.path.length < 2) return;
-      const metrics = measurePath(s.path);
-      if (metrics.total < 1) return;
-
-      const grade = gradeProfile(ground[index], metrics.cumulative);
-      const material = MATERIAL[s.kind];
-
-      // 高さは路面を基準に、上から下へ決める。
-      // 桁下を基準にすると、同じ路線でも構造形式が変わる接続部で
-      // 路面に段差ができてしまう（実際に 1.2m の段ができていた）。
-      //   deckTop    = grade + deckHeight  … 路面（軌道面・車道面）
-      //   slabBottom = − deckThickness     … 床版の下面 = 梁の上面
-      //   beamBottom = − girderDepth       … 梁下。柱の頭でもある
-      const deckTop = grade.map((g) => g + s.deckHeight);
-      const slabBottom = deckTop.map((h) => h - s.deckThickness);
-      const beamBottom = slabBottom.map((h) => h - s.girderDepth);
-
-      this.addDeck(deckInstances, s, beamBottom, slabBottom, material.deck);
-      this.addParapets(railInstances, s, deckTop, material.deck);
-      this.addAbutments(frameInstances, s, metrics, beamBottom, ground[index], material.pier);
-
-      const used = this.addFrame(
-        frameInstances,
-        s,
-        metrics,
-        beamBottom,
-        ground[index],
-        slabBottom,
-        material,
-        frameBudget,
-        distances[index],
-      );
-      frameBudget -= used;
+    const shapes = buildStructureShapes(ordered, {
+      ground,
+      distances,
+      frameBudget: MAX_FRAME_SHAPES,
     });
 
-    const next: Cesium.Primitive[] = [];
-    for (const instances of [deckInstances, frameInstances, railInstances]) {
-      if (instances.length === 0) continue;
-      const primitive = new Cesium.Primitive({
-        geometryInstances: instances,
-        appearance: new Cesium.PerInstanceColorAppearance({
-          flat: false,
-          translucent: false,
-          closed: true,
-        }),
-        // 影を落とすと立体感が出る（品質設定で影を切っている場合は無視される）
-        // 影は品質設定に従う。ここだけ有効にすると、影を切っている端末でも
-        // シャドウマップへの描画が走ってしまう
-        shadows: this.shadows,
-        asynchronous: true,
-      });
-      this.viewer.scene.primitives.add(primitive);
-      next.push(primitive);
+    // 床版・柱・防音壁を別のまとまりにする。
+    // 防音壁は影を落とさない設定にできるよう分けてある
+    const scene = this.viewer.scene;
+    const next: AnyPrimitive[] = [];
+    for (const group of [shapes.deck, shapes.frame, shapes.parapet]) {
+      if (group.length === 0) continue;
+      next.push(...buildPrimitives(scene, batchShapes(group), this.shadows));
     }
     this.pending = next;
 
-    // 組み立てたものが実際に描けるようになってから、古いものと入れ替える。
-    // asynchronous: true はワーカーで頂点を作るので、add した直後はまだ何も
-    // 出ていない。ここで待たずに古いほうを消すと、その空白がちらつきになる。
-    await waitForPrimitives(this.viewer.scene, next);
+    await waitForPrimitives(scene, next);
 
     // 待っている間に次の要求（または clear）が来ていたら、いま作ったほうが古い。
     // 表に出さずに捨てる（新しいほうが自分で入れ替える）
     if (this.loadedKey !== key) {
-      for (const p of next) this.viewer.scene.primitives.remove(p);
+      for (const p of next) scene.primitives.remove(p);
       if (this.pending === next) this.pending = [];
       return;
     }
@@ -452,8 +118,8 @@ export class ElevatedStructureLayer {
     const previous = this.primitives;
     this.primitives = next;
     this.pending = [];
-    for (const p of previous) this.viewer.scene.primitives.remove(p);
-    this.viewer.scene.requestRender();
+    for (const p of previous) scene.primitives.remove(p);
+    scene.requestRender();
   }
 
   /**
@@ -463,24 +129,25 @@ export class ElevatedStructureLayer {
    * カメラの位置が取れない場合は元の順序のままにする。
    */
   private sortByDistance(structures: ElevatedStructure[]): ElevatedStructure[] {
-    const carto = this.viewer.camera?.positionCartographic;
-    if (!carto) return structures;
-    const lat = Cesium.Math.toDegrees(carto.latitude);
-    const lng = Cesium.Math.toDegrees(carto.longitude);
-    const eye = { lat, lng };
-
+    const eye = this.eyePosition();
+    if (!eye) return structures;
     return [...structures].sort((a, b) => this.nearestOf(a, eye) - this.nearestOf(b, eye));
   }
 
   /** 各構造物までの距離 (m)。視点が取れなければ 0（＝最高精細） */
   private distancesFrom(structures: ElevatedStructure[]): number[] {
+    const eye = this.eyePosition();
+    if (!eye) return structures.map(() => 0);
+    return structures.map((s) => this.nearestOf(s, eye));
+  }
+
+  private eyePosition(): LatLng | null {
     const carto = this.viewer.camera?.positionCartographic;
-    if (!carto) return structures.map(() => 0);
-    const eye = {
+    if (!carto) return null;
+    return {
       lat: Cesium.Math.toDegrees(carto.latitude),
       lng: Cesium.Math.toDegrees(carto.longitude),
     };
-    return structures.map((s) => this.nearestOf(s, eye));
   }
 
   /** 経路の頂点のうち、視点にもっとも近いものまでの距離 (m) */
@@ -538,330 +205,6 @@ export class ElevatedStructureLayer {
     } catch {
       return fallback;
     }
-  }
-
-  /** 床版と縦梁。中心線には各部材の下面の高さを渡す */
-  private addDeck(
-    out: Cesium.GeometryInstance[],
-    s: ElevatedStructure,
-    beamBottom: number[],
-    slabBottom: number[],
-    color: Cesium.Color,
-  ): void {
-    const positions = s.path.map((p, i) =>
-      Cesium.Cartesian3.fromDegrees(p.lng, p.lat, slabBottom[i]),
-    );
-    out.push(
-      new Cesium.GeometryInstance({
-        id: s.id,
-        geometry: new Cesium.PolylineVolumeGeometry({
-          polylinePositions: positions,
-          shapePositions: slabShape(s.width, s.deckThickness),
-          cornerType: Cesium.CornerType.MITERED,
-          vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-        }),
-        attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(color) },
-      }),
-    );
-
-    if (s.girderDepth <= 0) return;
-
-    // 縦梁。ラーメン高架橋は柱の真上に 2 本、桁橋は中央に箱桁 1 本
-    const under = color.darken(0.18, new Cesium.Color());
-
-    if (s.form === 'rigid-frame') {
-      const girderWidth = Math.max(0.7, s.pierSize * 1.1);
-      for (const offset of this.girderOffsets(s)) {
-        const line = this.offsetPath(s.path, offset, beamBottom);
-        if (line.length < 2) continue;
-        out.push(this.volume(line, girderShape(girderWidth, s.girderDepth), under));
-      }
-      return;
-    }
-
-    const boxWidth = Math.max(2, s.width * 0.5);
-    const line = s.path.map((p, i) =>
-      Cesium.Cartesian3.fromDegrees(p.lng, p.lat, beamBottom[i]),
-    );
-    out.push(this.volume(line, girderShape(boxWidth, s.girderDepth), under));
-  }
-
-  /**
-   * 縦梁と柱を並べる位置（中心からの左右のずれ, m）。
-   *
-   * ラーメン高架橋は 2 線 2 柱式が基本だが、駅の前後など線路が増える区間では
-   * 床版が広くなり、柱の列も増える。2 本のまま広い床版を載せると、
-   * 見るからに支えきれない形になってしまう。
-   * 実物にならって、およそ 8m ごとに 1 列を目安にする。
-   */
-  private girderOffsets(s: ElevatedStructure): number[] {
-    // 床版は柱の外側に張り出す。張り出し量は幅の 16% 程度
-    const outer = Math.max(1, s.width / 2 - Math.max(1, s.width * 0.16));
-    const rows = Math.max(2, Math.round((outer * 2) / 8) + 1);
-    return Array.from({ length: rows }, (_, i) => -outer + (2 * outer * i) / (rows - 1));
-  }
-
-  /** 高欄・防音壁 */
-  private addParapets(
-    out: Cesium.GeometryInstance[],
-    s: ElevatedStructure,
-    deckTop: number[],
-    color: Cesium.Color,
-  ): void {
-    if (s.parapetHeight <= 0) return;
-    // 鉄道の防音壁はコンクリート板で厚い。道路の高欄は細い
-    const isRail = s.kind.startsWith('rail');
-    const thickness = isRail ? 0.22 : 0.14;
-    const curbWidth = isRail ? 0.5 : 0.4;
-    const shape = parapetShape(s.parapetHeight, thickness, curbWidth);
-    // 床版より明るくして、遠目でも壁と路面の境目が分かるようにする
-    const tint = color.brighten(0.18, new Cesium.Color());
-    // 地覆の外面を床版の縁に合わせる
-    const offset = Math.max(0, s.width / 2 - curbWidth / 2 - 0.05);
-
-    for (const side of [-1, 1]) {
-      const line = this.offsetPath(s.path, offset * side, deckTop);
-      if (line.length < 2) continue;
-      out.push(this.volume(line, shape, tint));
-    }
-  }
-
-  /**
-   * 橋台。橋の両端で桁を受け、地面につなぐ壁。
-   *
-   * 実物の橋は必ず両岸に橋台があり、そこで路面と地面がつながっている。
-   * これが無いと床版が空中で終わり、道路から切り離されて浮いて見える。
-   * 桁を持たない床版橋でも、両端の橋台だけは必ずある。
-   *
-   * ラーメン高架橋のように延々と続く構造には付けない（端が街の外に続くため）。
-   */
-  private addAbutments(
-    out: Cesium.GeometryInstance[],
-    s: ElevatedStructure,
-    metrics: PathMetrics,
-    beamBottom: number[],
-    ground: number[],
-    color: Cesium.Color,
-  ): void {
-    if (s.form === 'rigid-frame') return;
-
-    const lats = s.path.map((p) => p.lat);
-    const lngs = s.path.map((p) => p.lng);
-    // 橋台の厚み。桁を受けるので床版より少し内側から立ち上がる
-    const depth = Math.min(2.2, Math.max(0.9, metrics.total * 0.06));
-
-    for (const d of [depth / 2, metrics.total - depth / 2]) {
-      const point = pointAt(lats, lngs, metrics.cumulative, d);
-      const heading = headingAtDistance(s.path, metrics.cumulative, d);
-      const top = valueAt(beamBottom, metrics.cumulative, d);
-      const soil = valueAt(ground, metrics.cumulative, d);
-      const height = top - soil;
-      // 地面すれすれの橋には橋台が見えない
-      if (height < 0.4) continue;
-
-      out.push(
-        this.box(point, heading, {
-          // 床版よりわずかに広い。実物も桁の外側まで受けている
-          halfX: s.width * 0.52,
-          halfY: depth / 2,
-          halfZ: height / 2,
-          z: soil + height / 2,
-          color,
-        }),
-      );
-    }
-  }
-
-  /**
-   * 柱まわり（形式ごとに造りが変わる部分）。
-   * 追加したインスタンス数を返す。
-   */
-  private addFrame(
-    out: Cesium.GeometryInstance[],
-    s: ElevatedStructure,
-    metrics: PathMetrics,
-    beamBottom: number[],
-    ground: number[],
-    slabBottom: number[],
-    material: { deck: Cesium.Color; pier: Cesium.Color },
-    budget: number,
-    distanceM: number,
-  ): number {
-    if (s.pierSpacing <= 0 || budget <= 0) return 0;
-
-    // 離れた高架では柱を間引く。径間 8.9m の 1 本おきは
-    // 数百メートル先では見分けがつかない
-    const stride = pierStride(distanceM);
-    const bays = bayPositions(metrics.total, s.pierSpacing).filter((_, i) => i % stride === 0);
-
-    // 予算が尽きて途中から柱が消えると、そこだけ床版が宙に浮いて見える。
-    // 1 本ぶんまるごと入らないなら、その構造物には柱を付けない。
-    // 並べ替えでカメラに近いものから処理しているので、手前の高架が優先される
-    const perBay =
-      s.form === 'rigid-frame'
-        ? 1 + this.girderOffsets(s).length
-        : s.form === 'girder'
-          ? 2
-          : 1;
-    if (bays.length * perBay > budget) return 0;
-
-    const lats = s.path.map((p) => p.lat);
-    const lngs = s.path.map((p) => p.lng);
-    let added = 0;
-
-    for (const d of bays) {
-      if (added >= budget) break;
-      const point = pointAt(lats, lngs, metrics.cumulative, d);
-      const heading = headingAtDistance(s.path, metrics.cumulative, d);
-      // 梁の下端 = 桁下高。柱はそこから実際の地表まで伸びる
-      const columnTop = valueAt(beamBottom, metrics.cumulative, d);
-      const soil = valueAt(ground, metrics.cumulative, d);
-      const columnHeight = columnTop - soil;
-      if (columnHeight < 1.2) continue;
-
-      if (s.form === 'rigid-frame') {
-        // 横梁（柱の頭をつなぐ）。この梁が縦梁を受ける
-        const beamTop = valueAt(slabBottom, metrics.cumulative, d);
-        out.push(
-          this.box(point, heading, {
-            halfX: s.width * 0.42,
-            halfY: Math.max(0.45, s.pierSize * 0.65),
-            halfZ: Math.max(0.3, (beamTop - columnTop) / 2),
-            z: (beamTop + columnTop) / 2,
-            color: material.deck.darken(0.18, new Cesium.Color()),
-          }),
-        );
-        added += 1;
-
-        // 柱。縦梁の真下に 1 本ずつ立てる
-        for (const offset of this.girderOffsets(s)) {
-          if (added >= budget) break;
-          out.push(
-            this.box(this.shift(point, offset, heading), heading, {
-              halfX: s.pierSize * 0.5,
-              halfY: s.pierSize * 0.6,
-              halfZ: columnHeight / 2,
-              z: soil + columnHeight / 2,
-              color: material.pier,
-            }),
-          );
-          added += 1;
-        }
-        continue;
-      }
-
-      if (s.form === 'slab') {
-        // 歩道橋。細い柱 1 本
-        out.push(
-          this.box(point, heading, {
-            halfX: s.pierSize * 0.5,
-            halfY: s.pierSize * 0.5,
-            halfZ: columnHeight / 2,
-            z: soil + columnHeight / 2,
-            color: material.pier,
-          }),
-        );
-        added += 1;
-        continue;
-      }
-
-      // 桁橋。柱頭部（張り出し）の上に桁が載る
-      const capHeight = Math.min(1.4, Math.max(0.6, s.girderDepth * 0.7));
-      if (columnHeight <= capHeight + 0.8) continue;
-      out.push(
-        this.box(point, heading, {
-          halfX: Math.max(s.pierSize, s.width * 0.34),
-          halfY: s.pierSize * 0.6,
-          halfZ: capHeight / 2,
-          z: columnTop - capHeight / 2,
-          color: material.pier.darken(0.08, new Cesium.Color()),
-        }),
-      );
-      added += 1;
-      if (added >= budget) break;
-
-      const shaft = columnHeight - capHeight;
-      out.push(
-        this.box(point, heading, {
-          halfX: s.pierSize * 0.55,
-          halfY: s.pierSize * 0.7,
-          halfZ: shaft / 2,
-          z: soil + shaft / 2,
-          color: material.pier,
-        }),
-      );
-      added += 1;
-    }
-
-    return added;
-  }
-
-  /** 押し出し体をひとつ作る */
-  private volume(
-    positions: Cesium.Cartesian3[],
-    shape: Cesium.Cartesian2[],
-    color: Cesium.Color,
-  ): Cesium.GeometryInstance {
-    return new Cesium.GeometryInstance({
-      geometry: new Cesium.PolylineVolumeGeometry({
-        polylinePositions: positions,
-        shapePositions: shape,
-        cornerType: Cesium.CornerType.MITERED,
-        vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-      }),
-      attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(color) },
-    });
-  }
-
-  /**
-   * 進行方向に合わせて向きを変えた直方体。
-   *
-   * 局所座標は x = 進行方向に対して右、y = 進行方向、z = 上。
-   * 東西南北の枠を方位角ぶん回して作る。
-   */
-  private box(
-    point: LatLng,
-    heading: number,
-    o: { halfX: number; halfY: number; halfZ: number; z: number; color: Cesium.Color },
-  ): Cesium.GeometryInstance {
-    const center = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, o.z);
-    const frame = Cesium.Transforms.eastNorthUpToFixedFrame(center);
-    // ENU では +Y が北。方位角 h の向きに +Y を合わせるには Z 軸まわりに -h
-    const modelMatrix = Cesium.Matrix4.multiplyByMatrix3(
-      frame,
-      Cesium.Matrix3.fromRotationZ(-heading),
-      new Cesium.Matrix4(),
-    );
-    return new Cesium.GeometryInstance({
-      geometry: Cesium.BoxGeometry.fromDimensions({
-        dimensions: new Cesium.Cartesian3(o.halfX * 2, o.halfY * 2, o.halfZ * 2),
-        vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-      }),
-      modelMatrix,
-      attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(o.color) },
-    });
-  }
-
-  /** 進行方向に対して右へ offsetM ずらした地点 */
-  private shift(point: LatLng, offsetM: number, heading: number): LatLng {
-    // 右方向の方位角は heading + 90°
-    const east = Math.sin(heading + Math.PI / 2) * offsetM;
-    const north = Math.cos(heading + Math.PI / 2) * offsetM;
-    const cos = Math.cos((point.lat * Math.PI) / 180) || 1;
-    return {
-      lat: point.lat + north / 111_320,
-      lng: point.lng + east / (111_320 * cos),
-    };
-  }
-
-  /** 中心線を法線方向にずらした経路（縦梁・高欄の位置決め） */
-  private offsetPath(path: LatLng[], offsetM: number, heights: number[]): Cesium.Cartesian3[] {
-    const out: Cesium.Cartesian3[] = [];
-    for (let i = 0; i < path.length; i += 1) {
-      const moved = this.shift(path[i], offsetM, headingAt(path, i));
-      out.push(Cesium.Cartesian3.fromDegrees(moved.lng, moved.lat, heights[i]));
-    }
-    return out;
   }
 
   clear(): void {
