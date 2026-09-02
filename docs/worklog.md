@@ -26,14 +26,18 @@
 - [x] 道路の記述層（`packages/gis/src/road-geometry.ts`）
       種別の判定、車線数・幅・速度制限の決定、
       舗装・区画線・中央線・横断歩道・線路・信号の形を組み立てる。
-      Cesium に依存しない純粋な関数。テスト 13 件。
-- [ ] **`/api/roads` エンドポイント** … Overpass から道路・線路・信号を取る
-- [ ] **`SceneShape` を Cesium で描くレンダラ**
-      `GroundRibbon` は `GroundPrimitive`（地表に貼る帯）、
-      `ExtrudedShape` は `PolylineVolumeGeometry`、
-      `BoxShape` は `BoxGeometry`。すべて `GeometryInstance` にまとめてバッチ化する。
-- [ ] 速度制限の UI 表示（OSM に `maxspeed` があるときだけ）
+      Cesium に依存しない純粋な関数。テスト 16 件。
+- [x] `/api/roads` エンドポイント。Overpass が落ちていたら OSM 本体 API に切り替える
+- [x] `SceneShape` を Cesium で描くレンダラ（`scene-renderer.ts`）
+      幅 0.5m 以上は面（`CorridorGeometry` + `GroundPrimitive`）、
+      未満は線（`GroundPolylineGeometry`）。立体は `PolylineVolumeGeometry` と
+      `BoxGeometry`。同じ描き方のものは 1 つの Primitive にまとめる
+- [x] 地表の高さの格子（`terrain-grid.ts`）。
+      100m 格子で取って双線形補間。点ごとに問い合わせると数千件になる
+- [x] 速度制限の表示（規制標識を SVG で描く）。
+      OSM に `maxspeed` があるときだけ。超過していたら現在速度を赤くする
 - [ ] 街路樹が実際に出ることの確認（パーサ修正で取れるようになったはず）
+- [ ] 実機で道路・線路・信号が正しい位置に出ることの確認
 
 ### 高架橋を実構造に基づいて作り直す
 

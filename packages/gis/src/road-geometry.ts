@@ -18,7 +18,8 @@
  */
 
 import type { BBox, GroundRibbon, LatLng, LatLngAlt, SceneShape } from '@ijm/shared';
-import type { OverpassElement } from './overpass';
+import { fetchOsmMap } from './osm-api';
+import { fetchRoadNetwork, type OverpassElement } from './overpass';
 
 /** 道路の種別。描き分けと幅員の決定に使う */
 export type RoadClass =
@@ -496,4 +497,78 @@ export function clipToBBox<T extends { path: LatLng[] }>(pieces: T[], bbox: BBox
       (p) => p.lng >= minLng && p.lng <= maxLng && p.lat >= minLat && p.lat <= maxLat,
     ),
   );
+}
+
+/**
+ * 点から線分までの距離 (m)。
+ *
+ * 緯度経度のまま計算すると経度方向が詰まって見えるので、
+ * その緯度での 1 度あたりの距離を掛けて局所的な平面に直す。
+ */
+function distanceToSegment(p: LatLng, a: LatLng, b: LatLng): number {
+  const cos = Math.cos((p.lat * Math.PI) / 180) || 1;
+  const toXY = (q: LatLng) => ({
+    x: (q.lng - p.lng) * cos * 111_320,
+    y: (q.lat - p.lat) * 111_320,
+  });
+  const A = toXY(a);
+  const B = toXY(b);
+  const dx = B.x - A.x;
+  const dy = B.y - A.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(A.x, A.y);
+  // 線分上への射影の位置（0〜1 に切り詰める）
+  const t = Math.min(1, Math.max(0, -(A.x * dx + A.y * dy) / lenSq));
+  return Math.hypot(A.x + dx * t, A.y + dy * t);
+}
+
+/**
+ * その位置にいちばん近い道路を返す。
+ *
+ * 走行中の制限速度を出すために使う。
+ * 離れすぎているとき（道の無いところにいるとき）は null を返す。
+ * 見つからないより、間違った道の制限速度を出すほうが害が大きい。
+ */
+export function nearestRoad(
+  roads: RoadPiece[],
+  position: LatLng,
+  maxDistanceM = 25,
+): RoadPiece | null {
+  let best: RoadPiece | null = null;
+  let bestDistance = maxDistanceM;
+
+  for (const road of roads) {
+    // 歩道や横断歩道に車の制限速度は無い
+    if (ROAD_SPEC[road.cls].lanes === 0) continue;
+    for (let i = 0; i < road.path.length - 1; i += 1) {
+      const d = distanceToSegment(position, road.path[i], road.path[i + 1]);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = road;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * 範囲内の道路・線路・信号を取得して解釈する。
+ *
+ * Overpass の公開インスタンスは混雑時に落ちるので、
+ * そのときは OSM 本体の API に切り替える（絞り込みができない代わりに
+ * 範囲内の全要素を確実に返す）。どちらも駄目なら空で返す。
+ * 道が出なくても地図とナビは成立するので、例外は投げない。
+ */
+export async function fetchRoadScene(bbox: BBox): Promise<RoadScene> {
+  let elements: OverpassElement[] = [];
+  try {
+    elements = (await fetchRoadNetwork(bbox)).elements;
+  } catch {
+    try {
+      elements = await fetchOsmMap(bbox);
+    } catch {
+      return { roads: [], rails: [], points: [] };
+    }
+  }
+  return buildRoadScene(elements);
 }

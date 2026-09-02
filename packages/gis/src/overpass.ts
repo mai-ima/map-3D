@@ -231,8 +231,11 @@ export async function fetchBuildingAt(point: LatLng, radius = 40): Promise<Overp
 // ---- 道路ネットワーク ---------------------------------------------------
 
 /**
- * 道路・歩道・横断歩道・信号などをまとめて取得する。
- * ナビゲーションの視覚表現（交差点ハイライト等）に使う。
+ * 道路・歩道・横断歩道・信号・線路をまとめて取得する。
+ *
+ * 線路を含めるのは、地表の線路（道床とレール）を描くため。
+ * 高架区間は elevated-structures が別に建てるので、
+ * ここで取れたものを描くかどうかは bridge / layer で決める。
  */
 export async function fetchRoadNetwork(bbox: BBox): Promise<OverpassResponse> {
   const [minLng, minLat, maxLng, maxLat] = bbox;
@@ -240,6 +243,7 @@ export async function fetchRoadNetwork(bbox: BBox): Promise<OverpassResponse> {
   const query = `[out:json][timeout:30];
 (
   way["highway"](${box});
+  way["railway"~"^(rail|light_rail|subway|tram|monorail)$"](${box});
   node["highway"="traffic_signals"](${box});
   node["highway"="crossing"](${box});
   node["highway"="stop"](${box});

@@ -6,7 +6,16 @@
  */
 
 import * as Cesium from 'cesium';
-import type { City, District, ElevatedStructure, LatLng, Poi, Route } from '@ijm/shared';
+import type {
+  BBox,
+  City,
+  District,
+  ElevatedStructure,
+  LatLng,
+  Poi,
+  Route,
+  SceneShape,
+} from '@ijm/shared';
 import {
   PLATEAU_TERRAIN_URL,
   bboxAround,
@@ -14,7 +23,17 @@ import {
   distanceMeters,
   getDefaultCity,
 } from '@ijm/shared';
-import { DEFAULT_IMAGERY_ID, GSI_IMAGERY, categoryIcon, getImagery } from '@ijm/gis';
+import {
+  DEFAULT_IMAGERY_ID,
+  GSI_IMAGERY,
+  categoryIcon,
+  crossingShapes,
+  getImagery,
+  railShapes,
+  roadShapes,
+  signalShapes,
+  type RoadScene,
+} from '@ijm/gis';
 import {
   NavigationSession,
   type NavigationSessionOptions,
@@ -25,7 +44,9 @@ import { ElevatedStructureLayer } from './elevated-structures';
 import { EnvironmentController, type WeatherKind } from './environment';
 import { HealthMonitor, type HealthEvent } from './health-monitor';
 import { RouteLayer } from './route-layer';
+import { SceneShapeLayer } from './scene-renderer';
 import { StreetFurnitureLayer, type FurniturePoint } from './street-furniture';
+import { TerrainHeights } from './terrain-grid';
 import {
   MemoryWatchdog,
   PerformanceWatchdog,
@@ -165,6 +186,8 @@ export class MapEngine {
   readonly environment: EnvironmentController;
   readonly furniture: StreetFurnitureLayer;
   readonly structures: ElevatedStructureLayer;
+  /** 車道・車線・横断歩道・信号・線路 */
+  readonly roads: SceneShapeLayer;
 
   private quality: QualitySettings;
   private qualityTier: QualityTier;
@@ -182,6 +205,8 @@ export class MapEngine {
   private lastAdaptiveSse = 0;
   /** 高架を読み込んだときのカメラ位置。ここから離れたら取り直す */
   private structuresCentre: LatLng | null = null;
+  /** 道路を読み込んだときのカメラ位置。ここから離れたら取り直す */
+  private roadsCentre: LatLng | null = null;
   private lastSseChangeAt = 0;
   private fps = 0;
   private fpsLastSample = 0;
@@ -292,6 +317,8 @@ export class MapEngine {
     this.furniture = new StreetFurnitureLayer(this.viewer, this.quality.maxFurniture);
     this.structures = new ElevatedStructureLayer(this.viewer);
     this.structures.setShadows(this.quality.shadows);
+    this.roads = new SceneShapeLayer(this.viewer);
+    this.roads.setShadows(this.quality.shadows);
 
     this.watchdog = new PerformanceWatchdog(
       () => this.degradeQuality(),
@@ -409,6 +436,7 @@ export class MapEngine {
       this.quality.terrainCollision;
     this.viewer.shadows = this.quality.shadows;
     this.structures.setShadows(this.quality.shadows);
+    this.roads.setShadows(this.quality.shadows);
     this.viewer.scene.postProcessStages.fxaa.enabled = this.quality.fxaa;
     this.buildings.updateQuality(this.quality);
     this.furniture.setMaxItems(this.quality.maxFurniture);
@@ -512,6 +540,60 @@ export class MapEngine {
     this.structures.clear();
     this.structuresCentre = null;
     this.requestRender();
+  }
+
+  /**
+   * 車道・車線・横断歩道・信号・線路を地表に描く。
+   *
+   * 形を決めるのは `@ijm/gis` の road-geometry（Cesium を知らない純粋な関数）で、
+   * ここは出てきた形の記述を Cesium に渡すだけ。
+   *
+   * 線路の道床と信号の柱は地表に接している必要があるので、
+   * 範囲の標高を格子でまとめて取り、補間して渡す。
+   * 点ごとに問い合わせると要求が数千件になる。
+   */
+  async showRoadScene(scene: RoadScene, bbox: BBox, key: string): Promise<void> {
+    if (this.roads.hasLoaded(key)) return;
+
+    const shapes: SceneShape[] = [];
+    for (const road of scene.roads) {
+      shapes.push(...(road.cls === 'crossing' ? crossingShapes(road) : roadShapes(road)));
+    }
+
+    // 地表の線路と信号だけが標高を要る。どちらも無いなら取りに行かない
+    const needsGround =
+      scene.rails.some((r) => !r.elevated && !r.underground) ||
+      scene.points.some((p) => p.kind === 'traffic_signal');
+
+    if (needsGround) {
+      const ground = await TerrainHeights.sample(this.viewer.terrainProvider, bbox);
+      for (const rail of scene.rails) shapes.push(...railShapes(rail, ground.lookup));
+      for (const point of scene.points) shapes.push(...signalShapes(point, ground.lookup));
+    }
+
+    const centre = this.cameraGroundPosition();
+    await this.roads.render(shapes, key);
+    this.roadsCentre = centre;
+    this.requestRender();
+  }
+
+  clearRoadScene(): void {
+    this.roads.clear();
+    this.roadsCentre = null;
+    this.requestRender();
+  }
+
+  /**
+   * 道路を読み直すべきか。
+   *
+   * 高架と同じで、カメラ周辺ぶんしか読んでいない。
+   * 街を移動するとその範囲から出てしまう。
+   */
+  needsRoadRefresh(marginMeters = 500): boolean {
+    if (!this.roadsCentre) return false;
+    const now = this.cameraGroundPosition();
+    if (!now) return false;
+    return distanceMeters(this.roadsCentre, now) > marginMeters;
   }
 
   /**
@@ -1299,6 +1381,7 @@ export class MapEngine {
     for (const remove of this.removeErrorListeners) remove();
     this.removeErrorListeners = [];
     this.structures.clear();
+    this.roads.clear();
     this.environment.destroy();
     this.furniture.clear();
     this.buildings.unload();

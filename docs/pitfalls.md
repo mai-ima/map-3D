@@ -73,6 +73,20 @@ vec4(r * S, g * S, b * S, 1.0)   … アルファは明示的に 1.0
 `requestRenderMode` では描画が走らないと組み立ても進まないので、
 待っている間はこちらから `scene.requestRender()` を呼ぶ必要がある。
 
+### 地表に貼る帯は、細いものを面で描くと消える
+
+区画線の実寸は 0.15m。これを `CorridorGeometry` の面として地表に貼ると、
+少し離れただけで 1 画素を割って見えなくなる。
+
+実際の地図やカーナビは、区画線を「画面上の太さ」で描いている。
+`packages/map-engine/src/scene-renderer.ts` では 0.5m を境に、
+太いものは面（`CorridorGeometry` + `GroundPrimitive`）、
+細いものは線（`GroundPolylineGeometry` + `GroundPolylinePrimitive`）で描く。
+
+破線の刻みも同じ理由で画素基準になる（`PolylineDash` の `dashLength` は
+画素単位で、メートルでは指定できない）。実寸で刻めるのは横断歩道のような
+太い縞だけ。位置と本数は実データどおりで、近似しているのは刻みの細かさだけ。
+
 ### `geometricError: 1e+100` は必ずしも「全部読む」ではない
 
 台東区の tileset.json は根の `geometricError` が `1e+100` になっている。
@@ -83,6 +97,37 @@ SSE による打ち切りはちゃんと効いている。
 
 （当初これを「無条件に 797 タイルを読む」と誤って判断した。
  実際に json を辿って数えるまで結論を出さないこと。）
+
+---
+
+## 数値と反復
+
+### 距離で刻むループは、進まない刻み幅で止まらなくなる
+
+経路を「線 8m・空き 12m」で刻む処理で、無限ループを作って
+テストが 120 秒でタイムアウトした。
+
+```
+const remaining = inLine ? on - phase : period - phase;
+const step = Math.min(remaining, segment - cursor);
+cursor += step;   // step が 0 だと永久に進まない
+```
+
+位相がちょうど境目に乗ると `remaining` が 0 になり、`cursor` が
+進まないまま回り続ける。浮動小数の計算では「ちょうど乗る」ことが起きる。
+
+**距離を足して進めるループには、必ず前へ進む最小の刻みを入れる。**
+
+```
+const remaining = Math.max(1e-6, inLine ? on - phase : period - phase);
+```
+
+### 緯度経度の引き算は割り切れない
+
+`34.71 - 34.7` は `0.00999999999999801` になる。
+格子点ちょうどを指しても最後の桁がずれるので、
+座標から求めた値を厳密な一致で検証してはいけない。
+許容誤差を決めて比較する（標高なら 1mm で十分）。
 
 ---
 

@@ -28,6 +28,9 @@ export interface EnvironmentBarProps {
   structuresEnabled: boolean;
   structuresLoading: boolean;
   onToggleStructures: () => void;
+  roadsEnabled: boolean;
+  roadsLoading: boolean;
+  onToggleRoads: () => void;
   onQualityChange: (choice: string) => void;
   /** PLATEAU の追加レイヤ（LOD3 詳細・橋梁・都市設備・植生） */
   optionalLayers: string[];
@@ -211,6 +214,16 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
             <Chip active={props.furnitureEnabled} onClick={props.onToggleFurniture}>
               {props.furnitureEnabled ? '表示中' : '表示する'}
             </Chip>
+          </Section>
+
+          <Section title="車道・車線・信号・線路（OSM の実在位置）">
+            <Chip active={props.roadsEnabled} onClick={props.onToggleRoads}>
+              {props.roadsLoading ? '読み込み中…' : props.roadsEnabled ? '表示中' : '表示する'}
+            </Chip>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-mist-500">
+              舗装・区画線・中央線・横断歩道・信号機・線路を地表に描きます。
+              車線数や速度制限は OSM に入っている値だけを使い、推測はしません。
+            </p>
           </Section>
 
           <Section title="高架・橋（OSM の実在位置）">

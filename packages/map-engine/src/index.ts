@@ -7,4 +7,7 @@ export * from './route-layer';
 export * from './environment';
 export * from './street-furniture';
 export * from './elevated-structures';
+export * from './scene-renderer';
+export * from './primitive-swap';
+export * from './terrain-grid';
 export * from './marker-icons';

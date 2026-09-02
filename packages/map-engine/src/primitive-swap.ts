@@ -26,6 +26,18 @@ export const PRIMITIVE_READY_TIMEOUT_MS = 8000;
 const POLL_MS = 32;
 
 /**
+ * 待てるもの。
+ *
+ * Primitive・GroundPrimitive・GroundPolylinePrimitive は
+ * 継承関係を持たないが、どれも ready と isDestroyed() を持つ。
+ * 共通しているところだけを見る。
+ */
+export interface AwaitablePrimitive {
+  readonly ready: boolean;
+  isDestroyed(): boolean;
+}
+
+/**
  * プリミティブが描けるようになるまで待つ。
  *
  * requestRenderMode では描画が走らないと組み立ても進まないので、
@@ -35,7 +47,7 @@ const POLL_MS = 32;
  */
 export async function waitForPrimitives(
   scene: Cesium.Scene,
-  primitives: readonly Cesium.Primitive[],
+  primitives: readonly AwaitablePrimitive[],
   timeoutMs = PRIMITIVE_READY_TIMEOUT_MS,
 ): Promise<boolean> {
   if (primitives.length === 0) return true;

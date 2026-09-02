@@ -51,6 +51,8 @@ export interface MobileShellProps {
   furnitureEnabled: boolean;
   structuresEnabled: boolean;
   structuresLoading: boolean;
+  roadsEnabled: boolean;
+  roadsLoading: boolean;
   followRealTime: boolean;
   attributions: DataSource[];
   aiEnabled: boolean;
@@ -74,6 +76,7 @@ export interface MobileShellProps {
   onTogglePoi: (category: string) => void;
   onToggleFurniture: () => void;
   onToggleStructures: () => void;
+  onToggleRoads: () => void;
   onOpenAI: () => void;
 }
 
@@ -441,6 +444,9 @@ export default function MobileShell(props: MobileShellProps) {
                 </Chip>
                 <Chip active={props.structuresEnabled} onClick={props.onToggleStructures}>
                   {props.structuresLoading ? '高架を読み込み中…' : '高架・橋'}
+                </Chip>
+                <Chip active={props.roadsEnabled} onClick={props.onToggleRoads}>
+                  {props.roadsLoading ? '道路を読み込み中…' : '車道・信号・線路'}
                 </Chip>
               </ChipRow>
             </SheetSection>

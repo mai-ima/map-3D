@@ -13,6 +13,7 @@ import type {
   SearchResult,
   TravelMode,
 } from '@ijm/shared';
+import type { RailPiece, RoadPiece, RoadPoint } from '@ijm/gis';
 import type { AgentResult, ChatMessage, MapContext } from '@ijm/ai';
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -39,6 +40,13 @@ export function fetchStructures(
   bbox: [number, number, number, number],
 ): Promise<{ structures: ElevatedStructure[]; degraded: boolean }> {
   return getJson(`/api/structures?bbox=${bbox.map((n) => n.toFixed(5)).join(',')}`);
+}
+
+/** 車道・車線・横断歩道・信号・線路（OSM 由来） */
+export function fetchRoads(
+  bbox: [number, number, number, number],
+): Promise<{ roads: RoadPiece[]; rails: RailPiece[]; points: RoadPoint[]; degraded: boolean }> {
+  return getJson(`/api/roads?bbox=${bbox.map((n) => n.toFixed(5)).join(',')}`);
 }
 
 export function fetchRoute(from: LatLng, to: LatLng, mode: TravelMode): Promise<Route> {

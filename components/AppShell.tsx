@@ -16,6 +16,7 @@ import { BASE_ATTRIBUTION_IDS, getDefaultCity, resolveAttributions } from '@ijm/
 import type { MapEngine, OptionalLayerId, QualityTier } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
+import { nearestRoad, type RoadPiece } from '@ijm/gis';
 import { Icon } from '@ijm/ui';
 import {
   askAI,
@@ -24,6 +25,7 @@ import {
   fetchPois,
   fetchRoute,
   fetchStreetFurniture,
+  fetchRoads,
   fetchStructures,
 } from '@/lib/api';
 import AIPanel from './AIPanel';
@@ -92,6 +94,18 @@ export default function AppShell() {
   // カメラ操作のコールバックは毎フレーム走るので、再生成されない ref から読む
   const structuresEnabledRef = useRef(false);
   const structuresLoadingRef = useRef(false);
+  // 車道・車線・横断歩道・信号・線路（OSM 由来）
+  const [roadsEnabled, setRoadsEnabled] = useState(false);
+  const [roadsLoading, setRoadsLoading] = useState(false);
+  const roadsEnabledRef = useRef(false);
+  const roadsLoadingRef = useRef(false);
+  /**
+   * 読み込んだ道路。走行中の制限速度を引くために持っておく。
+   * tick は毎秒走るので、再生成されない ref に置く。
+   */
+  const roadPiecesRef = useRef<RoadPiece[]>([]);
+  /** いま走っている道の制限速度 (km/h)。OSM に入っているときだけ */
+  const [speedLimit, setSpeedLimit] = useState<number | null>(null);
   // iPhone などのタッチ端末では、片手で操作できるボトムシート主体の画面に切り替える
   const isMobile = useIsMobile();
 
@@ -125,6 +139,12 @@ export default function AppShell() {
 
   const handleTick = useCallback((result: NavigationTickResult) => {
     setTick(result);
+
+    // いま走っている道の制限速度。
+    // OSM に maxspeed が入っている道の上にいるときだけ出す。
+    // 種別からの推測はしない（標識に無い数字を見せることになる）
+    const road = nearestRoad(roadPiecesRef.current, result.progress.rawPosition);
+    setSpeedLimit(road?.speedLimit ?? null);
 
     // 音声案内（Web Speech API）。同じ案内を二重に読み上げない。
     const announcement = result.announcement;
@@ -184,6 +204,12 @@ export default function AppShell() {
   useEffect(() => {
     structuresLoadingRef.current = structuresLoading;
   }, [structuresLoading]);
+  useEffect(() => {
+    roadsEnabledRef.current = roadsEnabled;
+  }, [roadsEnabled]);
+  useEffect(() => {
+    roadsLoadingRef.current = roadsLoading;
+  }, [roadsLoading]);
 
   // ?debug=1 で描画診断パネルを表示する（実機での負荷を確認するため）
   useEffect(() => {
@@ -460,20 +486,51 @@ export default function AppShell() {
   }, []);
 
   /**
-   * カメラが動いたら高架を取り直す。
+   * 車道・車線・横断歩道・信号・線路を読み込む。
    *
-   * 高架はカメラ周辺 1.5km ぶんしか読んでいないので、街を移動すると
-   * その範囲から出てしまい、高架だけが付いてこない。
+   * 道路は要素が多いので、高架より狭い範囲（1km）に絞る。
+   * 中心を 400m 格子に載せて、少し動くたびに違う範囲を要求しないようにする。
+   */
+  const loadRoadsForView = useCallback(async (delayMs = 0) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+
+    const bbox = engine.getSurroundingBBox(1000, 400);
+    if (!bbox) return;
+
+    setRoadsLoading(true);
+    try {
+      const res = await fetchRoads(bbox);
+      if (res.roads.length === 0 && res.rails.length === 0) return;
+      await engine.showRoadScene(res, bbox, bbox.join(','));
+      roadPiecesRef.current = res.roads;
+      setRoadsEnabled(true);
+    } catch {
+      // 道が出なくても地図とナビは成立する
+    } finally {
+      setRoadsLoading(false);
+    }
+  }, []);
+
+  /**
+   * カメラが動いたら高架と道路を取り直す。
+   *
+   * どちらもカメラ周辺ぶんしか読んでいないので、街を移動すると
+   * その範囲から出てしまい、付いてこない。
    * 取り直しは通信とジオメトリの再生成を伴うので、
    * 十分に離れたときだけ、しかも 1 件ずつ実行する。
    */
   const handleCameraMoved = useCallback(() => {
     const engine = engineRef.current;
-    if (!engine || !structuresEnabledRef.current) return;
-    if (structuresLoadingRef.current) return;
-    if (!engine.needsStructureRefresh()) return;
-    void loadStructuresForView();
-    // loadStructuresForView は再生成されない
+    if (!engine) return;
+    if (structuresEnabledRef.current && !structuresLoadingRef.current) {
+      if (engine.needsStructureRefresh()) void loadStructuresForView();
+    }
+    if (roadsEnabledRef.current && !roadsLoadingRef.current) {
+      if (engine.needsRoadRefresh()) void loadRoadsForView();
+    }
+    // loadStructuresForView / loadRoadsForView は再生成されない
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -512,6 +569,49 @@ export default function AppShell() {
     // notify は再生成されない
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [structuresEnabled]);
+
+  const toggleRoads = useCallback(async () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    if (roadsEnabled) {
+      engine.clearRoadScene();
+      roadPiecesRef.current = [];
+      setRoadsEnabled(false);
+      setSpeedLimit(null);
+      return;
+    }
+
+    const bbox = engine.getSurroundingBBox(1000, 400);
+    if (!bbox) {
+      notify('表示範囲を特定できませんでした。ズームインしてください。');
+      return;
+    }
+
+    setRoadsLoading(true);
+    try {
+      const res = await fetchRoads(bbox);
+      if (res.roads.length === 0 && res.rails.length === 0) {
+        notify('この範囲に道路データがありません');
+        return;
+      }
+      await engine.showRoadScene(res, bbox, bbox.join(','));
+      roadPiecesRef.current = res.roads;
+      setRoadsEnabled(true);
+      // 速度制限は OSM に入っている道だけ。何本に入っていたかを伝える
+      const withSpeed = res.roads.filter((r) => r.speedLimit !== undefined).length;
+      notify(
+        `道路 ${res.roads.length} 本・線路 ${res.rails.length} 本・信号 ${res.points.filter((p) => p.kind === 'traffic_signal').length} 基を表示しました` +
+          (withSpeed > 0 ? `（うち速度制限あり ${withSpeed} 本）` : ''),
+      );
+    } catch (error) {
+      notify((error as Error).message ?? '道路データを取得できませんでした');
+    } finally {
+      setRoadsLoading(false);
+    }
+    // notify は再生成されない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roadsEnabled]);
 
   const toggleFurniture = useCallback(async () => {
     const engine = engineRef.current;
@@ -728,6 +828,7 @@ export default function AppShell() {
           tick={tick}
           rerouting={rerouting}
           voiceEnabled={voiceEnabled}
+          speedLimit={speedLimit}
           onToggleVoice={toggleVoice}
           onStop={stopNavigation}
           onResumeFollow={() => engineRef.current?.resumeFollow()}
@@ -778,6 +879,9 @@ export default function AppShell() {
               structuresEnabled={structuresEnabled}
               structuresLoading={structuresLoading}
               onToggleStructures={toggleStructures}
+              roadsEnabled={roadsEnabled}
+              roadsLoading={roadsLoading}
+              onToggleRoads={toggleRoads}
             />
           </div>
         </div>
@@ -826,6 +930,9 @@ export default function AppShell() {
           structuresEnabled={structuresEnabled}
           structuresLoading={structuresLoading}
           onToggleStructures={toggleStructures}
+          roadsEnabled={roadsEnabled}
+          roadsLoading={roadsLoading}
+          onToggleRoads={toggleRoads}
           onOpenAI={() => setAiOpen((v) => !v)}
         />
       )}

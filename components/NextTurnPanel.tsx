@@ -15,9 +15,50 @@ export interface NextTurnPanelProps {
   /** 経路を外れて再検索している最中か */
   rerouting?: boolean;
   voiceEnabled?: boolean;
+  /**
+   * いま走っている道の制限速度 (km/h)。
+   * OSM に maxspeed が入っている道の上にいるときだけ渡される。
+   * 分からないときは null。種別からの推測はしない
+   */
+  speedLimit?: number | null;
   onToggleVoice?: () => void;
   onStop: () => void;
   onResumeFollow: () => void;
+}
+
+/**
+ * 最高速度の規制標識。
+ *
+ * 日本の規制標識（301 最高速度）に合わせて、
+ * 白地・赤の環・黒の数字で描く。
+ * 赤は道路標識の「赤」（マンセル 7.5R 4/15）に近い色を使う。
+ */
+function SpeedLimitSign({ value }: { value: number }) {
+  return (
+    <span
+      className="inline-flex items-center"
+      role="img"
+      aria-label={`最高速度 ${value} キロメートル毎時`}
+      title={`最高速度 ${value} km/h（OSM の maxspeed）`}
+    >
+      <svg width="30" height="30" viewBox="0 0 40 40" aria-hidden="true">
+        <circle cx="20" cy="20" r="19" fill="#ffffff" />
+        <circle cx="20" cy="20" r="16" fill="none" stroke="#c8161e" strokeWidth="5.5" />
+        <text
+          x="20"
+          y="20"
+          textAnchor="middle"
+          dominantBaseline="central"
+          fontSize={value >= 100 ? 15 : 19}
+          fontWeight="700"
+          fill="#16181a"
+          fontFamily="system-ui, sans-serif"
+        >
+          {value}
+        </text>
+      </svg>
+    </span>
+  );
 }
 
 const STATE_LABELS: Record<string, string> = {
@@ -37,6 +78,7 @@ export default function NextTurnPanel({
   tick,
   rerouting,
   voiceEnabled = true,
+  speedLimit = null,
   onToggleVoice,
   onStop,
   onResumeFollow,
@@ -125,7 +167,17 @@ export default function NextTurnPanel({
           </span>
           <span className="tabular-nums">残り {formatDistance(progress.remainingDistance)}</span>
           <span className="tabular-nums">{formatDuration(progress.remainingDuration)}</span>
-          <span className="tabular-nums">{(progress.speed * 3.6).toFixed(0)} km/h</span>
+          {/* 現在速度。制限を超えていたら色で知らせる（超過分は出さない） */}
+          <span
+            className={`tabular-nums ${
+              speedLimit !== null && progress.speed * 3.6 > speedLimit + 1
+                ? 'font-semibold text-alert-400'
+                : ''
+            }`}
+          >
+            {(progress.speed * 3.6).toFixed(0)} km/h
+          </span>
+          {speedLimit !== null && <SpeedLimitSign value={speedLimit} />}
           <span className="ml-auto flex items-center gap-2">
             <span
               className={`rounded-full px-2 py-0.5 text-[11px] ${

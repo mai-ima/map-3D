@@ -17,6 +17,7 @@ import {
   buildRoadScene,
   crossingShapes,
   laneCountOf,
+  nearestRoad,
   railShapes,
   roadClassOf,
   roadShapes,
@@ -241,4 +242,30 @@ test('OSM の要素から道路・線路・信号を取り出す', () => {
   assert.equal(scene.points.length, 1);
   assert.equal(scene.points[0].kind, 'traffic_signal');
   assert.equal(scene.points[0].name, '駅南交差点');
+});
+
+test('現在地にいちばん近い道を選ぶ', () => {
+  // 東西に走る 2 本の道。北の道の上にいる
+  const north = road({ id: 'north', path: line, speedLimit: 40 });
+  const south = road({
+    id: 'south',
+    speedLimit: 60,
+    path: line.map((p) => ({ ...p, lat: p.lat - 0.0005 })), // 約 56m 南
+  });
+
+  const onNorth = nearestRoad([north, south], { lat: 34.7047, lng: 137.7347 });
+  assert.equal(onNorth?.id, 'north');
+  assert.equal(onNorth?.speedLimit, 40);
+
+  // 線分の端より外にいても、いちばん近い点までの距離で測る
+  const beyondEnd = nearestRoad([north], { lat: 34.7047, lng: 137.7353 });
+  assert.equal(beyondEnd?.id, 'north', '線分の延長上でも拾う');
+
+  // どの道からも遠ければ返さない。間違った道の制限速度を出すほうが害が大きい
+  assert.equal(nearestRoad([north, south], { lat: 34.71, lng: 137.7347 }), null);
+});
+
+test('歩道の上にいても車の制限速度は出さない', () => {
+  const footway = road({ id: 'foot', cls: 'footway', lanes: 0, width: 2.2 });
+  assert.equal(nearestRoad([footway], { lat: 34.7047, lng: 137.7347 }), null);
 });
