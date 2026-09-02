@@ -7,3 +7,4 @@ export * from './plateau';
 export * from './cities';
 export * from './attribution';
 export * from './icons';
+export * from './scene';

@@ -24,12 +24,23 @@ const OSM_API = 'https://api.openstreetmap.org/api/0.6/map';
 const MAX_SPAN_DEG = 0.25;
 
 /** XML から要素を取り出す。DOM が無い環境（Node）でも動くよう手書きで走査する */
-function parseOsmXml(xml: string): OverpassElement[] {
+export function parseOsmXml(xml: string): OverpassElement[] {
   const elements: OverpassElement[] = [];
   const nodePos = new Map<number, { lat: number; lon: number }>();
 
-  // <node id=".." lat=".." lon="..">...</node> または自己終了タグ
-  const nodeRe = /<node\s+([^>]*?)(\/)?>([\s\S]*?)(?:<\/node>)?(?=<node|<way|<relation|$)/g;
+  /**
+   * node は 2 つの形で現れる。
+   *
+   *   タグ無し  <node id=".." lat=".." lon=".." />
+   *   タグ付き  <node id=".." ...>\n  <tag k=".." v=".."/>\n </node>
+   *
+   * 以前は「次の要素が始まるところまで」を先読みで探していたが、
+   * 実際の XML は </node> と次の <node> の間に改行と字下げが入るため
+   * 先読みが一度も成立せず、ノードを 1 件も取り出せていなかった。
+   * 信号・横断歩道・街路樹はすべてノードなので、これらが丸ごと落ちていた。
+   * 閉じタグそのものを終端にすれば、間に何が入っていても取り出せる。
+   */
+  const nodeRe = /<node\b([^>]*?)(?:\/>|>([\s\S]*?)<\/node>)/g;
   const attrRe = /(\w+(?::\w+)*)="([^"]*)"/g;
   const tagRe = /<tag\s+k="([^"]*)"\s+v="([^"]*)"\s*\/>/g;
 
@@ -57,14 +68,14 @@ function parseOsmXml(xml: string): OverpassElement[] {
     const lon = Number(attrs.lon);
     if (!Number.isFinite(id) || !Number.isFinite(lat)) continue;
     nodePos.set(id, { lat, lon });
-    const tags = m[3] ? readTags(m[3]) : {};
+    const tags = m[2] ? readTags(m[2]) : {};
     if (Object.keys(tags).length > 0) {
       elements.push({ type: 'node', id, lat, lon, tags });
     }
   }
 
   // way は参照している node の座標を geometry として埋める
-  const wayRe = /<way\s+([^>]*?)>([\s\S]*?)<\/way>/g;
+  const wayRe = /<way\b([^>]*?)>([\s\S]*?)<\/way>/g;
   const ndRe = /<nd\s+ref="(\d+)"\s*\/>/g;
   while ((m = wayRe.exec(xml))) {
     const attrs = readAttrs(m[1]);
