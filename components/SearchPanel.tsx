@@ -63,6 +63,17 @@ export default function SearchPanel(props: SearchPanelProps) {
       setResults([]);
       return;
     }
+
+    /**
+     * この検索がまだ意味を持つか。
+     *
+     * 通信の途中で入力が変わると、古い検索の結果が後から届いて
+     * 新しい検索の結果を上書きすることがある（「東京」と打って
+     * すぐ「大阪」に打ち直すと東京の候補が出る）。
+     * 画面から消えたあとに状態を書き換えることも防ぐ。
+     */
+    let current = true;
+
     // Nominatim の利用ポリシー（1req/s）に配慮してデバウンスする
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
@@ -70,15 +81,16 @@ export default function SearchPanel(props: SearchPanelProps) {
       try {
         const near = viewCenter() ?? undefined;
         const res = await searchPlaces(query.trim(), near);
-        setResults(res.results);
+        if (current) setResults(res.results);
       } catch (e) {
-        setError((e as Error).message);
+        if (current) setError((e as Error).message);
       } finally {
-        setSearching(false);
+        if (current) setSearching(false);
       }
     }, 550);
 
     return () => {
+      current = false;
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [query, viewCenter]);

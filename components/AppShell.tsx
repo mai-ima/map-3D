@@ -142,10 +142,24 @@ export default function AppShell() {
   const [toast, setToast] = useState<string | null>(null);
   const spokenRef = useRef<string | null>(null);
 
+  /** 出しっぱなしの通知を消すためのタイマー。画面を離れるときに止める */
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const notify = useCallback((message: string) => {
     setToast(message);
-    setTimeout(() => setToast((current) => (current === message ? null : current)), 5000);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(
+      () => setToast((current) => (current === message ? null : current)),
+      5000,
+    );
   }, []);
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     fetchConfig()
@@ -490,6 +504,8 @@ export default function AppShell() {
     const engine = engineRef.current;
     if (!engine) return;
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    // 待っている間に画面を離れているかもしれない
+    if (engine.isDestroyed) return;
 
     // 画面いっぱいの範囲は斜め見下ろしだと数十 km 四方になり、API 側で弾かれる。
     // カメラ周辺 1.5km に切って確実に取得する。
@@ -501,8 +517,9 @@ export default function AppShell() {
     setStructuresLoading(true);
     try {
       const res = await fetchStructures(bbox);
-      if (res.structures.length === 0) return;
+      if (engine.isDestroyed || res.structures.length === 0) return;
       await engine.showElevatedStructures(res.structures, bbox.join(','));
+      if (engine.isDestroyed) return;
       setStructuresEnabled(true);
     } catch {
       // 構造物が出なくても地図とナビは成立する
@@ -521,6 +538,8 @@ export default function AppShell() {
     const engine = engineRef.current;
     if (!engine) return;
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    // 待っている間に画面を離れているかもしれない
+    if (engine.isDestroyed) return;
 
     const bbox = engine.getSurroundingBBox(1000, 400);
     if (!bbox) return;
@@ -528,9 +547,11 @@ export default function AppShell() {
     setRoadsLoading(true);
     try {
       const res = await fetchRoads(bbox);
+      if (engine.isDestroyed) return;
       if (res.roads.length === 0 && res.rails.length === 0) return;
       const key = bbox.join(',');
       await engine.showRoadScene(res, bbox, key);
+      if (engine.isDestroyed) return;
       roadPiecesRef.current = res.roads;
       roadSceneRef.current = { scene: res, bbox, key };
       setRoadsEnabled(true);

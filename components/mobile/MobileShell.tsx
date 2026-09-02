@@ -152,19 +152,23 @@ export default function MobileShell(props: MobileShellProps) {
       setResults([]);
       return;
     }
+    // 通信の途中で入力が変わると、古い検索の結果が後から届いて
+    // 新しい検索の結果を上書きすることがある
+    let current = true;
     debounce.current = setTimeout(async () => {
       setSearching(true);
       try {
         const near = props.viewCenter() ?? undefined;
         const res = await searchPlaces(q, near);
-        setResults(res.results);
+        if (current) setResults(res.results);
       } catch {
-        setResults([]);
+        if (current) setResults([]);
       } finally {
-        setSearching(false);
+        if (current) setSearching(false);
       }
     }, 350);
     return () => {
+      current = false;
       if (debounce.current) clearTimeout(debounce.current);
     };
     // viewCenter は毎回同じ関数を渡す前提
