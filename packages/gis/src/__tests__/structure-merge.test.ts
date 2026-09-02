@@ -219,3 +219,32 @@ test('まとめる相手がいなければそのまま返す', () => {
   assert.deepEqual(consolidateStructures(only), only);
   assert.deepEqual(consolidateStructures([]), []);
 });
+
+test('線にならない構造物が混ざっても落ちない', () => {
+  // 端点を読むところで落ちていた。toStructure は 2 点未満を弾くが、
+  // 呼び出し経路が増えたときに壊れないよう、ここでも外しておく
+  const good: ElevatedStructure = {
+    id: 'good',
+    kind: 'rail-elevated',
+    form: 'rigid-frame',
+    path: [
+      { lat: 34.7, lng: 137.73 },
+      { lat: 34.7, lng: 137.74 },
+    ],
+    width: 11,
+    layer: 1,
+    deckThickness: 0.35,
+    girderDepth: 1,
+    deckHeight: 9.35,
+    pierSpacing: 8.9,
+    pierSize: 0.9,
+    parapetHeight: 2,
+  };
+  const out = consolidateStructures([
+    { ...good, id: 'empty', path: [] },
+    { ...good, id: 'single', path: [{ lat: 34.7, lng: 137.73 }] },
+    good,
+  ]);
+  assert.equal(out.length, 1, '線になるものだけが残る');
+  assert.equal(out[0].id, 'good');
+});

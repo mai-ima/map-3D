@@ -332,7 +332,11 @@ export function pierStride(distanceM: number): number {
 
 /** 等間隔に選んだ添字（地形サンプルの間引きに使う） */
 export function pickIndices(length: number, max: number): number[] {
+  if (max <= 0 || length <= 0) return [];
   if (length <= max) return Array.from({ length }, (_, i) => i);
+  // max が 1 のときは (max - 1) が 0 になり、0 除算で NaN が並ぶ。
+  // 1 点しか選べないなら先頭を返す
+  if (max === 1) return [0];
   const out: number[] = [];
   for (let i = 0; i < max; i += 1) {
     out.push(Math.round((i * (length - 1)) / (max - 1)));
@@ -358,17 +362,27 @@ export function girderOffsets(s: ElevatedStructure): number[] {
 // ---- 組み立て ----------------------------------------------------------
 
 /** 向きを持つ直方体を作る（局所座標は x=右, y=進行方向, z=上） */
+/**
+ * 寸法として使える最小値 (m)。
+ *
+ * 幅 0 や負の値が来ると、大きさの無い（あるいは裏返った）直方体になる。
+ * OSM の幅や柱の太さに 0 が入っていることがあるので、
+ * 見えるか見えないかの薄さに丸めて、形としては成立させる。
+ */
+const MIN_SIZE_M = 0.05;
+
 function boxAt(
   point: LatLng,
   headingRad: number,
   o: { halfX: number; halfY: number; halfZ: number; z: number; color: string; id?: string },
 ): BoxShape {
+  const size = (half: number) => Math.max(MIN_SIZE_M, Math.abs(half) * 2);
   return {
     kind: 'box',
     id: o.id,
     centre: { ...point, alt: o.z },
-    headingDeg: (headingRad * 180) / Math.PI,
-    size: { x: o.halfX * 2, y: o.halfY * 2, z: o.halfZ * 2 },
+    headingDeg: Number.isFinite(headingRad) ? (headingRad * 180) / Math.PI : 0,
+    size: { x: size(o.halfX), y: size(o.halfY), z: size(o.halfZ) },
     color: o.color,
   };
 }
@@ -649,7 +663,13 @@ export function buildStructureShapes(
     const metrics = measurePath(s.path);
     if (metrics.total < 1) return;
 
-    const ground = options.ground[index] ?? s.path.map(() => 0);
+    // 地形が取れなかった点は 0（平地）として扱う。
+    // NaN のまま進むと、床版の高さも柱の位置もすべて NaN になり、
+    // 描画側で「何も出ない」という形でしか分からなくなる
+    const raw = options.ground[index] ?? [];
+    const ground = s.path.map((_, i) =>
+      Number.isFinite(raw[i]) ? raw[i] : 0,
+    );
     const grade = gradeProfile(ground, metrics.cumulative);
     const material = MATERIAL[s.kind];
 

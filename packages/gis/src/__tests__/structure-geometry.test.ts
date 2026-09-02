@@ -22,6 +22,7 @@ import {
   girderOffsets,
   girderSection,
   parapetSection,
+  pickIndices,
   pierStride,
   shade,
   slabSection,
@@ -307,4 +308,61 @@ test('明度を変えた色が範囲を外れない', () => {
   for (const c of [shade(deck, 0.18), shade(deck, 0.18, true)]) {
     assert.match(c, /^#[0-9a-f]{6}$/);
   }
+});
+
+// ---- 壊れたデータへの備え ----------------------------------------------
+
+test('1 点しか選べないときに添字が壊れない', () => {
+  // (max - 1) が 0 になり、0 除算で NaN が並んでいた
+  assert.deepEqual(pickIndices(5, 1), [0]);
+  assert.deepEqual(pickIndices(0, 0), []);
+  assert.deepEqual(pickIndices(3, 0), []);
+  for (const [len, max] of [
+    [0, 0],
+    [1, 5],
+    [5, 1],
+    [10, 10],
+    [100, 8],
+  ] as const) {
+    for (const i of pickIndices(len, max)) {
+      assert.ok(Number.isInteger(i) && i >= 0 && i < len, `添字 ${i} が範囲外`);
+    }
+  }
+});
+
+test('寸法が 0 以下でも形として成立させる', () => {
+  // OSM の幅や柱の太さに 0 が入っていることがある。
+  // 大きさの無い（あるいは裏返った）直方体を渡すと描画側で消える
+  for (const broken of [
+    { ...railViaduct, width: 0 },
+    { ...railViaduct, width: -3 },
+    { ...railViaduct, pierSize: 0 },
+    { ...railViaduct, deckThickness: 0 },
+  ]) {
+    const out = build([broken]);
+    for (const s of [...out.deck, ...out.frame, ...out.parapet]) {
+      if (s.kind !== 'box') continue;
+      assert.ok(s.size.x > 0 && s.size.y > 0 && s.size.z > 0, `寸法 ${JSON.stringify(s.size)}`);
+    }
+  }
+});
+
+test('地形が取れなくても NaN の形を作らない', () => {
+  // 標高の取得に失敗すると NaN が返る。そのまま進むと床版の高さも
+  // 柱の位置もすべて NaN になり、描画側では何も出ない
+  const out = buildStructureShapes([railViaduct], {
+    ground: [railViaduct.path.map(() => Number.NaN)],
+    distances: [0],
+  });
+  for (const s of [...out.deck, ...out.frame, ...out.parapet]) {
+    if (s.kind === 'extrusion') {
+      for (const p of s.path) assert.ok(Number.isFinite(p.alt), '経路の高さが NaN');
+    } else if (s.kind === 'box') {
+      assert.ok(Number.isFinite(s.centre.alt), '直方体の高さが NaN');
+      assert.ok(Number.isFinite(s.headingDeg), '方位角が NaN');
+    }
+  }
+  // 地形の配列が短くても落ちない
+  buildStructureShapes([railViaduct], { ground: [[]], distances: [0] });
+  buildStructureShapes([railViaduct], { ground: [], distances: [] });
 });

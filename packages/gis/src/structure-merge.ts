@@ -649,5 +649,8 @@ export function alignDeckHeights(structures: ElevatedStructure[]): ElevatedStruc
 
 /** 縦につないで、横にまとめて、つながり先と高さを揃える */
 export function consolidateStructures(structures: ElevatedStructure[]): ElevatedStructure[] {
-  return alignDeckHeights(mergeParallel(stitchStructures(structures)));
+  // 線にならないものは、つなぐことも横に並べることもできない。
+  // 端点を読むところで落ちるので、先に外しておく
+  const usable = structures.filter((s) => s.path.length >= 2);
+  return alignDeckHeights(mergeParallel(stitchStructures(usable)));
 }

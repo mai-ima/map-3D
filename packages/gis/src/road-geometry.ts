@@ -92,10 +92,32 @@ const HAS_EDGE_LINE = new Set<RoadClass>([
   'tertiary',
 ]);
 
+/**
+ * 実データとして受け入れる上限。
+ *
+ * OSM のタグは自由入力なので、入力ミスや荒らしで極端な値が入ることがある。
+ * tracks=1000000000 をそのまま使うと線路を 10 億本組み立てようとして
+ * ブラウザが固まる（実際に固まることを確かめた）。
+ *
+ * 上限は実在するものの最大に合わせる:
+ *   線路数 … 世界最大級の駅でも 30 本程度（東京駅は 20 面 20 線）
+ *   車線数 … 最多はカナダのハイウェイ 401 で往復 18 車線
+ *   幅     … 道路の幅は最大でも 100m 程度
+ */
+const MAX_TRACKS = 40;
+const MAX_LANES = 24;
+const MAX_WIDTH_M = 100;
+
 function parseNumber(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const n = Number.parseFloat(value);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/** 値を上限と下限に収める。読めない値は下限にする */
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 /** OSM の highway タグを、描き分けの種別に落とす */
@@ -144,7 +166,7 @@ export function roadClassOf(tags: Record<string, string>): RoadClass | null {
 /** 車線数。OSM に入っていればそれを、無ければ種別の標準値を使う */
 export function laneCountOf(cls: RoadClass, tags: Record<string, string>): number {
   const explicit = parseNumber(tags.lanes);
-  if (explicit && explicit > 0) return Math.round(explicit);
+  if (explicit && explicit > 0) return clamp(Math.round(explicit), 1, MAX_LANES);
   const spec = ROAD_SPEC[cls];
   // 一方通行は往復ぶんが要らない
   const oneway = tags.oneway === 'yes' || tags.oneway === '1' || tags.junction === 'roundabout';
@@ -163,7 +185,7 @@ export function laneCountOf(cls: RoadClass, tags: Record<string, string>): numbe
  */
 export function roadWidthOf(cls: RoadClass, tags: Record<string, string>): number {
   const explicit = parseNumber(tags.width);
-  if (explicit && explicit > 1) return explicit;
+  if (explicit && explicit > 1) return clamp(explicit, 1, MAX_WIDTH_M);
 
   const spec = ROAD_SPEC[cls];
   if (spec.lanes === 0) return spec.width;
@@ -171,7 +193,8 @@ export function roadWidthOf(cls: RoadClass, tags: Record<string, string>): numbe
   const lanes = parseNumber(tags.lanes);
   if (lanes && lanes > 0) {
     // 1 車線 3.0m に路肩 0.5m×2。道路構造令の第 4 種に相当する値
-    return Math.max(spec.width, lanes * 3.0 + 1.0);
+    const width = Math.max(spec.width, clamp(lanes, 1, MAX_LANES) * 3.0 + 1.0);
+    return clamp(width, 1, MAX_WIDTH_M);
   }
   return spec.width;
 }
@@ -283,7 +306,7 @@ export function buildRoadScene(elements: OverpassElement[]): RoadScene {
         id: `osm:way${el.id}`,
         name: tags.name,
         path,
-        tracks: Math.max(1, parseNumber(tags.tracks) ?? 1),
+        tracks: clamp(Math.round(parseNumber(tags.tracks) ?? 1), 1, MAX_TRACKS),
         elevated: isElevated(tags),
         underground: isUnderground(tags),
       });
@@ -495,6 +518,8 @@ export function detailForHeight(heightMeters: number): RoadDetail {
  */
 export function roadShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL): SceneShape[] {
   if (road.underground || road.elevated) return [];
+  // 幅の無い舗装は描けない。0 や負の値が来たら何も出さない
+  if (!(road.width > 0)) return [];
   const spec = ROAD_SPEC[road.cls];
   const out: SceneShape[] = [];
 
@@ -594,12 +619,19 @@ const TRACK_SPACING = 4.1;
 export function railShapes(rail: RailPiece, groundHeight: (p: LatLng) => number): SceneShape[] {
   if (rail.elevated || rail.underground) return [];
   const out: SceneShape[] = [];
-  const span = (rail.tracks - 1) * TRACK_SPACING;
+  // 地形が取れないと NaN が返ることがある。平地として扱う
+  const height = (p: LatLng) => {
+    const h = groundHeight(p);
+    return Number.isFinite(h) ? h : 0;
+  };
+  // 呼び出し側が上限を掛け忘れても固まらないよう、ここでも収める
+  const tracks = clamp(Math.round(rail.tracks), 1, MAX_TRACKS);
+  const span = (tracks - 1) * TRACK_SPACING;
 
-  for (let i = 0; i < rail.tracks; i += 1) {
+  for (let i = 0; i < tracks; i += 1) {
     const offset = -span / 2 + i * TRACK_SPACING;
     const centre = offsetPath(rail.path, offset);
-    const withHeight: LatLngAlt[] = centre.map((p) => ({ ...p, alt: groundHeight(p) }));
+    const withHeight: LatLngAlt[] = centre.map((p) => ({ ...p, alt: height(p) }));
 
     // 道床。上底 3.0m / 下底 4.4m / 高さ 0.4m の台形
     out.push({
@@ -620,7 +652,7 @@ export function railShapes(rail: RailPiece, groundHeight: (p: LatLng) => number)
       out.push({
         kind: 'extrusion',
         id: `${rail.id}#rail${i}${gauge > 0 ? 'R' : 'L'}`,
-        path: offsetPath(centre, gauge).map((p) => ({ ...p, alt: groundHeight(p) + 0.4 })),
+        path: offsetPath(centre, gauge).map((p) => ({ ...p, alt: height(p) + 0.4 })),
         section: [
           { x: -0.035, y: 0 },
           { x: 0.035, y: 0 },
@@ -643,7 +675,8 @@ export function railShapes(rail: RailPiece, groundHeight: (p: LatLng) => number)
  */
 export function signalShapes(point: RoadPoint, groundHeight: (p: LatLng) => number): SceneShape[] {
   if (point.kind !== 'traffic_signal') return [];
-  const ground = groundHeight(point.position);
+  const raw = groundHeight(point.position);
+  const ground = Number.isFinite(raw) ? raw : 0;
   const poleHeight = 5.0;
 
   return [

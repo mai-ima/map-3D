@@ -195,10 +195,38 @@ function pathLength(points: { lat: number; lon: number }[]): number {
   return total;
 }
 
+/**
+ * 実データとして受け入れる上限。
+ *
+ * OSM のタグは自由入力で、入力ミスや荒らしで極端な値が入ることがある。
+ * 上限を掛けないと、layer=1000 の高架が 5km 浮いたり、
+ * tracks=1000000000 の床版が地球を一周する幅になったりする。
+ *
+ *   層     … OSM の慣習では -5〜5 程度。立体交差でも 4 層あれば足りる
+ *   線路数 … 世界最大級の駅でも 30 本程度（東京駅は 20 面 20 線）
+ *   車線数 … 最多はカナダのハイウェイ 401 で往復 18 車線
+ *   幅     … 道路の幅は最大でも 100m 程度
+ */
+const MAX_LAYER = 6;
+const MAX_TRACKS = 40;
+const MAX_LANES = 24;
+const MAX_WIDTH_M = 100;
+
 function parseIntTag(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/** 値を上限と下限に収める。読めない値は下限にする */
+function clampValue(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+/** layer タグを、扱える範囲に収めて読む */
+function layerOf(tags: Record<string, string>): number {
+  return clampValue(parseIntTag(tags.layer) ?? 0, -MAX_LAYER, MAX_LAYER);
 }
 
 /**
@@ -225,7 +253,7 @@ export function classify(tags: Record<string, string>, lengthM = 0): StructureKi
   if (tags.indoor === 'yes') return null;
 
   const isBridge = tags.bridge !== undefined && tags.bridge !== 'no';
-  const layer = parseIntTag(tags.layer) ?? 0;
+  const layer = layerOf(tags);
 
   // 長く続くもの、または viaduct と明記されたものは高架
   const isViaduct = tags.bridge === 'viaduct' || lengthM >= VIADUCT_MIN_LENGTH_M;
@@ -383,19 +411,19 @@ export function crossesWaterway(path: LatLng[], waterways: LatLng[][]): boolean 
 
 export function widthOf(kind: StructureKind, tags: Record<string, string>): number {
   const explicit = Number.parseFloat(tags.width ?? '');
-  if (Number.isFinite(explicit) && explicit > 1) return explicit;
+  if (Number.isFinite(explicit) && explicit > 1) return clampValue(explicit, 1, MAX_WIDTH_M);
 
   const base = PROFILE[kind].width;
   if (kind === 'rail-elevated' || kind === 'rail-bridge') {
     // OSM の way は原則 1 本が線路 1 本。tracks が入っていればその本数ぶん。
     // 複線が 2 本の way で表されている場合は、平行なものをまとめる段階で
     // 実際の幅を計算するので、ここでは way 1 本ぶんに留める
-    const tracks = parseIntTag(tags.tracks) ?? 1;
-    return TRACK_MARGIN * 2 + (Math.max(1, tracks) - 1) * TRACK_SPACING;
+    const tracks = clampValue(parseIntTag(tags.tracks) ?? 1, 1, MAX_TRACKS);
+    return TRACK_MARGIN * 2 + (tracks - 1) * TRACK_SPACING;
   }
 
   const lanes = parseIntTag(tags.lanes);
-  if (lanes) return Math.max(4, lanes * LANE_WIDTH + 1.5);
+  if (lanes) return Math.max(4, clampValue(lanes, 1, MAX_LANES) * LANE_WIDTH + 1.5);
   // 道路種別ごとの標準幅員。一律だと生活道路の橋まで幹線道路の幅になる
   return ROAD_WIDTH[tags.highway ?? ''] ?? base;
 }
@@ -420,7 +448,7 @@ export function toStructure(
     overWater: crossesWaterway(path, waterways),
   };
   const profile = PROFILE[kind];
-  const layer = parseIntTag(tags.layer) ?? 0;
+  const layer = layerOf(tags);
   const width = widthOf(kind, tags);
   const form = formOf(kind, context);
   const deckHeight = deckHeightOf(kind, layer, context);
@@ -458,7 +486,7 @@ export function toStructure(
     pierSize,
     parapetHeight: profile.parapetHeight,
     lanes: parseIntTag(tags.lanes),
-    tracks: parseIntTag(tags.tracks),
+    tracks: tags.tracks ? clampValue(parseIntTag(tags.tracks) ?? 1, 1, MAX_TRACKS) : undefined,
   };
 }
 

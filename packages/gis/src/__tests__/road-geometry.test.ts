@@ -443,3 +443,80 @@ test('上空でも線路と信号は出す', () => {
     2,
   );
 });
+
+// ---- 壊れたデータへの備え ----------------------------------------------
+
+test('OSM の極端な値をそのまま使わない', () => {
+  // OSM のタグは自由入力で、入力ミスや荒らしで極端な値が入ることがある。
+  // tracks=1000000000 をそのまま使うと線路を 10 億本組み立てようとして
+  // ブラウザが固まる（実際に固まることを確かめた）
+  const scene = buildRoadScene([
+    {
+      type: 'way',
+      id: 1,
+      tags: { railway: 'rail', tracks: '1000000000' },
+      geometry: [
+        { lat: 34.7, lon: 137.73 },
+        { lat: 34.7, lon: 137.74 },
+      ],
+    },
+    {
+      type: 'way',
+      id: 2,
+      tags: { highway: 'motorway', lanes: '99999', width: '50000' },
+      geometry: [
+        { lat: 34.7, lon: 137.73 },
+        { lat: 34.7, lon: 137.74 },
+      ],
+    },
+  ]);
+
+  // 世界最大級の駅でも 30 本程度（東京駅は 20 面 20 線）
+  assert.ok(scene.rails[0].tracks <= 40, `線路 ${scene.rails[0].tracks} 本`);
+  // 最多はカナダのハイウェイ 401 で往復 18 車線
+  assert.ok(scene.roads[0].lanes <= 24, `車線 ${scene.roads[0].lanes}`);
+  // 道路の幅は最大でも 100m 程度
+  assert.ok(scene.roads[0].width <= 100, `幅 ${scene.roads[0].width}m`);
+
+  // 組み立てても現実的な個数に収まる
+  const shapes = railShapes(scene.rails[0], () => 0);
+  assert.ok(shapes.length <= 40 * 3, `形 ${shapes.length} 個`);
+});
+
+test('線路数の上限は呼び出し側が忘れても効く', () => {
+  // RoadPiece を直接組み立てる経路もあるので、描く側でも守る
+  const shapes = railShapes(
+    { id: 'x', path: line, tracks: 1e9, elevated: false, underground: false },
+    () => 0,
+  );
+  assert.ok(shapes.length > 0 && shapes.length <= 40 * 3);
+});
+
+test('幅の無い道路は描かない', () => {
+  // 幅 0 の帯は面にならない。0 や負の値が来たら何も出さない
+  assert.equal(roadShapes(road({ width: 0 })).length, 0);
+  assert.equal(roadShapes(road({ width: -5 })).length, 0);
+});
+
+test('地形の高さが取れなくても NaN を出さない', () => {
+  // 地形の取得に失敗すると NaN が返ることがある。
+  // そのまま使うと座標がすべて NaN になり、描画側では
+  // 「何も出ない」という形でしか分からない
+  const rails = railShapes(
+    { id: 'x', path: line, tracks: 1, elevated: false, underground: false },
+    () => Number.NaN,
+  );
+  for (const s of rails) {
+    if (s.kind !== 'extrusion') continue;
+    for (const p of s.path) assert.ok(Number.isFinite(p.alt), '線路の高さが NaN');
+  }
+
+  const signals = signalShapes(
+    { id: 'n', kind: 'traffic_signal', position: line[0] },
+    () => Number.NaN,
+  );
+  for (const s of signals) {
+    if (s.kind !== 'box') continue;
+    assert.ok(Number.isFinite(s.centre.alt), '信号の高さが NaN');
+  }
+});
