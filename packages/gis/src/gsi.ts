@@ -10,10 +10,31 @@ export interface ImageryDefinition {
   label: string;
   urlTemplate: string;
   maximumLevel: number;
+  /**
+   * 提供されている最小のズームレベル。
+   *
+   * 地理院タイルには **ズーム 0 と 1 が無い**（404 が返る）。
+   * これを指定しないと Cesium はズーム 0 から読もうとして失敗し、
+   * 引いた状態で地球に何も貼られず、日本地図が消えたように見える。
+   * 実測（2026-09）: 0/1 は全レイヤ 404、2 以上は seamlessphoto /
+   * std / pale なら世界中で 200 が返る。
+   */
+  minimumLevel: number;
   attribution: string;
+  /**
+   * 提供範囲 [minLng, minLat, maxLng, maxLat]。
+   * 日本国内しか無いレイヤは、範囲外を要求しないようここで区切る。
+   */
+  coverage?: [number, number, number, number];
   /** 3D で建物と重ねたときの見え方の想定 */
   note?: string;
 }
+
+/**
+ * 日本の範囲（南西諸島から北方領土まで）。
+ * 国外に絵が無いレイヤの提供範囲に使う。
+ */
+export const JAPAN_BOUNDS: [number, number, number, number] = [122.9, 20.4, 154.0, 45.6];
 
 export const GSI_TILE_BASE = 'https://cyberjapandata.gsi.go.jp/xyz';
 
@@ -23,6 +44,7 @@ export const GSI_IMAGERY: readonly ImageryDefinition[] = [
     label: '航空写真',
     urlTemplate: `${GSI_TILE_BASE}/seamlessphoto/{z}/{x}/{y}.jpg`,
     maximumLevel: 18,
+    minimumLevel: 2,
     attribution: '出典：国土地理院（地理院タイル・シームレス空中写真）',
     note: '実際の地表の色がそのまま出るため、リアル志向の既定として採用',
   },
@@ -31,6 +53,7 @@ export const GSI_IMAGERY: readonly ImageryDefinition[] = [
     label: '淡色地図',
     urlTemplate: `${GSI_TILE_BASE}/pale/{z}/{x}/{y}.png`,
     maximumLevel: 18,
+    minimumLevel: 2,
     attribution: '出典：国土地理院（地理院タイル）',
     note: '地名・道路名を読みたいとき向け',
   },
@@ -39,6 +62,7 @@ export const GSI_IMAGERY: readonly ImageryDefinition[] = [
     label: '標準地図',
     urlTemplate: `${GSI_TILE_BASE}/std/{z}/{x}/{y}.png`,
     maximumLevel: 18,
+    minimumLevel: 2,
     attribution: '出典：国土地理院（地理院タイル）',
   },
   {
@@ -46,8 +70,11 @@ export const GSI_IMAGERY: readonly ImageryDefinition[] = [
     label: '白地図',
     urlTemplate: `${GSI_TILE_BASE}/blank/{z}/{x}/{y}.png`,
     maximumLevel: 14,
+    // 白地図はズーム 5 から。しかも日本国内にしか絵が無い（国外は 404）
+    minimumLevel: 5,
+    coverage: JAPAN_BOUNDS,
     attribution: '出典：国土地理院（地理院タイル）',
-    note: 'ゲームライクな見た目にしたい場合',
+    note: 'ゲームライクな見た目にしたい場合。日本国内のみ',
   },
 ];
 
@@ -59,6 +86,17 @@ export const GSI_DEM_URL_TEMPLATE = `${GSI_TILE_BASE}/dem_png/{z}/{x}/{y}.png`;
 
 export function getImagery(id: string): ImageryDefinition {
   return GSI_IMAGERY.find((i) => i.id === id) ?? GSI_IMAGERY[0];
+}
+
+/**
+ * 引いたときに全球を覆うのに要るタイルの枚数。
+ *
+ * minimumLevel を上げるほど枚数が増える（レベル n で 4^n 枚）。
+ * ズーム 2 なら 16 枚で、起動時の負担にはならない。
+ * ここが増えすぎていないかを検証で見るために出しておく。
+ */
+export function tilesToCoverGlobe(minimumLevel: number): number {
+  return 4 ** minimumLevel;
 }
 
 /**

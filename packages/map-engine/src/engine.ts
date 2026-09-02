@@ -29,6 +29,7 @@ import {
   categoryIcon,
   crossingShapes,
   getImagery,
+  type ImageryDefinition,
   railShapes,
   roadShapes,
   signalShapes,
@@ -155,6 +156,31 @@ function worldToWindow(
 }
 
 /**
+ * 地理院タイルの画像プロバイダを作る。
+ *
+ * minimumLevel を渡すのが要点。地理院タイルにはズーム 0 と 1 が無く、
+ * 指定しないと Cesium がズーム 0 から読もうとして 404 になる。
+ * その結果、引いた状態で地球に何も貼られず「日本地図が表示されない」
+ * ように見えていた（実測 2026-09: 0/1 は 404、2 以上は世界中で 200）。
+ *
+ * ズーム 2 なら全球を 16 枚で覆えるので、起動時の負担にはならない。
+ */
+function buildImageryProvider(
+  imagery: ImageryDefinition,
+): Cesium.UrlTemplateImageryProvider {
+  return new Cesium.UrlTemplateImageryProvider({
+    url: imagery.urlTemplate,
+    minimumLevel: imagery.minimumLevel,
+    maximumLevel: imagery.maximumLevel,
+    // 絵の無いところを要求しない（白地図は日本国内にしか無い）
+    rectangle: imagery.coverage
+      ? Cesium.Rectangle.fromDegrees(...imagery.coverage)
+      : undefined,
+    credit: new Cesium.Credit(imagery.attribution, false),
+  });
+}
+
+/**
  * 精細度を変更してよい最短間隔。
  *
  * 精細度の変更はタイルツリーの再評価を伴うので、頻繁にやると
@@ -251,11 +277,7 @@ export class MapEngine {
 
     this.viewer = new Cesium.Viewer(options.container, {
       baseLayer: new Cesium.ImageryLayer(
-        new Cesium.UrlTemplateImageryProvider({
-          url: imagery.urlTemplate,
-          maximumLevel: imagery.maximumLevel,
-          credit: new Cesium.Credit(imagery.attribution, false),
-        }),
+        buildImageryProvider(imagery),
       ),
       baseLayerPicker: false,
       geocoder: false,
@@ -393,11 +415,7 @@ export class MapEngine {
     const layers = this.viewer.imageryLayers;
     if (this.imageryLayer) layers.remove(this.imageryLayer, true);
     this.imageryLayer = layers.addImageryProvider(
-      new Cesium.UrlTemplateImageryProvider({
-        url: imagery.urlTemplate,
-        maximumLevel: imagery.maximumLevel,
-        credit: new Cesium.Credit(imagery.attribution, false),
-      }),
+      buildImageryProvider(imagery),
       0,
     );
     this.watchProviderErrors();
@@ -459,29 +477,38 @@ export class MapEngine {
     const frustum = this.viewer.camera.frustum;
     if (!(frustum instanceof Cesium.PerspectiveFrustum)) return;
 
-    const carto = this.viewer.camera.positionCartographic;
-    // 慣性が乗ると上限を超えて飛んでいくことがある。超えたら引き戻す
-    if (carto && carto.height > MAX_CAMERA_HEIGHT_M) {
-      this.viewer.camera.setView({
-        destination: Cesium.Cartesian3.fromRadians(
-          carto.longitude,
-          carto.latitude,
-          MAX_CAMERA_HEIGHT_M,
-        ),
-        orientation: {
-          heading: this.viewer.camera.heading,
-          pitch: this.viewer.camera.pitch,
-          roll: 0,
-        },
-      });
-    }
-
     const height = this.viewer.camera.positionCartographic?.height ?? 1000;
+    // 高度の 8 倍まで見えれば、引いたときに地球が視界から切れることはない。
+    // 高度 25,000km でも 5e7（50,000km）あれば地球の裏側まで入る
     const far = Math.max(this.quality.viewDistance, height * 8);
     // 地球全体が入る距離が上限（これ以上伸ばしても見えるものは増えない）
     frustum.far = Math.min(far, 5e7);
 
     this.applyAtmosphereForHeight(height);
+  }
+
+  /**
+   * 上限を超えて飛んでいったカメラを引き戻す。
+   *
+   * 慣性ズームは指を離したあとも動き続けるので、上限を超えることがある。
+   * 毎フレームやると setView がカメラ操作と競合するので、
+   * 監視と同じ 0.5 秒間隔で見る。
+   */
+  private clampCameraHeight(): void {
+    const carto = this.viewer.camera.positionCartographic;
+    if (!carto || carto.height <= MAX_CAMERA_HEIGHT_M) return;
+    this.viewer.camera.setView({
+      destination: Cesium.Cartesian3.fromRadians(
+        carto.longitude,
+        carto.latitude,
+        MAX_CAMERA_HEIGHT_M,
+      ),
+      orientation: {
+        heading: this.viewer.camera.heading,
+        pitch: this.viewer.camera.pitch,
+        roll: 0,
+      },
+    });
   }
 
   /**
@@ -822,10 +849,16 @@ export class MapEngine {
         this.fpsFrames = 0;
         this.fpsLastSample = now;
       }
+      // 描画距離だけは毎フレーム合わせる。
+      // 0.5 秒に 1 回では、慣性の効いたズームで高度が一気に変わったときに
+      // far が追いつかず、地球がクリップ面の外に出て一瞬消える。
+      // 計算は数回の乗除算なので毎フレームでも負担にならない
+      this.applyViewDistance();
+
       if (now - this.lastMemoryCheck < 500) return;
       this.lastMemoryCheck = now;
+      this.clampCameraHeight();
       this.updateAdaptiveDetail();
-      this.applyViewDistance();
       this.followCameraForBuildings();
       const tileBytes = this.buildings.totalMemoryUsageInBytes;
       this.memoryWatchdog.check(tileBytes, now);
