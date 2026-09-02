@@ -22,6 +22,16 @@ const way = (tags: Record<string, string>, points = 3) => ({
   geometry: Array.from({ length: points }, (_, i) => ({ lat: 34.7 + i * 0.001, lon: 137.73 })),
 });
 
+/**
+ * 444m の長い way（5 点 × 111m）。
+ *
+ * bridge が付いていない構造物を高架として扱うには、
+ * VIADUCT_MIN_LENGTH_M（250m）以上の長さが要る。
+ * layer が付いているだけの短い way は、交差部の上下関係を
+ * 表しているだけかもしれないので高架にしない。
+ */
+const longWay = (tags: Record<string, string>) => way(tags, 5);
+
 test('橋でも高架でもないものは対象外', () => {
   assert.equal(classify({ highway: 'residential' }), null);
   assert.equal(classify({ highway: 'primary', layer: '0' }), null);
@@ -30,18 +40,79 @@ test('橋でも高架でもないものは対象外', () => {
   assert.equal(classify({ highway: 'primary', layer: '-1' }), null);
 });
 
+test('layer が付いているだけのものは高架にしない', () => {
+  // OSM の layer は「交差する相手との上下関係」であって、
+  // 地面から浮いていることの根拠ではない。地上の線路が道路と
+  // 交差するところにも、建物の中を通る通路にも付く。
+  //
+  // layer だけで判定していたときの実測（2026-09、東京駅周辺 4km 四方）:
+  //   駅構内の階段や通路を歩道橋にしていた   162 本（9m の階段など）
+  //   線路の交差部だけを高架にしていた        40 本（最短 8m）
+  assert.equal(classify({ highway: 'steps', layer: '1' }, 9), null, '9m の階段');
+  assert.equal(classify({ highway: 'footway', layer: '1' }, 20), null, '20m の通路');
+  assert.equal(classify({ railway: 'rail', layer: '1' }, 8), null, '8m の交差部');
+  assert.equal(classify({ highway: 'residential', layer: '1' }, 30), null, '生活道路');
+
+  // bridge が付いていれば、短くても橋として建てる
+  assert.equal(classify({ highway: 'steps', bridge: 'yes' }, 9), 'footbridge');
+  assert.equal(classify({ railway: 'rail', bridge: 'yes' }, 8), 'rail-bridge');
+});
+
+test('トンネル・屋内のものは高架にしない', () => {
+  // tunnel が付いているのに layer > 0 のことがある（人工地盤の下など）。
+  // 実測では、こうしたものを 92 本ぶん高架として建てていた
+  assert.equal(classify({ highway: 'footway', tunnel: 'yes', layer: '2' }, 400), null);
+  assert.equal(
+    classify({ highway: 'footway', tunnel: 'building_passage', layer: '1' }, 400),
+    null,
+    '建物を貫く通路',
+  );
+  assert.equal(classify({ railway: 'rail', tunnel: 'yes', bridge: 'yes' }, 400), null);
+  assert.equal(classify({ highway: 'footway', indoor: 'yes', bridge: 'yes' }, 400), null);
+
+  // tunnel=no は打ち消しなので対象に残す
+  assert.equal(classify({ railway: 'rail', tunnel: 'no', bridge: 'yes' }, 50), 'rail-bridge');
+
+  // covered は落とさない。覆いのある高架が実在する（東北新幹線）
+  assert.equal(
+    classify({ railway: 'rail', covered: 'yes', bridge: 'viaduct' }, 542),
+    'rail-elevated',
+  );
+});
+
 test('鉄道の高架と橋を区別する', () => {
-  // layer > 0 かつ bridge が無い = 高架
-  assert.equal(classify({ railway: 'rail', layer: '1' }), 'rail-elevated');
+  // bridge が無くても、長く続いて上の層にあれば市街地の高架。
+  // OSM ではそうした高架に bridge が付いていないことがある
+  assert.equal(classify({ railway: 'rail', layer: '1' }, 400), 'rail-elevated');
   // bridge タグがあれば橋として扱う
   assert.equal(classify({ railway: 'rail', bridge: 'yes' }), 'rail-bridge');
   assert.equal(classify({ railway: 'rail', bridge: 'yes', layer: '1' }), 'rail-bridge');
-  // 側線などは景観への寄与が小さいので除外する
-  assert.equal(classify({ railway: 'siding', layer: '1' }), null);
+  // 側線やホームは景観への寄与が小さいので除外する
+  assert.equal(classify({ railway: 'siding', layer: '1' }, 400), null);
+  assert.equal(classify({ railway: 'platform', layer: '1' }, 800), null, '駅のホーム');
+  assert.equal(classify({ railway: 'platform_edge', layer: '1' }, 800), null);
+});
+
+test('駅構内の通路を歩道橋にしない', () => {
+  // 歩道橋やペデストリアンデッキには bridge が付く。
+  // bridge が無いまま上の層にある歩行者用の道は、駅の構内通路や
+  // ビルの中の通路であることがほとんど。
+  // 実測（2026-09、東京駅周辺 4km 四方）では 400m 前後の footway が
+  // 17 本あり、名前が「JR秋葉原駅;3階;5番線」のようにホーム上の通路だった
+  assert.equal(classify({ highway: 'footway', layer: '3' }, 286), null);
+  assert.equal(classify({ highway: 'pedestrian', layer: '2' }, 434), null);
+  assert.equal(classify({ highway: 'steps', layer: '1' }, 400), null);
+
+  // bridge があれば、覆いが掛かっていても建てる（駅の跨線橋は実在する）
+  assert.equal(
+    classify({ highway: 'steps', bridge: 'yes', covered: 'yes', layer: '1' }, 44),
+    'footbridge',
+  );
 });
 
 test('道路は種別によって高架と橋を分ける', () => {
-  assert.equal(classify({ highway: 'motorway', layer: '1' }), 'road-elevated');
+  // 都市高速は長く続くものだけ高架にする
+  assert.equal(classify({ highway: 'motorway', layer: '1' }, 400), 'road-elevated');
   assert.equal(classify({ highway: 'motorway', bridge: 'yes' }), 'road-bridge');
   assert.equal(classify({ highway: 'primary', bridge: 'yes' }), 'road-bridge');
   assert.equal(classify({ highway: 'footway', bridge: 'yes' }), 'footbridge');
@@ -61,8 +132,8 @@ test('幅は実データを優先し、無ければ車線数から求める', ()
 });
 
 test('高い layer ほど路面を高くする', () => {
-  const l1 = toStructure(way({ railway: 'rail', layer: '1' }));
-  const l3 = toStructure(way({ railway: 'rail', layer: '3' }));
+  const l1 = toStructure(longWay({ railway: 'rail', layer: '1' }));
+  const l3 = toStructure(longWay({ railway: 'rail', layer: '3' }));
   assert.ok(l1 && l3);
   assert.ok(l3.deckHeight > l1.deckHeight, 'layer が高いほど持ち上がるべき');
 });
@@ -113,8 +184,8 @@ test('つながっている構造物は路面の高さが揃う', () => {
 });
 
 test('形状が 2 点未満のものは捨てる', () => {
-  assert.equal(toStructure(way({ railway: 'rail', layer: '1' }, 1)), null);
-  assert.ok(toStructure(way({ railway: 'rail', layer: '1' }, 2)));
+  assert.equal(toStructure(way({ railway: 'rail', bridge: 'yes' }, 1)), null);
+  assert.ok(toStructure(way({ railway: 'rail', bridge: 'yes' }, 2)));
 });
 
 test('OSM の形状をそのまま中心線として保持する', () => {
@@ -127,7 +198,7 @@ test('OSM の形状をそのまま中心線として保持する', () => {
 });
 
 test('鉄道高架はラーメン高架橋の実寸で組む', () => {
-  const s = toStructure(way({ railway: 'rail', layer: '1' }));
+  const s = toStructure(longWay({ railway: 'rail', layer: '1' }));
   assert.ok(s);
   assert.equal(s.form, 'rigid-frame', '都市部の鉄道高架はラーメン高架橋');
 
@@ -144,18 +215,19 @@ test('鉄道高架はラーメン高架橋の実寸で組む', () => {
   assert.ok(beamBottom >= 8 && beamBottom <= 8.5, `梁下 ${beamBottom.toFixed(2)}m`);
 
   // 防音壁は高欄より高い
-  const road = toStructure(way({ highway: 'motorway', layer: '1' }));
+  const road = toStructure(longWay({ highway: 'motorway', layer: '1' }));
   assert.ok(road && s.parapetHeight > road.parapetHeight);
 });
 
 test('桁橋の桁高は支間長の 1/16〜1/20 に収まる', () => {
-  const cases: Record<string, string>[] = [
-    { railway: 'rail', bridge: 'yes' },
-    { highway: 'motorway', layer: '1' },
-    { highway: 'primary', bridge: 'yes' },
+  // 高架道路は bridge が付いていないことがあるので、長い way で作る
+  const cases: { tags: Record<string, string>; long?: boolean }[] = [
+    { tags: { railway: 'rail', bridge: 'yes' } },
+    { tags: { highway: 'motorway', layer: '1' }, long: true },
+    { tags: { highway: 'primary', bridge: 'yes' } },
   ];
-  for (const tags of cases) {
-    const s = toStructure(way(tags));
+  for (const { tags, long } of cases) {
+    const s = toStructure(long ? longWay(tags) : way(tags));
     assert.ok(s);
     assert.equal(s.form, 'girder', `${JSON.stringify(tags)} は桁橋`);
     // pierSpacing が 0（橋脚を立てない短い橋）でも桁高は支間相当で決める
@@ -177,8 +249,8 @@ test('歩道橋は桁を持たない薄い床版', () => {
 test('高い高架ほど柱を太くする', () => {
   // 高さ 10m を超えるラーメン高架橋は柱の中間につなぎ梁が入る。
   // 細長い柱のままだと拡大したときに頼りなく見える
-  const low = toStructure(way({ railway: 'rail', layer: '1' }));
-  const high = toStructure(way({ railway: 'rail', layer: '3' }));
+  const low = toStructure(longWay({ railway: 'rail', layer: '1' }));
+  const high = toStructure(longWay({ railway: 'rail', layer: '3' }));
   assert.ok(low && high);
   assert.ok(high.deckHeight > 12);
   assert.ok(high.pierSize > low.pierSize);
@@ -265,6 +337,6 @@ test('短い橋は床版橋にして橋脚を立てない', () => {
   assert.ok(long.pierSpacing > 0);
 
   // 高架は連続した橋脚で支えられている
-  const elevated = toStructure(way({ railway: 'rail', layer: '1' }));
+  const elevated = toStructure(longWay({ railway: 'rail', layer: '1' }));
   assert.ok(elevated && elevated.pierSpacing > 0);
 });

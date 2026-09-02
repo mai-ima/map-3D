@@ -206,32 +206,56 @@ function parseIntTag(value: string | undefined): number | undefined {
  *
  * lengthM を渡すと、長く続く構造を「橋」ではなく「高架」として扱う。
  * OSM の bridge タグだけでは市街地の高架と川をまたぐ橋を区別できない。
+ *
+ * **`layer > 0` は「地面から浮いている」ことの根拠にならない。**
+ * OSM の layer は交差する相手との相対的な重なり順を表すもので、
+ * 地上の線路が道路と交差するところや、建物の中を通る通路にも付く。
+ * 浮いていることを示すのは bridge タグのほう。
+ *
+ * layer だけで判定していたときの実測（2026-09、東京駅周辺 4km 四方）:
+ *   トンネル・屋内の通路を高架にしていた      92 本
+ *   駅構内の階段や通路を歩道橋にしていた     162 本（9m の階段など）
+ *   線路の交差部だけを高架にしていた          40 本（最短 8m）
  */
 export function classify(tags: Record<string, string>, lengthM = 0): StructureKind | null {
+  // トンネル・屋内は地面より下か建物の中。高架ではない。
+  // tunnel=building_passage（建物を貫く通路）もここで落ちる。
+  // covered は落とさない。覆いのある高架（東北新幹線など）があるため
+  if (tags.tunnel !== undefined && tags.tunnel !== 'no') return null;
+  if (tags.indoor === 'yes') return null;
+
   const isBridge = tags.bridge !== undefined && tags.bridge !== 'no';
   const layer = parseIntTag(tags.layer) ?? 0;
-  const elevated = layer > 0;
-  if (!isBridge && !elevated) return null;
 
   // 長く続くもの、または viaduct と明記されたものは高架
   const isViaduct = tags.bridge === 'viaduct' || lengthM >= VIADUCT_MIN_LENGTH_M;
 
+  // bridge が無いものを建てるのは、市街地を貫く高架のように
+  // 長く続いていて、かつ上の層にあると明記されているときだけ。
+  // OSM ではそうした高架に bridge が付いていないことがある
+  if (!isBridge && !(layer > 0 && isViaduct)) return null;
+
   if (tags.railway) {
-    // 側線や引込線は景観への寄与が小さいので除く
+    // 側線や引込線は景観への寄与が小さいので除く。
+    // ホーム（platform）や停車場の構内線もここで落ちる
     if (!['rail', 'light_rail', 'subway', 'tram', 'monorail'].includes(tags.railway)) return null;
-    return isViaduct || (elevated && !isBridge) ? 'rail-elevated' : 'rail-bridge';
+    return isViaduct ? 'rail-elevated' : 'rail-bridge';
   }
 
   const hw = tags.highway;
   if (!hw) return null;
-  if (['footway', 'path', 'pedestrian', 'steps', 'cycleway'].includes(hw)) return 'footbridge';
+  if (['footway', 'path', 'pedestrian', 'steps', 'cycleway'].includes(hw)) {
+    // 歩道橋やペデストリアンデッキには bridge が付く。
+    // bridge が無いまま上の層にある歩行者用の道は、駅の構内通路や
+    // ビルの中の通路であることがほとんどで、独立した構造物ではない。
+    // 実測（東京駅周辺 4km 四方）では、400m 前後の footway が 17 本あり、
+    // 名前を見ると「JR秋葉原駅;3階;5番線」のようにホーム上の通路だった
+    return isBridge ? 'footbridge' : null;
+  }
   // 高架道路として扱うのは都市高速など自動車専用道路だけにする。
   // 一般道は長い橋でも路面の高さが桁橋と変わらないので、
   // ここを広げると普通の橋との接続部が段差になる
-  if (
-    (isViaduct || (elevated && !isBridge)) &&
-    ['motorway', 'motorway_link', 'trunk', 'trunk_link'].includes(hw)
-  ) {
+  if (isViaduct && ['motorway', 'motorway_link', 'trunk', 'trunk_link'].includes(hw)) {
     return 'road-elevated';
   }
   return 'road-bridge';
