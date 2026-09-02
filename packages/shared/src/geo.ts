@@ -332,3 +332,48 @@ export function parseBBoxParam(value: string | null, limits: BBoxLimits = {}): B
 
   return [minLng, minLat, maxLng, maxLat];
 }
+
+/**
+ * クエリの数値を読む。読めなければ null。
+ *
+ * `Number(null)` は 0 になるので、素朴に書くと「指定が無い」ことと
+ * 「0 が指定されている」ことを区別できない。これが原因で、
+ * lat も lng も無い要求が「緯度 0・経度 0（大西洋）」として通っていた。
+ */
+export function parseNumberParam(
+  value: string | null,
+  limits: { min?: number; max?: number } = {},
+): number | null {
+  if (value === null || value.trim() === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  if (limits.min !== undefined && n < limits.min) return null;
+  if (limits.max !== undefined && n > limits.max) return null;
+  return n;
+}
+
+/**
+ * クエリの数値を、範囲に収めて読む。
+ * 読めなければ既定値、範囲外なら端に丸める（半径や件数の上限に使う）。
+ */
+export function clampNumberParam(
+  value: string | null,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const n = parseNumberParam(value);
+  if (n === null) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** クエリから緯度経度を読む。地球上に無い値は null */
+export function parseLatLngParam(
+  latValue: string | null,
+  lngValue: string | null,
+): LatLng | null {
+  const lat = parseNumberParam(latValue, { min: -90, max: 90 });
+  const lng = parseNumberParam(lngValue, { min: -180, max: 180 });
+  if (lat === null || lng === null) return null;
+  return { lat, lng };
+}

@@ -262,6 +262,26 @@ OSM の道路タグの充足率は低い。浜松駅周辺 3km 四方の実測�
 （`packages/gis/src/road-geometry.ts` の `roadWidthOf`。
  この誤りはテストが検出した。）
 
+### `Number(null)` は 0 になる
+
+クエリの数値を素朴に読むと、「指定が無い」ことと「0 が指定されている」ことを
+区別できない。
+
+```
+const lat = Number(url.searchParams.get('lat'));   // 未指定なら 0
+if (!Number.isFinite(lat)) return 400;             // 0 は有限なので通る
+```
+
+`/api/poi` はこれで、**引数の無い要求を「緯度 0・経度 0（大西洋）」として
+受け付けていた。** 実際に 200 が返ることを確かめた。
+
+`Math.min(Number('abc'), 20)` が NaN になるのも同じたぐい。
+件数や半径が NaN のまま外部への問い合わせに渡っていた。
+
+`packages/shared/src/geo.ts` の `parseNumberParam` /
+`clampNumberParam` / `parseLatLngParam` を使う。
+検証を 1 か所に集めておかないと、API が増えるたびに同じ穴が空く。
+
 ### 壊れた経路は「例外」ではなく「NaN」で来る
 
 polyline のデコードは壊れた文字列でも例外を出さない。

@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BBox } from '../types';
-import { bboxAround, bboxIntersects, distanceMeters, parseBBoxParam } from '../geo';
+import {
+  bboxAround,
+  bboxIntersects,
+  clampNumberParam,
+  distanceMeters,
+  parseBBoxParam,
+  parseLatLngParam,
+  parseNumberParam,
+} from '../geo';
 import { CITIES, getCity } from '../cities';
 
 test('bboxIntersects は重なりを正しく判定する', () => {
@@ -85,4 +93,41 @@ test('bbox の大きさに上限をかけられる', () => {
   assert.equal(parseBBoxParam('137.72,34.69,137.75,34.75', limits), null, '南北が広すぎる');
   // 上限を渡さなければ大きさは見ない
   assert.ok(parseBBoxParam('100,20,150,45'), '上限なしなら通る');
+});
+
+test('数値のクエリで「指定なし」と「0」を取り違えない', () => {
+  // Number(null) は 0 になる。素朴に書くと、lat も lng も無い要求が
+  // 「緯度 0・経度 0（大西洋）」として通ってしまう。実際に通っていた
+  assert.equal(parseNumberParam(null), null, '未指定');
+  assert.equal(parseNumberParam(''), null, '空文字');
+  assert.equal(parseNumberParam('   '), null, '空白だけ');
+  assert.equal(parseNumberParam('abc'), null, '数値でない');
+  assert.equal(parseNumberParam('0'), 0, '0 は 0 として読む');
+  assert.equal(parseNumberParam('-12.5'), -12.5);
+
+  // 範囲の外は読めなかったものとして扱う
+  assert.equal(parseNumberParam('91', { min: -90, max: 90 }), null);
+  assert.equal(parseNumberParam('-91', { min: -90, max: 90 }), null);
+  assert.equal(parseNumberParam('90', { min: -90, max: 90 }), 90, '端は含む');
+});
+
+test('半径や件数は範囲に丸める', () => {
+  // Math.min(Number('abc'), 20) は NaN になる。件数が NaN のまま
+  // 外部への問い合わせに渡っていた
+  assert.equal(clampNumberParam(null, 500, 10, 3000), 500, '未指定なら既定値');
+  assert.equal(clampNumberParam('abc', 500, 10, 3000), 500, '読めなければ既定値');
+  assert.equal(clampNumberParam('-5', 500, 10, 3000), 10, '下限に丸める');
+  assert.equal(clampNumberParam('99999999', 500, 10, 3000), 3000, '上限に丸める');
+  assert.equal(clampNumberParam('300', 500, 10, 3000), 300);
+});
+
+test('緯度経度のクエリは地球上のものだけ受ける', () => {
+  assert.deepEqual(parseLatLngParam('35.68', '139.76'), { lat: 35.68, lng: 139.76 });
+  assert.equal(parseLatLngParam(null, null), null, '未指定');
+  assert.equal(parseLatLngParam('35.68', null), null, '片方だけ');
+  assert.equal(parseLatLngParam('999', '999'), null, '地球上に無い');
+  assert.equal(parseLatLngParam('91', '139'), null, '緯度が範囲外');
+  assert.equal(parseLatLngParam('35', '181'), null, '経度が範囲外');
+  // 0,0 は大西洋上の実在する座標なので、値としては受ける
+  assert.deepEqual(parseLatLngParam('0', '0'), { lat: 0, lng: 0 });
 });

@@ -1,26 +1,30 @@
 import { NextResponse } from 'next/server';
-import { attributionStrings } from '@ijm/shared';
+import { attributionStrings, clampNumberParam, parseLatLngParam } from '@ijm/shared';
 import { geocode } from '@ijm/gis';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
+/**
+ * 検索語の長さの上限。
+ * 地名としてこれより長いものは無く、そのまま外部へ投げる理由もない。
+ */
+const MAX_QUERY_LENGTH = 200;
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const query = url.searchParams.get('q')?.trim();
+  const query = url.searchParams.get('q')?.trim().slice(0, MAX_QUERY_LENGTH);
   if (!query) {
     return NextResponse.json({ error: '検索語 (q) を指定してください' }, { status: 400 });
   }
 
-  const nearParam = url.searchParams.get('near');
-  const near = nearParam
-    ? (() => {
-        const [lat, lng] = nearParam.split(',').map(Number);
-        return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : undefined;
-      })()
-    : undefined;
+  // near は「この辺りを優先して探す」ための任意指定。
+  // 地球上に無い値なら、指定が無かったものとして扱う
+  const nearParam = url.searchParams.get('near')?.split(',') ?? [];
+  const near = parseLatLngParam(nearParam[0] ?? null, nearParam[1] ?? null) ?? undefined;
 
-  const limit = Math.min(Number(url.searchParams.get('limit') ?? 8), 20);
+  // Math.min(Number('abc'), 20) は NaN になる。件数が NaN のまま渡っていた
+  const limit = clampNumberParam(url.searchParams.get('limit'), 8, 1, 20);
 
   try {
     const results = await geocode(query, { near, limit });

@@ -17,8 +17,20 @@ export async function POST(request: Request) {
     attributes?: Record<string, unknown>;
   };
 
-  if (!Number.isFinite(body.lat) || !Number.isFinite(body.lng)) {
-    return NextResponse.json({ error: 'lat と lng が必要です' }, { status: 400 });
+  // 地球上に無い座標は弾く。有限であることだけを見ていたので、
+  // 緯度 999 のような値がそのまま外部への問い合わせに流れていた
+  const lat = body.lat;
+  const lng = body.lng;
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    Math.abs(lat as number) > 90 ||
+    Math.abs(lng as number) > 180
+  ) {
+    return NextResponse.json(
+      { error: 'lat と lng が必要です（緯度 ±90・経度 ±180 の範囲）' },
+      { status: 400 },
+    );
   }
 
   const attrs = body.attributes ?? {};
