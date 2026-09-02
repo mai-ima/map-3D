@@ -24,6 +24,7 @@ import {
   roadWidthOf,
   signalShapes,
   speedLimitOf,
+  stitchRoads,
   type RoadPiece,
 } from '../road-geometry';
 
@@ -268,4 +269,133 @@ test('現在地にいちばん近い道を選ぶ', () => {
 test('歩道の上にいても車の制限速度は出さない', () => {
   const footway = road({ id: 'foot', cls: 'footway', lanes: 0, width: 2.2 });
   assert.equal(nearestRoad([footway], { lat: 34.7047, lng: 137.7347 }), null);
+});
+
+// ---- 細切れの道をつなぐ ------------------------------------------------
+
+const M = 111_320;
+/** 東へ伸びる線分を、始点と長さから作る */
+const seg = (startM: number, lengthM: number, points = 2): LatLng[] => {
+  const cos = Math.cos((34.7047 * Math.PI) / 180);
+  return Array.from({ length: points }, (_, i) => ({
+    lat: 34.7047,
+    lng: 137.7342 + (startM + (i * lengthM) / (points - 1)) / (M * cos),
+  }));
+};
+
+test('交差点で切れた同じ道をつなぐ', () => {
+  // OSM は 1 本の通りを交差点ごとに別の way にする。
+  // 浜松駅周辺 1km 四方で道路 1,817 本になっていた（2026-09 実測）
+  const a = road({ id: 'a', name: '駅南大通り', path: seg(0, 50) });
+  const b = road({ id: 'b', name: '駅南大通り', path: seg(50, 50) });
+  const c = road({ id: 'c', name: '駅南大通り', path: seg(100, 50) });
+
+  const stitched = stitchRoads([a, b, c]);
+  assert.equal(stitched.length, 1, '3 本が 1 本になる');
+  // つなぎ目の点は重複させない（2 + 1 + 1）
+  assert.equal(stitched[0].path.length, 4);
+  // 全長は変わらない
+  const total = stitched[0].path;
+  const cos = Math.cos((34.7047 * Math.PI) / 180);
+  const length = (total[total.length - 1].lng - total[0].lng) * M * cos;
+  assert.ok(Math.abs(length - 150) < 0.5, `全長 ${length.toFixed(1)}m`);
+});
+
+test('向きが逆に登録されていてもつなぐ', () => {
+  // way の向きは OSM の入力順で決まる。同じ通りでも逆向きのことがある
+  const a = road({ id: 'a', name: '通り', path: seg(0, 50) });
+  const b = road({ id: 'b', name: '通り', path: [...seg(50, 50)].reverse() });
+
+  const stitched = stitchRoads([a, b]);
+  assert.equal(stitched.length, 1);
+  assert.equal(stitched[0].path.length, 3);
+  // 座標が単調に増えている（折り返していない）
+  const lngs = stitched[0].path.map((p) => p.lng);
+  for (let i = 1; i < lngs.length; i += 1) {
+    assert.ok(lngs[i] > lngs[i - 1], '逆向きの取り込みで折り返している');
+  }
+});
+
+test('分岐点ではつながない', () => {
+  // 端点に 3 本が集まるところ。どちらへ延ばしても実際とは違う線形になる
+  const a = road({ id: 'a', name: undefined, path: seg(0, 50) });
+  const b = road({ id: 'b', name: undefined, path: seg(50, 50) });
+  const branch = road({
+    id: 'branch',
+    name: undefined,
+    // 同じ端点から北へ分かれる
+    path: [
+      { lat: 34.7047, lng: seg(50, 0)[0].lng },
+      { lat: 34.7047 + 50 / M, lng: seg(50, 0)[0].lng },
+    ],
+  });
+
+  const stitched = stitchRoads([a, b, branch]);
+  assert.equal(stitched.length, 3, '分岐しているのにつないでいる');
+});
+
+test('種別や幅が違えばつながない', () => {
+  // 描き方が変わるところで 1 本にすると、幅が途中で変わる道を表現できない
+  const a = road({ id: 'a', name: '通り', cls: 'tertiary', width: 7.5, path: seg(0, 50) });
+  const b = road({ id: 'b', name: '通り', cls: 'residential', width: 5.5, path: seg(50, 50) });
+  assert.equal(stitchRoads([a, b]).length, 2);
+});
+
+test('名前が違えばつながない', () => {
+  const a = road({ id: 'a', name: '駅南大通り', path: seg(0, 50) });
+  const b = road({ id: 'b', name: '旭町通り', path: seg(50, 50) });
+  assert.equal(stitchRoads([a, b]).length, 2);
+});
+
+test('速度制限が違えばつながない', () => {
+  // つなぐと、どちらの制限速度を出すべきか分からなくなる
+  const a = road({ id: 'a', name: '通り', speedLimit: 40, path: seg(0, 50) });
+  const b = road({ id: 'b', name: '通り', speedLimit: 60, path: seg(50, 50) });
+  assert.equal(stitchRoads([a, b]).length, 2);
+});
+
+test('つないだ道でも速度制限を引ける', () => {
+  const a = road({ id: 'a', name: '通り', speedLimit: 40, path: seg(0, 50) });
+  const b = road({ id: 'b', name: '通り', speedLimit: 40, path: seg(50, 50) });
+  const [joined] = stitchRoads([a, b]);
+  assert.equal(joined.speedLimit, 40);
+  // つないだ後半のところでも引ける
+  const found = nearestRoad([joined], { lat: 34.7047, lng: seg(75, 0)[0].lng });
+  assert.equal(found?.speedLimit, 40);
+});
+
+test('つながらない道はそのまま返す', () => {
+  const lone = road({ id: 'lone', path: seg(0, 50) });
+  const far = road({ id: 'far', path: seg(500, 50) });
+  const out = stitchRoads([lone, far]);
+  assert.equal(out.length, 2);
+  // 触っていないものは同じ実体を返す（無駄な複製を作らない）
+  assert.equal(out[0], lone);
+});
+
+test('住宅街の道には外側線を引かない', () => {
+  // 幅 4〜5.5m の生活道路に白線は引かれていない。
+  // すべての車道に引いていたのは実際と違ううえ、
+  // 浜松 1km 四方の実測（2026-09）で全頂点の 39% を占めていた
+  const local = ribbons(roadShapes(road({ cls: 'residential', lanes: 2, width: 5.5 })));
+  assert.equal(local.filter((s) => s.order === 1).length, 0, '生活道路の外側線');
+  assert.equal(local.filter((s) => s.order === 0).length, 1, '舗装は引く');
+
+  // 区画内の通路も同じ
+  assert.equal(
+    ribbons(roadShapes(road({ cls: 'service', lanes: 2, width: 4 }))).filter(
+      (s) => s.order === 1,
+    ).length,
+    0,
+  );
+
+  // 幹線には引く
+  for (const cls of ['tertiary', 'secondary', 'primary', 'trunk', 'motorway'] as const) {
+    assert.equal(
+      ribbons(roadShapes(road({ cls, lanes: 2, width: 9 }))).filter((s) => s.order === 1)
+        .length,
+      2,
+      `${cls} の外側線`,
+    );
+  }
 });

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { BBox } from '@ijm/shared';
 import { attributionStrings } from '@ijm/shared';
-import { clipToBBox, fetchRoadScene } from '@ijm/gis';
+import { clipToBBox, fetchRoadScene, stitchRoads } from '@ijm/gis';
 
 /**
  * 車道・車線・横断歩道・信号・線路を返す。
@@ -55,7 +55,10 @@ export async function GET(request: Request) {
   // Overpass は範囲に少しでもかかる way を丸ごと返すので、
   // 範囲の外まで伸びた道が混ざる。表示範囲に入るものだけに絞る
   const [minLng, minLat, maxLng, maxLat] = bbox;
-  const roads = clipToBBox(scene.roads, bbox).slice(0, MAX_ROADS);
+  // OSM は道路を交差点ごとに別の way にする。そのままだと描画のまとまりが
+  // その数だけ要るので、つなげられるものはつないでから返す。
+  // 頂点は減らない（つなぎ目の重複が消えるだけ）ので、精度は落ちない
+  const roads = stitchRoads(clipToBBox(scene.roads, bbox)).slice(0, MAX_ROADS);
   const rails = clipToBBox(scene.rails, bbox).slice(0, MAX_RAILS);
   const points = scene.points
     .filter(

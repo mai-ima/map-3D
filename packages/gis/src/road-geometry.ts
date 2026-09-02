@@ -76,6 +76,22 @@ const LINE = {
 /** 描く順。大きいほど手前 */
 const ORDER = { pavement: 0, edge: 1, lane: 2, centre: 3, crossing: 4 } as const;
 
+/**
+ * 車道外側線を引く道路の種別。
+ *
+ * 出典: 道路標識・区画線及び道路標示に関する命令 別表第 3（区画線 103 車道外側線）。
+ * 車道の外側の縁を示す必要がある道路に引かれる。実務上は幹線道路で、
+ * 住宅街の生活道路や区画内の通路には引かれていない
+ * （幅員 4〜5.5m の道に白線が無いのは実際に見てのとおり）。
+ */
+const HAS_EDGE_LINE = new Set<RoadClass>([
+  'motorway',
+  'trunk',
+  'primary',
+  'secondary',
+  'tertiary',
+]);
+
 function parseNumber(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const n = Number.parseFloat(value);
@@ -293,6 +309,131 @@ export function buildRoadScene(elements: OverpassElement[]): RoadScene {
   return { roads, rails, points };
 }
 
+// ---- 細切れの道をつなぐ -----------------------------------------------
+
+/**
+ * つないでよいと見なす端点の距離 (m)。
+ * OSM の交差点ノードは共有されるので、本来は完全一致する。
+ * 浮動小数の丸めぶんだけ見ておく。
+ */
+const STITCH_TOLERANCE_M = 0.5;
+
+/** 描き方が同じかどうか。違えば別の形として描く必要がある */
+function sameAppearance(a: RoadPiece, b: RoadPiece): boolean {
+  return (
+    a.cls === b.cls &&
+    a.width === b.width &&
+    a.lanes === b.lanes &&
+    a.oneway === b.oneway &&
+    a.elevated === b.elevated &&
+    a.underground === b.underground &&
+    a.speedLimit === b.speedLimit
+  );
+}
+
+function samePoint(a: LatLng, b: LatLng): boolean {
+  const cos = Math.cos((a.lat * Math.PI) / 180) || 1;
+  const dx = (b.lng - a.lng) * cos * 111_320;
+  const dy = (b.lat - a.lat) * 111_320;
+  return Math.hypot(dx, dy) <= STITCH_TOLERANCE_M;
+}
+
+function endpointKey(p: LatLng): string {
+  // 約 0.1m 格子。STITCH_TOLERANCE_M より細かいので取りこぼさない
+  return `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
+}
+
+/**
+ * 交差点で切れた道をつなぎ直す。
+ *
+ * OSM は道路を交差点ごとに別の way にする。そのまま描くと、
+ * 1 本の通りが何十個もの形に分かれ、描画のまとまりがその数だけ要る。
+ * 浜松駅周辺 1km 四方の実測（2026-09）で道路 1,817 本。
+ *
+ * 頂点の数は変わらない（つなぎ目の重複が減るだけ）。減るのは
+ * **形の個数**で、これは組み立てとメモリの負担に直結する。
+ * 部品も精度も落とさずに軽くする方法。
+ *
+ * 誤ってつなぐと、曲がっていない道が曲がって見える。防ぐために:
+ *   - 描き方が同じもの同士でしかつながない（種別・幅・車線数・速度制限）
+ *   - 名前があるときは名前の一致を要求する
+ *   - その端点でつながる候補が **ちょうど 1 本** のときだけつなぐ。
+ *     分岐点では、どちらへ延ばしても嘘になるのでつながない
+ */
+export function stitchRoads(roads: RoadPiece[]): RoadPiece[] {
+  // 端点 → そこに接する道の添字
+  const ends = new Map<string, number[]>();
+  const add = (p: LatLng, i: number) => {
+    const key = endpointKey(p);
+    const list = ends.get(key);
+    if (list) list.push(i);
+    else ends.set(key, [i]);
+  };
+  roads.forEach((r, i) => {
+    if (r.path.length < 2) return;
+    add(r.path[0], i);
+    add(r.path[r.path.length - 1], i);
+  });
+
+  /**
+   * その端点でつなげる相手を返す。
+   *
+   * 端点に接する道が **ちょうど 2 本** のときだけつなぐ。
+   * 1 本なら行き止まり、3 本以上なら交差点か分岐で、
+   * どちらへ延ばしても実際とは違う線形になる。
+   */
+  const partnerAt = (point: LatLng): number | null => {
+    const list = ends.get(endpointKey(point)) ?? [];
+    if (list.length !== 2) return null;
+    // 取り込み済みのものは相手にならない（自分自身もここで外れる）
+    const free = list.filter((j) => !used.has(j));
+    return free.length === 1 ? free[0] : null;
+  };
+
+  const used = new Set<number>();
+  const out: RoadPiece[] = [];
+
+  for (let i = 0; i < roads.length; i += 1) {
+    if (used.has(i)) continue;
+    const start = roads[i];
+    if (start.path.length < 2) {
+      used.add(i);
+      out.push(start);
+      continue;
+    }
+    used.add(i);
+    let path = [...start.path];
+
+    // 前と後ろへ、つながる限り伸ばす
+    for (const forward of [true, false]) {
+      for (;;) {
+        const tip = forward ? path[path.length - 1] : path[0];
+        const j = partnerAt(tip);
+        if (j === null) break;
+
+        const next = roads[j];
+        if (!sameAppearance(start, next)) break;
+        if ((start.name ?? null) !== (next.name ?? null)) break;
+
+        // 相手の向きを揃えてつなぐ（つなぎ目の点は重複させない）
+        const head = next.path[0];
+        const tail = next.path[next.path.length - 1];
+        let piece: LatLng[];
+        if (samePoint(tip, head)) piece = next.path.slice(1);
+        else if (samePoint(tip, tail)) piece = [...next.path].reverse().slice(1);
+        else break;
+
+        used.add(j);
+        path = forward ? [...path, ...piece] : [...piece.reverse(), ...path];
+      }
+    }
+
+    out.push(path.length === start.path.length ? start : { ...start, path });
+  }
+
+  return out;
+}
+
 // ---- 形を組み立てる ---------------------------------------------------
 
 /** 中心線を進行方向の右へ offset だけずらす */
@@ -340,16 +481,21 @@ export function roadShapes(road: RoadPiece): SceneShape[] {
   // 歩行者用の道には区画線を引かない
   if (spec.lanes === 0) return out;
 
-  // 外側線。車道の両端から 0.5m 内側
-  const edgeOffset = road.width / 2 - 0.5;
-  for (const side of [-1, 1]) {
-    out.push({
-      kind: 'ribbon',
-      path: offsetPath(road.path, edgeOffset * side),
-      width: LINE.edgeWidth,
-      color: LINE.edgeColor,
-      order: ORDER.edge,
-    });
+  // 外側線（車道外側線）。車道の両端から 0.5m 内側。
+  // 引くのは幹線の道だけ。住宅街の道や区画内の通路には引かれていない。
+  // 以前はすべての車道に引いていたが、それは実際と違ううえ、
+  // 浜松 1km 四方の実測（2026-09）で全頂点の 39% を占めていた
+  if (HAS_EDGE_LINE.has(road.cls)) {
+    const edgeOffset = road.width / 2 - 0.5;
+    for (const side of [-1, 1]) {
+      out.push({
+        kind: 'ribbon',
+        path: offsetPath(road.path, edgeOffset * side),
+        width: LINE.edgeWidth,
+        color: LINE.edgeColor,
+        order: ORDER.edge,
+      });
+    }
   }
 
   // 中央線を引くのは、対向車線があり、かつ車道幅員が 5.5m 以上のとき。
