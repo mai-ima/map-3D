@@ -274,7 +274,10 @@ export class NavigationCamera {
       dt,
     );
 
-    const pose: CameraPose = {
+    // カメラの姿勢は描画エンジンにそのまま渡る。
+    // 壊れたルートや測位から NaN が伝わると、カメラが画面の外へ飛び、
+    // 何をしても戻らなくなる。ここで必ず数に落としておく
+    const pose: CameraPose = sanitizePose({
       target: {
         lat: this.currentTarget.lat,
         lng: this.currentTarget.lng,
@@ -285,7 +288,7 @@ export class NavigationCamera {
       heading: this.currentHeading,
       pitch: this.currentPitch,
       fov: this.currentFov,
-    };
+    });
 
     return {
       pose,
@@ -381,6 +384,31 @@ export function cameraPositionOf(pose: CameraPose): { lat: number; lng: number; 
 }
 
 /** 2 つの姿勢の線形補間（状態遷移のブレンドに使う） */
+/**
+ * カメラの姿勢を、描画エンジンに渡せる値に整える。
+ *
+ * 壊れたルート（座標に NaN が混ざっている）や測位の異常から
+ * NaN が伝わることがある。NaN を渡すとカメラが画面の外へ飛び、
+ * 操作しても戻らなくなるので、必ず有限の値に落とす。
+ * 既定値は「真北を向いて 30 度見下ろす」という無難な姿勢。
+ */
+export function sanitizePose(pose: CameraPose): CameraPose {
+  const num = (v: number | undefined, fallback: number) =>
+    Number.isFinite(v) ? (v as number) : fallback;
+  return {
+    target: {
+      lat: num(pose.target?.lat, 0),
+      lng: num(pose.target?.lng, 0),
+      alt: num(pose.target?.alt, 0),
+    },
+    range: Math.max(0, num(pose.range, 30)),
+    height: Math.max(1, num(pose.height, 30)),
+    heading: num(pose.heading, 0),
+    pitch: num(pose.pitch, -30),
+    fov: Math.min(120, Math.max(15, num(pose.fov, 60))),
+  };
+}
+
 export function lerpPose(a: CameraPose, b: CameraPose, t: number): CameraPose {
   return {
     target: {

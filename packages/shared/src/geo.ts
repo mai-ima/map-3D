@@ -245,6 +245,7 @@ export function projectOnPolyline(
 
 /** 折れ線の累積距離配列 */
 export function cumulativeDistances(coords: [number, number][]): number[] {
+  if (coords.length === 0) return [];
   const out = new Array<number>(coords.length);
   out[0] = 0;
   for (let i = 1; i < coords.length; i++) {
@@ -286,10 +287,14 @@ export function pointAtDistance(
 
 /** 折れ線上の指定位置における進行方位 */
 export function headingAtIndex(coords: [number, number][], index: number, lookAhead = 1): number {
+  // 線にならない経路には向きが無い。北を向いていることにする。
+  // ここで落ちると、壊れたルートを受け取っただけで案内が始まらない
+  if (coords.length < 2) return 0;
   const i = clamp(index, 0, coords.length - 2);
   const j = clamp(i + lookAhead, 0, coords.length - 1);
   const a = coords[i];
   const b = coords[j === i ? Math.min(i + 1, coords.length - 1) : j];
+  if (!a || !b) return 0;
   return bearingDegrees({ lng: a[0], lat: a[1] }, { lng: b[0], lat: b[1] });
 }
 

@@ -15,9 +15,36 @@ function parsePoint(value: string | null): LatLng | null {
   return { lat, lng };
 }
 
+/**
+ * 返ってきた経路が案内に使える形かを確かめる。
+ *
+ * 経路エンジンの応答が壊れていると、座標が 1 点しかなかったり、
+ * 地球上に無い値が混ざったりする（polyline のデコードは壊れた文字列でも
+ * 例外を出さず、緯度 -33.5 のような値を返す）。
+ * そのまま案内を始めると、進捗も方位も計算できないまま画面が固まる。
+ */
+function isUsableRoute(route: { coordinates?: [number, number][] }): boolean {
+  const coords = route.coordinates ?? [];
+  // 2 点なければ線にならない
+  if (coords.length < 2) return false;
+  return coords.every(
+    ([lng, lat]) =>
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      Math.abs(lat) <= 90 &&
+      Math.abs(lng) <= 180,
+  );
+}
+
 async function handle(from: LatLng, to: LatLng, mode: TravelMode) {
   try {
     const route = await routeWithFallback({ from, to, mode, language: 'ja-JP' });
+    if (!isUsableRoute(route)) {
+      return NextResponse.json(
+        { error: '経路の形状が壊れています。もう一度お試しください。' },
+        { status: 502 },
+      );
+    }
     return NextResponse.json(route, {
       headers: { 'Cache-Control': 'private, max-age=30' },
     });

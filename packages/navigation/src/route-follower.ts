@@ -25,6 +25,13 @@ export class RouteFollower {
   private lastHeading: number;
   private lastUpdateAt = 0;
   private speed = 0;
+  /**
+   * 最後に使えた位置。
+   *
+   * GPS はまれに壊れた値（NaN）を返す。そのまま進捗の計算に入れると
+   * 距離も方位も NaN になり、案内が止まったまま復帰しなくなる。
+   */
+  private lastPosition: LatLng;
 
   constructor(
     readonly route: Route,
@@ -33,6 +40,8 @@ export class RouteFollower {
     this.cumulative = cumulativeDistances(route.coordinates);
     this.totalDistance = this.cumulative[this.cumulative.length - 1] ?? 0;
     this.lastHeading = headingAtIndex(route.coordinates, 0, 2);
+    const first = route.coordinates[0];
+    this.lastPosition = first ? { lng: first[0], lat: first[1] } : { lat: 0, lng: 0 };
   }
 
   get total(): number {
@@ -47,9 +56,17 @@ export class RouteFollower {
    * 実測位置（GPS など）から進捗を更新する。
    * 前回の区間インデックスの周辺だけを探索するので、長いルートでも軽い。
    */
-  update(position: LatLng, timestampMs = Date.now()): RouteProgress {
+  update(rawInput: LatLng, timestampMs = Date.now()): RouteProgress {
     const offRouteThreshold = this.options.offRouteThreshold ?? 35;
     const arrivalThreshold = this.options.arrivalThreshold ?? 20;
+
+    // 測位が壊れた値を返すことがある。使える値だけを進捗に反映し、
+    // 壊れているときは前回の位置のまま進める（案内を止めない）
+    const position: LatLng =
+      Number.isFinite(rawInput?.lat) && Number.isFinite(rawInput?.lng)
+        ? rawInput
+        : this.lastPosition;
+    this.lastPosition = position;
 
     // まず直近区間の周辺を探索し、外れていれば全体を探索する（復帰用）
     let projection = projectOnPolyline(

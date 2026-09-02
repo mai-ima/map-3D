@@ -262,3 +262,58 @@ test('経路の逸脱を検知する', () => {
   assert.equal(offRoute.offRoute, true, `逸脱距離 ${offRoute.offRouteDistance}m`);
   assert.ok(offRoute.offRouteDistance > 25);
 });
+
+// ---- 壊れたデータへの備え ----------------------------------------------
+
+test('形状が壊れたルートでも案内を組み立てられる', () => {
+  // 経路エンジンの応答が壊れていると、座標が 1 点しかないことがある。
+  // 以前はここで例外になり、案内を始めた瞬間に画面が真っ白になっていた
+  const broken = makeRoute();
+  for (const coordinates of [[], [[139.76, 35.68]] as [number, number][]]) {
+    const follower = new RouteFollower({ ...broken, coordinates });
+    const progress = follower.update({ lat: 35.68, lng: 139.76 }, 1000);
+    assert.ok(Number.isFinite(progress.remainingDistance), '残り距離が数でない');
+    assert.ok(Number.isFinite(progress.heading), '方位が数でない');
+
+    const session = new NavigationSession({ ...broken, coordinates });
+    const tick = session.tick(500);
+    assert.ok(Number.isFinite(tick.camera.pose.heading), 'カメラの方位が数でない');
+    assert.ok(Number.isFinite(tick.camera.pose.height), 'カメラの高さが数でない');
+  }
+});
+
+test('測位が壊れた値を返しても案内が止まらない', () => {
+  // GPS はまれに NaN を返す。そのまま進捗に入れると距離も方位も NaN になり、
+  // 正しい位置に戻っても復帰しなくなる
+  const follower = new RouteFollower(makeRoute());
+  const before = follower.update({ lat: 35.68, lng: 139.7602 }, 1000);
+
+  const broken = follower.update({ lat: Number.NaN, lng: Number.NaN }, 2000);
+  assert.ok(Number.isFinite(broken.distanceAlong), '進んだ距離が NaN');
+  assert.ok(Number.isFinite(broken.remainingDistance), '残り距離が NaN');
+  assert.ok(Number.isFinite(broken.heading), '方位が NaN');
+  // 壊れた値は無視して、前回の位置を保つ
+  assert.ok(
+    Math.abs(broken.distanceAlong - before.distanceAlong) < 1,
+    '壊れた測位で位置が飛んでいる',
+  );
+
+  // 正しい値に戻れば、そのまま進める
+  const after = follower.update({ lat: 35.68, lng: 139.7608 }, 3000);
+  assert.ok(after.distanceAlong > before.distanceAlong, '復帰後に進んでいない');
+});
+
+test('壊れた経路の座標でも例外にならない', () => {
+  // polyline のデコードは壊れた文字列でも例外を出さず、
+  // 緯度 -33.5 のような値を返す。API 側で弾くが、ここでも落ちない
+  const route = makeRoute();
+  const session = new NavigationSession({
+    ...route,
+    coordinates: [
+      [Number.NaN, Number.NaN],
+      [139.762, 35.68],
+    ],
+  });
+  const tick = session.tick(500);
+  assert.ok(Number.isFinite(tick.camera.pose.heading));
+});
