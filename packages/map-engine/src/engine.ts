@@ -499,8 +499,12 @@ export class MapEngine {
    * 道路が地面に張り付いたままになる。OSM の bridge / layer から補う。
    */
   async showElevatedStructures(structures: ElevatedStructure[], key: string): Promise<void> {
+    // 中心は組み立てを始めた時点のカメラ位置で控える。
+    // 組み立ての完了後に取ると、その間に動いたぶんだけ中心がずれ、
+    // 「もう範囲の外に出ているのに取り直さない」ということが起きる
+    const centre = this.cameraGroundPosition();
     await this.structures.render(structures, key);
-    this.structuresCentre = this.cameraGroundPosition();
+    this.structuresCentre = centre;
     this.requestRender();
   }
 

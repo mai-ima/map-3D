@@ -11,6 +11,7 @@
 
 import * as Cesium from 'cesium';
 import type { BBox } from '@ijm/shared';
+import { waitForPrimitives } from './primitive-swap';
 
 export interface FurniturePoint {
   lat: number;
@@ -37,8 +38,19 @@ function hash01(lat: number, lng: number, salt = 0): number {
 }
 
 export class StreetFurnitureLayer {
+  /** いま表に出ているもの */
   private primitive: Cesium.Primitive | null = null;
+  /** 組み立て中で、まだ入れ替えていないもの */
+  private pending: Cesium.Primitive | null = null;
   private currentBBoxKey = '';
+  /**
+   * 組み立ての世代。
+   *
+   * build() は地形の標高取得を挟むので、終わるまでに次の要求や clear() が
+   * 来ることがある。始めた時点の世代を控えておき、変わっていたら
+   * 自分が作ったものを表に出さずに捨てる。
+   */
+  private generation = 0;
 
   constructor(
     private readonly viewer: Cesium.Viewer,
@@ -59,9 +71,21 @@ export class StreetFurnitureLayer {
     return this.currentBBoxKey === StreetFurnitureLayer.bboxKey(bbox);
   }
 
+  /**
+   * 街路の設備を組み立てる。
+   *
+   * 組み上がるまで、いま出ているものは消さない。
+   * 先に消してしまうと、地形の標高を取って数千本ぶんの頂点を組む間、
+   * 街路樹や街灯が丸ごと消える。範囲を取り直すたびにこれが起きると
+   * ちらついて見える。
+   */
   async build(points: FurniturePoint[], bbox: BBox): Promise<void> {
-    this.clear();
-    if (this.maxItems <= 0 || points.length === 0) return;
+    const gen = ++this.generation;
+    // 出すものが無いときは、待つ相手もいないのですぐ消す
+    if (this.maxItems <= 0 || points.length === 0) {
+      this.clear();
+      return;
+    }
 
     const limited = points.slice(0, this.maxItems);
 
@@ -171,8 +195,10 @@ export class StreetFurnitureLayer {
     });
 
     if (instances.length === 0) return;
+    // 標高を取っている間に次の要求（または clear）が来ていたら、作らない
+    if (gen !== this.generation) return;
 
-    this.primitive = this.viewer.scene.primitives.add(
+    const next: Cesium.Primitive = this.viewer.scene.primitives.add(
       new Cesium.Primitive({
         geometryInstances: instances,
         appearance: new Cesium.PerInstanceColorAppearance({
@@ -185,10 +211,32 @@ export class StreetFurnitureLayer {
         interleave: true,
       }),
     );
+    this.pending = next;
+
+    // 実際に描けるようになってから入れ替える
+    await waitForPrimitives(this.viewer.scene, [next]);
+
+    if (gen !== this.generation) {
+      this.viewer.scene.primitives.remove(next);
+      if (this.pending === next) this.pending = null;
+      return;
+    }
+
+    const previous = this.primitive;
+    this.primitive = next;
+    this.pending = null;
+    if (previous) this.viewer.scene.primitives.remove(previous);
     this.currentBBoxKey = StreetFurnitureLayer.bboxKey(bbox);
+    this.viewer.scene.requestRender();
   }
 
   clear(): void {
+    // 世代を進めて、組み立て中のものが後から現れないようにする
+    this.generation += 1;
+    if (this.pending) {
+      this.viewer.scene.primitives.remove(this.pending);
+      this.pending = null;
+    }
     if (this.primitive) {
       this.viewer.scene.primitives.remove(this.primitive);
       this.primitive = null;

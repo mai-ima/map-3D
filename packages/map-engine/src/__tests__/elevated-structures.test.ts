@@ -106,10 +106,14 @@ async function build(structures: ElevatedStructure[]): Promise<Measured[][]> {
       primitives: {
         add: (p: Cesium.Primitive) => {
           primitives.push(p);
+          // 描画ループの代わり。Primitive.ready は update() が走って初めて
+          // 立つので、ここで立ててやらないと入れ替え待ちが終わらない
+          Object.defineProperty(p, 'ready', { value: true, configurable: true });
           return p;
         },
         remove: () => true,
       },
+      requestRender: () => {},
     },
     terrainProvider: new Cesium.EllipsoidTerrainProvider(),
   } as unknown as Cesium.Viewer;
@@ -320,4 +324,114 @@ test('斜めに走る高架でも柱が構造と平行に立つ', async () => {
     // 向きがずれていると 1.08〜1.4m の範囲を外れる
     assert.ok(c.width > 1.2 && c.width < 1.5, `柱の向き（南北の見付け ${c.width.toFixed(2)}m）`);
   }
+});
+
+/**
+ * 入れ替えの検証用。
+ *
+ * scene に出ているものを集合で持ち、Primitive.ready を外から切り替える。
+ * 実際の Cesium では ready は描画ループが update() を回して初めて立つので、
+ * 「まだ組み上がっていない」状態をここで再現する。
+ */
+function swapHarness() {
+  const live = new Set<Cesium.Primitive>();
+  let ready = true;
+  const viewer = {
+    scene: {
+      primitives: {
+        add: (p: Cesium.Primitive) => {
+          live.add(p);
+          Object.defineProperty(p, 'ready', { get: () => ready, configurable: true });
+          return p;
+        },
+        remove: (p: Cesium.Primitive) => live.delete(p),
+      },
+      requestRender: () => {},
+    },
+    terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+  } as unknown as Cesium.Viewer;
+
+  return {
+    live,
+    viewer,
+    setReady: (v: boolean) => {
+      ready = v;
+    },
+    /** 条件が満たされるまで待つ（最大 2 秒） */
+    async until(cond: () => boolean): Promise<void> {
+      for (let i = 0; i < 200 && !cond(); i += 1) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    },
+  };
+}
+
+test('新しい高架が組み上がるまで、いま出ているものは消さない', async () => {
+  // 先に消してから組み直すと、標高の取得と組み立ての数秒間、
+  // 高架が丸ごと消える。カメラが動くたびに起きるので点滅して見える
+  const h = swapHarness();
+  const layer = new ElevatedStructureLayer(h.viewer);
+
+  await layer.render([railViaduct], 'a');
+  const first = [...h.live];
+  assert.ok(first.length > 0, '1 回目が出ていない');
+
+  h.setReady(false);
+  const second = layer.render([railViaduct], 'b');
+  await h.until(() => h.live.size > first.length);
+  for (const p of first) {
+    assert.ok(h.live.has(p), '組み上がる前に古い高架が消えている');
+  }
+
+  h.setReady(true);
+  await second;
+  for (const p of first) {
+    assert.ok(!h.live.has(p), '入れ替えたのに古い高架が残っている');
+  }
+  assert.ok(h.live.size > 0, '新しい高架が出ていない');
+});
+
+test('同じ範囲を続けて要求しても組み直さない', async () => {
+  const h = swapHarness();
+  const layer = new ElevatedStructureLayer(h.viewer);
+
+  await layer.render([railViaduct], 'a');
+  const count = h.live.size;
+  await layer.render([railViaduct], 'a');
+  assert.equal(h.live.size, count, '同じ鍵なのに組み直している');
+});
+
+test('表示を切ったら、組み立て中のものも出てこない', async () => {
+  const h = swapHarness();
+  const layer = new ElevatedStructureLayer(h.viewer);
+
+  h.setReady(false);
+  const pending = layer.render([railViaduct], 'a');
+  await h.until(() => h.live.size > 0);
+
+  layer.clear();
+  h.setReady(true);
+  await pending;
+  assert.equal(h.live.size, 0, '切ったあとに組み上がったものが現れた');
+});
+
+test('待っている間に次の要求が来たら、古いほうは表に出さずに捨てる', async () => {
+  const h = swapHarness();
+  const layer = new ElevatedStructureLayer(h.viewer);
+
+  h.setReady(false);
+  const first = layer.render([railViaduct], 'a');
+  await h.until(() => h.live.size > 0);
+  const stale = [...h.live];
+
+  const second = layer.render([railViaduct], 'b');
+  await h.until(() => h.live.size > stale.length);
+  h.setReady(true);
+  await Promise.all([first, second]);
+
+  for (const p of stale) {
+    assert.ok(!h.live.has(p), '追い越された組み立てが残っている');
+  }
+  assert.ok(h.live.size > 0, '新しいほうまで消えている');
+  assert.equal(layer.count, h.live.size, '把握している数と実際が合わない');
 });

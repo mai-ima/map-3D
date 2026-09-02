@@ -26,6 +26,7 @@
 import * as Cesium from 'cesium';
 import type { ElevatedStructure, LatLng, StructureKind } from '@ijm/shared';
 import { distanceMeters } from '@ijm/shared';
+import { waitForPrimitives } from './primitive-swap';
 
 /**
  * 材質。
@@ -325,7 +326,10 @@ function pickIndices(length: number, max: number): number[] {
 }
 
 export class ElevatedStructureLayer {
+  /** いま表に出ているもの */
   private primitives: Cesium.Primitive[] = [];
+  /** 組み立て中で、まだ入れ替えていないもの */
+  private pending: Cesium.Primitive[] = [];
   private loadedKey: string | null = null;
   private shadows: Cesium.ShadowMode = Cesium.ShadowMode.ENABLED;
 
@@ -334,7 +338,8 @@ export class ElevatedStructureLayer {
   /** 影を落とすかどうかを品質設定に合わせる */
   setShadows(enabled: boolean): void {
     this.shadows = enabled ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
-    for (const p of this.primitives) p.shadows = this.shadows;
+    // 組み立て中のものは生成時の設定のままなので、そちらにも反映する
+    for (const p of [...this.primitives, ...this.pending]) p.shadows = this.shadows;
   }
 
   get count(): number {
@@ -346,12 +351,22 @@ export class ElevatedStructureLayer {
    *
    * 地形の標高は非同期でしか取れないので、経路上の代表点をまとめて取得し、
    * 頂点間は補間する。柱の足元は実際の地表、床版は均した路盤に合わせる。
+   *
+   * 組み立てが終わるまで、いま出ているものは消さない。
+   * 先に消してしまうと、標高の取得とジオメトリの組み立てが終わるまでの
+   * 数秒間、高架が丸ごと画面から消える。カメラが動くたびにこれが起きると
+   * 高架が点滅しているように見える。
    */
   async render(structures: ElevatedStructure[], key: string): Promise<void> {
     if (this.loadedKey === key) return;
-    this.clear();
     this.loadedKey = key;
-    if (structures.length === 0) return;
+    // 空になるときだけは、待つものが無いのですぐ消す
+    // （clear() は loadedKey を消すので、消してから入れ直す）
+    if (structures.length === 0) {
+      this.clear();
+      this.loadedKey = key;
+      return;
+    }
 
     // 柱の予算は限られているので、カメラに近いものから使う。
     // 床版と壁は全部に付けるので、遠くの高架が消えることはない
@@ -400,6 +415,7 @@ export class ElevatedStructureLayer {
       frameBudget -= used;
     });
 
+    const next: Cesium.Primitive[] = [];
     for (const instances of [deckInstances, frameInstances, railInstances]) {
       if (instances.length === 0) continue;
       const primitive = new Cesium.Primitive({
@@ -416,8 +432,28 @@ export class ElevatedStructureLayer {
         asynchronous: true,
       });
       this.viewer.scene.primitives.add(primitive);
-      this.primitives.push(primitive);
+      next.push(primitive);
     }
+    this.pending = next;
+
+    // 組み立てたものが実際に描けるようになってから、古いものと入れ替える。
+    // asynchronous: true はワーカーで頂点を作るので、add した直後はまだ何も
+    // 出ていない。ここで待たずに古いほうを消すと、その空白がちらつきになる。
+    await waitForPrimitives(this.viewer.scene, next);
+
+    // 待っている間に次の要求（または clear）が来ていたら、いま作ったほうが古い。
+    // 表に出さずに捨てる（新しいほうが自分で入れ替える）
+    if (this.loadedKey !== key) {
+      for (const p of next) this.viewer.scene.primitives.remove(p);
+      if (this.pending === next) this.pending = [];
+      return;
+    }
+
+    const previous = this.primitives;
+    this.primitives = next;
+    this.pending = [];
+    for (const p of previous) this.viewer.scene.primitives.remove(p);
+    this.viewer.scene.requestRender();
   }
 
   /**
@@ -829,10 +865,13 @@ export class ElevatedStructureLayer {
   }
 
   clear(): void {
-    for (const p of this.primitives) {
+    // 組み立て中のものも消す。表示を切ったのに、数秒後に
+    // 出来上がったものが現れる、ということが起きないように
+    for (const p of [...this.primitives, ...this.pending]) {
       this.viewer.scene.primitives.remove(p);
     }
     this.primitives = [];
+    this.pending = [];
     this.loadedKey = null;
   }
 }
