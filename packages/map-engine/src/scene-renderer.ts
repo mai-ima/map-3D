@@ -25,7 +25,7 @@
 import * as Cesium from 'cesium';
 import type { BoxShape, ExtrudedShape, GroundRibbon, LatLng, SceneShape } from '@ijm/shared';
 import { distanceMeters } from '@ijm/shared';
-import { waitForPrimitives } from './primitive-swap';
+import { liveScene, waitForPrimitives } from './primitive-swap';
 
 type AnyPrimitive =
   | Cesium.Primitive
@@ -444,11 +444,19 @@ export class SceneShapeLayer {
       return;
     }
 
-    const scene = this.viewer.scene;
+    const scene = liveScene(this.viewer);
+    if (!scene) return;
     const next = buildPrimitives(scene, batchShapes(shapes), this.shadows);
 
     this.pending = next;
     await waitForPrimitives(scene, next);
+
+    // 待っている間に画面を離れていたら、もう触れない
+    if (!liveScene(this.viewer)) {
+      this.primitives = [];
+      this.pending = [];
+      return;
+    }
 
     // 待っている間に次の要求（または clear）が来ていたら、表に出さずに捨てる
     if (gen !== this.generation) {
@@ -467,8 +475,9 @@ export class SceneShapeLayer {
   clear(): void {
     // 世代を進めて、組み立て中のものが後から現れないようにする
     this.generation += 1;
-    for (const p of [...this.primitives, ...this.pending]) {
-      this.viewer.scene.primitives.remove(p);
+    const scene = liveScene(this.viewer);
+    if (scene) {
+      for (const p of [...this.primitives, ...this.pending]) scene.primitives.remove(p);
     }
     this.primitives = [];
     this.pending = [];

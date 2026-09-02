@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { BBox } from '@ijm/shared';
-import { attributionStrings } from '@ijm/shared';
+import { attributionStrings, parseBBoxParam } from '@ijm/shared';
 import { clipToBBox, fetchRoadScene, stitchRoads } from '@ijm/gis';
 
 /**
@@ -29,20 +29,12 @@ const MAX_ROADS = 2500;
 const MAX_RAILS = 300;
 const MAX_POINTS = 1200;
 
-function parseBBox(value: string | null): BBox | null {
-  if (!value) return null;
-  const parts = value.split(',').map(Number);
-  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
-  const [minLng, minLat, maxLng, maxLat] = parts;
-  if (minLng >= maxLng || minLat >= maxLat) return null;
-  // 道路は要素が多いので、構造物より狭い範囲に限る（約 3.5km 四方まで）
-  if (maxLng - minLng > 0.04 || maxLat - minLat > 0.032) return null;
-  return [minLng, minLat, maxLng, maxLat];
-}
+/** 道路は要素が多いので、構造物より狭い範囲に限る（約 3.5km 四方まで） */
+const LIMITS = { maxSpanLng: 0.04, maxSpanLat: 0.032 };
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const bbox = parseBBox(url.searchParams.get('bbox'));
+  const bbox = parseBBoxParam(url.searchParams.get('bbox'), LIMITS);
   if (!bbox) {
     return NextResponse.json(
       { error: 'bbox=minLng,minLat,maxLng,maxLat が必要です（約 3.5km 四方まで）' },

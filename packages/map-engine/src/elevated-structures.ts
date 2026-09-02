@@ -22,7 +22,7 @@ import {
   valueAt,
 } from '@ijm/gis';
 import { batchShapes, buildPrimitives } from './scene-renderer';
-import { waitForPrimitives } from './primitive-swap';
+import { liveScene, waitForPrimitives } from './primitive-swap';
 
 /**
  * 地形の標高を取る間隔 (m)。
@@ -95,9 +95,12 @@ export class ElevatedStructureLayer {
       frameBudget: MAX_FRAME_SHAPES,
     });
 
+    // 標高の取得を待っている間に画面を離れているかもしれない
+    const scene = liveScene(this.viewer);
+    if (!scene) return;
+
     // 床版・柱・防音壁を別のまとまりにする。
     // 防音壁は影を落とさない設定にできるよう分けてある
-    const scene = this.viewer.scene;
     const next: AnyPrimitive[] = [];
     for (const group of [shapes.deck, shapes.frame, shapes.parapet]) {
       if (group.length === 0) continue;
@@ -106,6 +109,12 @@ export class ElevatedStructureLayer {
     this.pending = next;
 
     await waitForPrimitives(scene, next);
+
+    if (!liveScene(this.viewer)) {
+      this.primitives = [];
+      this.pending = [];
+      return;
+    }
 
     // 待っている間に次の要求（または clear）が来ていたら、いま作ったほうが古い。
     // 表に出さずに捨てる（新しいほうが自分で入れ替える）
@@ -210,8 +219,9 @@ export class ElevatedStructureLayer {
   clear(): void {
     // 組み立て中のものも消す。表示を切ったのに、数秒後に
     // 出来上がったものが現れる、ということが起きないように
-    for (const p of [...this.primitives, ...this.pending]) {
-      this.viewer.scene.primitives.remove(p);
+    const scene = liveScene(this.viewer);
+    if (scene) {
+      for (const p of [...this.primitives, ...this.pending]) scene.primitives.remove(p);
     }
     this.primitives = [];
     this.pending = [];

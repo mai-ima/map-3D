@@ -11,7 +11,7 @@
 
 import * as Cesium from 'cesium';
 import type { BBox } from '@ijm/shared';
-import { waitForPrimitives } from './primitive-swap';
+import { liveScene, waitForPrimitives } from './primitive-swap';
 
 export interface FurniturePoint {
   lat: number;
@@ -197,8 +197,11 @@ export class StreetFurnitureLayer {
     if (instances.length === 0) return;
     // 標高を取っている間に次の要求（または clear）が来ていたら、作らない
     if (gen !== this.generation) return;
+    // 画面を離れていたら、もう触れない
+    const scene = liveScene(this.viewer);
+    if (!scene) return;
 
-    const next: Cesium.Primitive = this.viewer.scene.primitives.add(
+    const next: Cesium.Primitive = scene.primitives.add(
       new Cesium.Primitive({
         geometryInstances: instances,
         appearance: new Cesium.PerInstanceColorAppearance({
@@ -214,10 +217,16 @@ export class StreetFurnitureLayer {
     this.pending = next;
 
     // 実際に描けるようになってから入れ替える
-    await waitForPrimitives(this.viewer.scene, [next]);
+    await waitForPrimitives(scene, [next]);
+
+    if (!liveScene(this.viewer)) {
+      this.primitive = null;
+      this.pending = null;
+      return;
+    }
 
     if (gen !== this.generation) {
-      this.viewer.scene.primitives.remove(next);
+      scene.primitives.remove(next);
       if (this.pending === next) this.pending = null;
       return;
     }
@@ -225,20 +234,21 @@ export class StreetFurnitureLayer {
     const previous = this.primitive;
     this.primitive = next;
     this.pending = null;
-    if (previous) this.viewer.scene.primitives.remove(previous);
+    if (previous) scene.primitives.remove(previous);
     this.currentBBoxKey = StreetFurnitureLayer.bboxKey(bbox);
-    this.viewer.scene.requestRender();
+    scene.requestRender();
   }
 
   clear(): void {
     // 世代を進めて、組み立て中のものが後から現れないようにする
     this.generation += 1;
+    const scene = liveScene(this.viewer);
     if (this.pending) {
-      this.viewer.scene.primitives.remove(this.pending);
+      scene?.primitives.remove(this.pending);
       this.pending = null;
     }
     if (this.primitive) {
-      this.viewer.scene.primitives.remove(this.primitive);
+      scene?.primitives.remove(this.primitive);
       this.primitive = null;
     }
     this.currentBBoxKey = '';

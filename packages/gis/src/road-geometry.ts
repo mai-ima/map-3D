@@ -716,9 +716,36 @@ export function nearestRoad(
   let best: RoadPiece | null = null;
   let bestDistance = maxDistanceM;
 
+  // 緯度経度での許容差。これより離れた頂点しか持たない道は見るまでもない。
+  // 全線分の距離を真面目に測ると、道路 2,500 本で 1 回 4ms かかる
+  const cos = Math.cos((position.lat * Math.PI) / 180) || 1;
+  const dLat = maxDistanceM / 111_320;
+  const dLng = maxDistanceM / (111_320 * cos);
+
   for (const road of roads) {
     // 歩道や横断歩道に車の制限速度は無い
     if (ROAD_SPEC[road.cls].lanes === 0) continue;
+
+    // 経路を囲む矩形で早めに落とす。線分ごとの計算より桁違いに安い
+    let minLat = Infinity;
+    let maxLat = -Infinity;
+    let minLng = Infinity;
+    let maxLng = -Infinity;
+    for (const p of road.path) {
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lng < minLng) minLng = p.lng;
+      if (p.lng > maxLng) maxLng = p.lng;
+    }
+    if (
+      position.lat < minLat - dLat ||
+      position.lat > maxLat + dLat ||
+      position.lng < minLng - dLng ||
+      position.lng > maxLng + dLng
+    ) {
+      continue;
+    }
+
     for (let i = 0; i < road.path.length - 1; i += 1) {
       const d = distanceToSegment(position, road.path[i], road.path[i + 1]);
       if (d < bestDistance) {

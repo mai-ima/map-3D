@@ -38,12 +38,35 @@ export interface AwaitablePrimitive {
 }
 
 /**
+ * まだ触ってよい scene を返す。破棄済みなら null。
+ *
+ * 組み立ては数秒かかるので、その間に画面を離れたり都市を切り替えたりして
+ * viewer が破棄されることがある。破棄後の scene に触ると例外になり、
+ * 「読み込み中に操作すると落ちる」という形で出る。
+ * 非同期の待ち合わせをまたいだら、必ずこれで確かめてから使う。
+ */
+export function liveScene(viewer: Cesium.Viewer): Cesium.Scene | null {
+  if (!viewer || viewer.isDestroyed()) return null;
+  const scene = viewer.scene;
+  if (!scene || scene.isDestroyed()) return null;
+  return scene;
+}
+
+/** scene が生きていれば描画を要求する */
+export function requestRenderIfAlive(viewer: Cesium.Viewer): void {
+  liveScene(viewer)?.requestRender();
+}
+
+/**
  * プリミティブが描けるようになるまで待つ。
  *
  * requestRenderMode では描画が走らないと組み立ても進まないので、
  * 待っている間はこちらから描画を要求する。
  *
- * @returns 全部が ready になったら true、上限に達したら false
+ * 待っている最中に scene が破棄されたら、そこで待つのをやめる。
+ * 破棄済みの scene に requestRender すると例外になる。
+ *
+ * @returns 全部が ready になったら true、上限に達したか破棄されたら false
  */
 export async function waitForPrimitives(
   scene: Cesium.Scene,
@@ -57,6 +80,7 @@ export async function waitForPrimitives(
 
   while (pending()) {
     if (Date.now() >= deadline) return false;
+    if (scene.isDestroyed()) return false;
     scene.requestRender();
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }

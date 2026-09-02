@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import type { BBox } from '@ijm/shared';
-import { attributionStrings } from '@ijm/shared';
+import { attributionStrings, parseBBoxParam } from '@ijm/shared';
 import { OverpassUnavailableError, fetchStreetFurniture } from '@ijm/gis';
 
 export const runtime = 'nodejs';
@@ -10,28 +9,20 @@ export const maxDuration = 45;
  * 街路樹・街灯・ベンチの「実在位置」を OSM から取得する。
  * 位置を捏造しないための唯一の入口。
  */
+/**
+ * 広すぎる範囲は Overpass に負荷をかけるので拒否する。
+ * 面積で見ていたが、南北と東西が逆転した bbox では面積が負になり、
+ * 判定をすり抜けていた。辺の長さで見る（約 15km 四方まで）
+ */
+const LIMITS = { maxSpanLng: 0.17, maxSpanLat: 0.14 };
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const raw = url.searchParams.get('bbox');
-  if (!raw) {
+  const bbox = parseBBoxParam(url.searchParams.get('bbox'), LIMITS);
+  if (!bbox) {
     return NextResponse.json(
-      { error: 'bbox=minLng,minLat,maxLng,maxLat が必要です' },
+      { error: 'bbox=minLng,minLat,maxLng,maxLat が必要です（約 15km 四方まで）' },
       { status: 400 },
-    );
-  }
-
-  const parts = raw.split(',').map(Number);
-  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
-    return NextResponse.json({ error: 'bbox の形式が不正です' }, { status: 400 });
-  }
-  const bbox = parts as BBox;
-
-  // 広すぎる範囲は Overpass に負荷をかけるため拒否する
-  const areaDeg = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]);
-  if (areaDeg > 0.02) {
-    return NextResponse.json(
-      { points: [], degraded: true, message: '範囲が広すぎます。ズームインしてください。' },
-      { status: 200 },
     );
   }
 

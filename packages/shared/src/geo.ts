@@ -292,3 +292,38 @@ export function headingAtIndex(coords: [number, number][], index: number, lookAh
   const b = coords[j === i ? Math.min(i + 1, coords.length - 1) : j];
   return bearingDegrees({ lng: a[0], lat: a[1] }, { lng: b[0], lat: b[1] });
 }
+
+/** bbox をクエリ文字列から読むときの制限 */
+export interface BBoxLimits {
+  /** 東西の幅の上限 (度) */
+  maxSpanLng?: number;
+  /** 南北の高さの上限 (度) */
+  maxSpanLat?: number;
+}
+
+/**
+ * クエリ文字列を bbox として読む。読めなければ null。
+ *
+ * 3 つの API（roads / structures / furniture）が同じ検証をしていたが、
+ * furniture だけ抜けがあり、南北や東西が逆転した bbox や、
+ * 地球上に存在しない座標、50 度四方といった巨大な範囲を通していた。
+ * 逆転していると面積が負になり、「広すぎる」の判定をすり抜ける。
+ *
+ * 検証はここ 1 か所に集約する。
+ */
+export function parseBBoxParam(value: string | null, limits: BBoxLimits = {}): BBox | null {
+  if (!value) return null;
+  const parts = value.split(',').map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+
+  const [minLng, minLat, maxLng, maxLat] = parts;
+  // 地球上に無い座標
+  if (minLng < -180 || maxLng > 180 || minLat < -90 || maxLat > 90) return null;
+  // southwest と northeast が逆
+  if (minLng >= maxLng || minLat >= maxLat) return null;
+
+  if (limits.maxSpanLng !== undefined && maxLng - minLng > limits.maxSpanLng) return null;
+  if (limits.maxSpanLat !== undefined && maxLat - minLat > limits.maxSpanLat) return null;
+
+  return [minLng, minLat, maxLng, maxLat];
+}

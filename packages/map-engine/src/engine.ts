@@ -557,6 +557,7 @@ export class MapEngine {
    * 道路が地面に張り付いたままになる。OSM の bridge / layer から補う。
    */
   async showElevatedStructures(structures: ElevatedStructure[], key: string): Promise<void> {
+    if (this.destroyed) return;
     // 中心は組み立てを始めた時点のカメラ位置で控える。
     // 組み立ての完了後に取ると、その間に動いたぶんだけ中心がずれ、
     // 「もう範囲の外に出ているのに取り直さない」ということが起きる
@@ -567,6 +568,7 @@ export class MapEngine {
   }
 
   clearElevatedStructures(): void {
+    if (this.destroyed) return;
     this.structures.clear();
     this.structuresCentre = null;
     this.requestRender();
@@ -583,6 +585,7 @@ export class MapEngine {
    * 点ごとに問い合わせると要求が数千件になる。
    */
   async showRoadScene(scene: RoadScene, bbox: BBox, key: string): Promise<void> {
+    if (this.destroyed) return;
     // 上空から見ているときは区画線を組み立てない（見えないものは描かない）。
     // 詳細度を鍵に含めるので、高度が変われば組み直しが走る
     const detail = detailForHeight(this.viewer.camera.positionCartographic?.height ?? 0);
@@ -624,12 +627,14 @@ export class MapEngine {
    * （呼び出し側が持っている道路データをそのまま渡し直せばよい）。
    */
   needsRoadDetailChange(): boolean {
+    if (this.destroyed) return false;
     if (this.roadsCentre === null) return false;
     const height = this.viewer.camera.positionCartographic?.height ?? 0;
     return detailForHeight(height).laneMarkings !== this.roadsDetailFull;
   }
 
   clearRoadScene(): void {
+    if (this.destroyed) return;
     this.roads.clear();
     this.roadsCentre = null;
     this.roadsDetailFull = true;
@@ -643,6 +648,7 @@ export class MapEngine {
    * 街を移動するとその範囲から出てしまう。
    */
   needsRoadRefresh(marginMeters = 500): boolean {
+    if (this.destroyed) return false;
     if (!this.roadsCentre) return false;
     const now = this.cameraGroundPosition();
     if (!now) return false;
@@ -657,6 +663,7 @@ export class MapEngine {
    * 中心から離れたら取り直す。
    */
   needsStructureRefresh(marginMeters = 700): boolean {
+    if (this.destroyed) return false;
     if (!this.structuresCentre) return false;
     const now = this.cameraGroundPosition();
     if (!now) return false;
@@ -665,6 +672,7 @@ export class MapEngine {
 
   /** カメラ直下の地表座標（地形との交差計算を伴わない） */
   private cameraGroundPosition(): LatLng | null {
+    if (this.destroyed) return null;
     const carto = this.viewer.camera.positionCartographic;
     if (!carto) return null;
     return {
@@ -1178,6 +1186,7 @@ export class MapEngine {
   // ---- 装飾（街路樹・街灯） -------------------------------------------
 
   async loadStreetFurniture(points: FurniturePoint[], bbox: [number, number, number, number]): Promise<void> {
+    if (this.destroyed) return;
     if (this.quality.maxFurniture <= 0) return;
     if (this.furniture.hasLoaded(bbox)) return;
     await this.furniture.build(points, bbox);
@@ -1380,6 +1389,7 @@ export class MapEngine {
 
   /** 現在のビューの bbox（POI や街路樹の取得範囲に使う） */
   getViewBBox(marginMeters = 0): [number, number, number, number] | null {
+    if (this.destroyed) return null;
     const rect = this.viewer.camera.computeViewRectangle();
     if (!rect) return null;
     const bbox: [number, number, number, number] = [
@@ -1411,6 +1421,9 @@ export class MapEngine {
      */
     snapMeters = 0,
   ): [number, number, number, number] | null {
+    // 起動直後の遅延読み込みなど、数秒待ってから呼ばれる経路がある。
+    // その間に画面を離れていると camera はもう無い
+    if (this.destroyed) return null;
     const carto = this.viewer.camera.positionCartographic;
     if (!carto) return null;
     let lat = Cesium.Math.toDegrees(carto.latitude);
@@ -1427,6 +1440,11 @@ export class MapEngine {
 
   requestRender(): void {
     if (!this.destroyed) this.viewer.scene.requestRender();
+  }
+
+  /** 破棄済みか。非同期の待ち合わせをまたいだら確認する */
+  get isDestroyed(): boolean {
+    return this.destroyed;
   }
 
   destroy(): void {

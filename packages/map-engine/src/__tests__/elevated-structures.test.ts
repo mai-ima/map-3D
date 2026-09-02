@@ -114,7 +114,9 @@ async function build(structures: ElevatedStructure[]): Promise<Measured[][]> {
         remove: () => true,
       },
       requestRender: () => {},
+      isDestroyed: () => false,
     },
+    isDestroyed: () => false,
     terrainProvider: new Cesium.EllipsoidTerrainProvider(),
   } as unknown as Cesium.Viewer;
 
@@ -336,18 +338,28 @@ test('斜めに走る高架でも柱が構造と平行に立つ', async () => {
 function swapHarness() {
   const live = new Set<Cesium.Primitive>();
   let ready = true;
+  // 破棄後に触ったら分かるよう、mock 側で例外を投げる
+  let destroyed = false;
   const viewer = {
     scene: {
       primitives: {
         add: (p: Cesium.Primitive) => {
+          if (destroyed) throw new Error('破棄済みの scene に add した');
           live.add(p);
           Object.defineProperty(p, 'ready', { get: () => ready, configurable: true });
           return p;
         },
-        remove: (p: Cesium.Primitive) => live.delete(p),
+        remove: (p: Cesium.Primitive) => {
+          if (destroyed) throw new Error('破棄済みの scene から remove した');
+          return live.delete(p);
+        },
       },
-      requestRender: () => {},
+      requestRender: () => {
+        if (destroyed) throw new Error('破棄済みの scene に requestRender した');
+      },
+      isDestroyed: () => destroyed,
     },
+    isDestroyed: () => destroyed,
     terrainProvider: new Cesium.EllipsoidTerrainProvider(),
   } as unknown as Cesium.Viewer;
 
@@ -356,6 +368,10 @@ function swapHarness() {
     viewer,
     setReady: (v: boolean) => {
       ready = v;
+    },
+    /** viewer を破棄する（都市の切り替えや画面を離れたときに起きる） */
+    destroy: () => {
+      destroyed = true;
     },
     /** 条件が満たされるまで待つ（最大 2 秒） */
     async until(cond: () => boolean): Promise<void> {
@@ -434,4 +450,29 @@ test('待っている間に次の要求が来たら、古いほうは表に出�
   }
   assert.ok(h.live.size > 0, '新しいほうまで消えている');
   assert.equal(layer.count, h.live.size, '把握している数と実際が合わない');
+});
+
+test('組み立て中に画面を離れても落ちない', async () => {
+  // 標高の取得と頂点の生成で数秒かかる。その間に都市を切り替えたり
+  // 画面を離れたりすると viewer が破棄される。破棄後の scene に触ると
+  // 例外になり、「読み込み中に操作すると落ちる」という形で出る
+  const h = swapHarness();
+  const layer = new ElevatedStructureLayer(h.viewer);
+
+  h.setReady(false);
+  const pending = layer.render([railViaduct], 'a');
+  await h.until(() => h.live.size > 0);
+
+  h.destroy();
+  h.setReady(true);
+  // 例外が投げられないこと
+  await pending;
+});
+
+test('破棄されたあとに clear しても落ちない', async () => {
+  const h = swapHarness();
+  const layer = new ElevatedStructureLayer(h.viewer);
+  await layer.render([railViaduct], 'a');
+  h.destroy();
+  layer.clear();
 });

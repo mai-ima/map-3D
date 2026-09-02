@@ -51,6 +51,12 @@ const OFF_ROUTE_GRACE_MS = 4000;
 const REROUTE_COOLDOWN_MS = 15000;
 /** 音声案内のオン/オフを覚えておくキー */
 const VOICE_STORAGE_KEY = 'ijm:voice';
+/**
+ * 制限速度を引き直す間隔 (ms)。
+ * 標識の値は走っている道が変わったときにしか変わらないので、
+ * 毎フレーム探し直す必要はない。
+ */
+const SPEED_LIMIT_INTERVAL_MS = 700;
 
 export default function AppShell() {
   const engineRef = useRef<MapEngine | null>(null);
@@ -104,6 +110,8 @@ export default function AppShell() {
    * tick は毎秒走るので、再生成されない ref に置く。
    */
   const roadPiecesRef = useRef<RoadPiece[]>([]);
+  /** 最後に制限速度を引いた時刻。毎フレーム引かないための間引き */
+  const lastSpeedCheckRef = useRef(0);
   /**
    * 最後に読み込んだ道路のひとまとまりと、その範囲。
    * 上空へ引いたときに区画線を落とす切り替えで、
@@ -152,9 +160,17 @@ export default function AppShell() {
 
     // いま走っている道の制限速度。
     // OSM に maxspeed が入っている道の上にいるときだけ出す。
-    // 種別からの推測はしない（標識に無い数字を見せることになる）
-    const road = nearestRoad(roadPiecesRef.current, result.progress.rawPosition);
-    setSpeedLimit(road?.speedLimit ?? null);
+    // 種別からの推測はしない（標識に無い数字を見せることになる）。
+    //
+    // tick は毎フレーム走るが、標識の値が毎フレーム変わることはない。
+    // 道路 533 本で 1 回 0.86ms かかるので、毎フレーム引くと 60fps で
+    // CPU の 5% を使ってしまう（東京の密度なら 20%）
+    const now = performance.now();
+    if (now - lastSpeedCheckRef.current >= SPEED_LIMIT_INTERVAL_MS) {
+      lastSpeedCheckRef.current = now;
+      const road = nearestRoad(roadPiecesRef.current, result.progress.rawPosition);
+      setSpeedLimit(road?.speedLimit ?? null);
+    }
 
     // 音声案内（Web Speech API）。同じ案内を二重に読み上げない。
     const announcement = result.announcement;

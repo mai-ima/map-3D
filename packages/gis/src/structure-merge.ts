@@ -568,10 +568,15 @@ export function mergeParallel(structures: ElevatedStructure[]): ElevatedStructur
       Math.max(...members.map((i) => gapLimit(base, structures[i]))),
     );
 
-    for (const segment of segments) {
+    segments.forEach((segment, si) => {
       const indices = segment.members.map((m) => ordered[m]);
       out.push({
         ...base,
+        // 幅が変わるところで区間に分けるので、1 本の高架から複数できる。
+        // id をそのままコピーすると重複し、クリックしたときにどれを
+        // 指しているのか決まらなくなる。区間ごとに連番を付ける。
+        // 元の way は sourceIds から辿れる
+        id: segments.length > 1 ? `${base.id}@${si}` : base.id,
         // 名前は付いているものを優先する（無名の側線に引きずられないように）
         name: indices.map((i) => structures[i].name).find(Boolean) ?? base.name,
         path: segment.path.map(from),
@@ -579,7 +584,7 @@ export function mergeParallel(structures: ElevatedStructure[]): ElevatedStructur
         tracks: base.kind.startsWith('rail') ? Math.max(1, indices.length) : base.tracks,
         sourceIds: indices.flatMap((i) => structures[i].sourceIds ?? [structures[i].id]),
       });
-    }
+    });
     // どの区間にも入らなかったものは、あとでもう一度まとめ直す。
     // 基準線から離れていて弾かれただけで、取りこぼし同士は
     // 隣り合っていることがある（浜松では 1.4km の新幹線 2 本がこれだった）

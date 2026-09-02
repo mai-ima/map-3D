@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { BBox } from '@ijm/shared';
-import { attributionStrings } from '@ijm/shared';
+import { attributionStrings, parseBBoxParam } from '@ijm/shared';
 import { fetchElevatedStructures } from '@ijm/gis';
 
 /**
@@ -14,20 +14,12 @@ import { fetchElevatedStructures } from '@ijm/gis';
 export const runtime = 'nodejs';
 export const maxDuration = 45;
 
-function parseBBox(value: string | null): BBox | null {
-  if (!value) return null;
-  const parts = value.split(',').map(Number);
-  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
-  const [minLng, minLat, maxLng, maxLat] = parts;
-  if (minLng >= maxLng || minLat >= maxLat) return null;
-  // 広すぎる範囲は Overpass に負担をかけるので拒否する（約 6km 四方まで）
-  if (maxLng - minLng > 0.07 || maxLat - minLat > 0.06) return null;
-  return [minLng, minLat, maxLng, maxLat];
-}
+/** 広すぎる範囲は Overpass に負担をかけるので拒否する（約 6km 四方まで） */
+const LIMITS = { maxSpanLng: 0.07, maxSpanLat: 0.06 };
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const bbox = parseBBox(url.searchParams.get('bbox'));
+  const bbox = parseBBoxParam(url.searchParams.get('bbox'), LIMITS);
   if (!bbox) {
     return NextResponse.json(
       { error: 'bbox=minLng,minLat,maxLng,maxLat が必要です（約 6km 四方まで）' },

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BBox } from '../types';
-import { bboxAround, bboxIntersects, distanceMeters } from '../geo';
+import { bboxAround, bboxIntersects, distanceMeters, parseBBoxParam } from '../geo';
 import { CITIES, getCity } from '../cities';
 
 test('bboxIntersects は重なりを正しく判定する', () => {
@@ -51,4 +51,38 @@ test('全都市の bbox は中心を含む', () => {
       `${city.id}: 中心の緯度が bbox の外`,
     );
   }
+});
+
+test('bbox のクエリを読むときに不正なものを弾く', () => {
+  // 3 つの API（roads / structures / furniture）が同じ検証をしていたが、
+  // furniture だけ抜けがあり、逆転した bbox や巨大な範囲を通していた。
+  // 面積で「広すぎる」を見ていたため、逆転すると面積が負になってすり抜ける
+  assert.deepEqual(parseBBoxParam('137.72,34.69,137.74,34.71'), [137.72, 34.69, 137.74, 34.71]);
+
+  assert.equal(parseBBoxParam(null), null, '未指定');
+  assert.equal(parseBBoxParam(''), null, '空文字');
+  assert.equal(parseBBoxParam('abc'), null, '数値でない');
+  assert.equal(parseBBoxParam('1,2,3'), null, '3 つしかない');
+  assert.equal(parseBBoxParam('1,2,3,4,5'), null, '5 つある');
+  assert.equal(parseBBoxParam('NaN,NaN,NaN,NaN'), null, 'NaN');
+
+  // 地球上に存在しない座標
+  assert.equal(parseBBoxParam('200,100,201,101'), null, '経度 200 度');
+  assert.equal(parseBBoxParam('-181,0,-180,1'), null, '経度 -181 度');
+  assert.equal(parseBBoxParam('0,-91,1,-90'), null, '緯度 -91 度');
+
+  // 南西と北東が逆
+  assert.equal(parseBBoxParam('137.74,34.71,137.72,34.69'), null, '完全に逆');
+  assert.equal(parseBBoxParam('137.74,34.69,137.72,34.71'), null, '経度だけ逆');
+  assert.equal(parseBBoxParam('137.72,34.71,137.74,34.69'), null, '緯度だけ逆');
+  assert.equal(parseBBoxParam('137.72,34.69,137.72,34.71'), null, '幅が 0');
+});
+
+test('bbox の大きさに上限をかけられる', () => {
+  const limits = { maxSpanLng: 0.04, maxSpanLat: 0.032 };
+  assert.ok(parseBBoxParam('137.72,34.69,137.75,34.715', limits), '上限内');
+  assert.equal(parseBBoxParam('137.72,34.69,137.78,34.715', limits), null, '東西が広すぎる');
+  assert.equal(parseBBoxParam('137.72,34.69,137.75,34.75', limits), null, '南北が広すぎる');
+  // 上限を渡さなければ大きさは見ない
+  assert.ok(parseBBoxParam('100,20,150,45'), '上限なしなら通る');
 });

@@ -33,18 +33,28 @@ const trees: FurniturePoint[] = Array.from({ length: 12 }, (_, i) => ({
 function harness() {
   const live = new Set<Cesium.Primitive>();
   let ready = true;
+  // 破棄後に触ったら分かるよう、mock 側で例外を投げる
+  let destroyed = false;
   const viewer = {
     scene: {
       primitives: {
         add: (p: Cesium.Primitive) => {
+          if (destroyed) throw new Error('破棄済みの scene に add した');
           live.add(p);
           Object.defineProperty(p, 'ready', { get: () => ready, configurable: true });
           return p;
         },
-        remove: (p: Cesium.Primitive) => live.delete(p),
+        remove: (p: Cesium.Primitive) => {
+          if (destroyed) throw new Error('破棄済みの scene から remove した');
+          return live.delete(p);
+        },
       },
-      requestRender: () => {},
+      requestRender: () => {
+        if (destroyed) throw new Error('破棄済みの scene に requestRender した');
+      },
+      isDestroyed: () => destroyed,
     },
+    isDestroyed: () => destroyed,
     terrainProvider: new Cesium.EllipsoidTerrainProvider(),
   } as unknown as Cesium.Viewer;
 
@@ -53,6 +63,10 @@ function harness() {
     viewer,
     setReady: (v: boolean) => {
       ready = v;
+    },
+    /** viewer を破棄する（都市の切り替えや画面を離れたときに起きる） */
+    destroy: () => {
+      destroyed = true;
     },
     /** 条件が満たされるまで待つ（最大 2 秒） */
     async until(cond: () => boolean): Promise<void> {
@@ -132,4 +146,29 @@ test('同じ範囲を続けて要求しても、いったん消えることは�
   h.setReady(true);
   await again;
   assert.equal(h.live.size, 1);
+});
+
+test('組み立て中に画面を離れても落ちない', async () => {
+  // 組み立ては地形の標高取得を挟むので数秒かかる。その間に都市を切り替えたり
+  // 画面を離れたりすると viewer が破棄される。破棄後の scene に触ると
+  // 例外になり、「読み込み中に操作すると落ちる」という形で出る
+  const h = harness();
+  const layer = new StreetFurnitureLayer(h.viewer, 500);
+
+  h.setReady(false);
+  const pending = layer.build(trees, BBOX);
+  await h.until(() => h.live.size > 0);
+
+  h.destroy();
+  h.setReady(true);
+  // 例外が投げられないこと。ここで落ちるなら実機でも落ちる
+  await pending;
+});
+
+test('破棄されたあとに clear しても落ちない', async () => {
+  const h = harness();
+  const layer = new StreetFurnitureLayer(h.viewer, 500);
+  await layer.build(trees, BBOX);
+  h.destroy();
+  layer.clear();
 });
