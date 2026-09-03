@@ -234,6 +234,9 @@ export class MapEngine {
   private structuresCentre: LatLng | null = null;
   /** 道路を読み込んだときのカメラ位置。ここから離れたら取り直す */
   private roadsCentre: LatLng | null = null;
+  /** 周辺施設・街路樹を最後に取ったときのカメラ直下の座標 */
+  private poisCentre: LatLng | null = null;
+  private furnitureCentre: LatLng | null = null;
   /** いま区画線まで描いているか（上空では描かない） */
   private roadsDetailFull = true;
   private lastSseChangeAt = 0;
@@ -666,11 +669,41 @@ export class MapEngine {
    * 中心から離れたら取り直す。
    */
   needsStructureRefresh(marginMeters = 700): boolean {
-    if (this.destroyed) return false;
-    if (!this.structuresCentre) return false;
+    return this.movedFrom(this.structuresCentre, marginMeters);
+  }
+
+  /**
+   * 周辺施設（POI）を取り直すべきか。
+   *
+   * POI は「画面中心から半径 800m」で取っている。街を移動すると
+   * その範囲から出て、施設だけが元の場所に残ったままになる。
+   * 以前はカメラの移動を見ていなかったため、選び直すまで
+   * まったく追従しなかった。
+   */
+  needsPoiRefresh(marginMeters = 400): boolean {
+    return this.movedFrom(this.poisCentre, marginMeters);
+  }
+
+  /** 街路樹・街灯を取り直すべきか */
+  needsFurnitureRefresh(marginMeters = 500): boolean {
+    return this.movedFrom(this.furnitureCentre, marginMeters);
+  }
+
+  /** 最後に取った場所から離れたか。まだ一度も取っていなければ false */
+  private movedFrom(centre: LatLng | null, marginMeters: number): boolean {
+    if (this.destroyed || !centre) return false;
     const now = this.cameraGroundPosition();
     if (!now) return false;
-    return distanceMeters(this.structuresCentre, now) > marginMeters;
+    return distanceMeters(centre, now) > marginMeters;
+  }
+
+  /** 周辺施設を取った位置を控える（次に取り直すかの判定に使う） */
+  markPoisLoaded(): void {
+    this.poisCentre = this.cameraGroundPosition();
+  }
+
+  markFurnitureLoaded(): void {
+    this.furnitureCentre = this.cameraGroundPosition();
   }
 
   /** カメラ直下の地表座標（地形との交差計算を伴わない） */

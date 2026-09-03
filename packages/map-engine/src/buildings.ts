@@ -445,6 +445,18 @@ export class BuildingLayerManager {
     // 都市の外に出た場合は読み直さない（都市の切り替えは loadCity が担当する）
     if (!bboxIntersects(next, city.bbox)) return false;
 
+    /**
+     * いま出ているものが、移動先でも役に立つか。
+     *
+     * 少し動いただけなら、新しいタイルが出そろうまで古いほうを残すのが正しい
+     * （消してから作ると、その間だけ街から建物が消える）。
+     *
+     * 一方、検索や地区の切り替えで遠くへ飛んだときは、古いタイルは
+     * 移動先を 1 つも覆っていない。それを抱えて最大 8 秒待つと、
+     * その間ずっと建物が出てこない。役に立たないなら待たずに入れ替える。
+     */
+    const stillUseful = bboxIntersects(this.activeBBox, next);
+
     this.refreshing = true;
     try {
       const tileset = await Cesium.Cesium3DTileset.fromUrl(
@@ -482,7 +494,7 @@ export class BuildingLayerManager {
       // 中身が空。ここで古いほうをすぐ消すと、読み込みが終わるまでの
       // 数秒間、街から建物が丸ごと消えてしまう。
       // カメラが 2km ほど動くたびにこれが起きていた。
-      await this.waitForFirstTiles(tileset);
+      if (stillUseful) await this.waitForFirstTiles(tileset);
       // 待っている間（最大で TILE_SWAP_TIMEOUT_MS）に画面を離れられることがある。
       // 破棄済みの scene に触ると例外になるので、待ったあとに取り直す
       const after = liveScene(this.viewer);

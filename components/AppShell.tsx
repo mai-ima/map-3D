@@ -105,6 +105,11 @@ export default function AppShell() {
   const [roadsLoading, setRoadsLoading] = useState(false);
   const roadsEnabledRef = useRef(false);
   const roadsLoadingRef = useRef(false);
+  /** いま選ばれている周辺施設のカテゴリ。カメラ追従の判定に使う */
+  const poiCategoriesRef = useRef<string[]>([]);
+  const poiLoadingRef = useRef(false);
+  const furnitureEnabledRef = useRef(false);
+  const furnitureLoadingRef = useRef(false);
   /**
    * 読み込んだ道路。走行中の制限速度を引くために持っておく。
    * tick は毎秒走るので、再生成されない ref に置く。
@@ -250,6 +255,12 @@ export default function AppShell() {
   useEffect(() => {
     roadsLoadingRef.current = roadsLoading;
   }, [roadsLoading]);
+  useEffect(() => {
+    poiCategoriesRef.current = poiCategories;
+  }, [poiCategories]);
+  useEffect(() => {
+    furnitureEnabledRef.current = furnitureEnabled;
+  }, [furnitureEnabled]);
 
   // ?debug=1 で描画診断パネルを表示する（実機での負荷を確認するため）
   useEffect(() => {
@@ -462,6 +473,45 @@ export default function AppShell() {
     });
   }, []);
 
+  /**
+   * 周辺施設を、いまの画面中心で取り直す。
+   *
+   * カメラの移動からも呼ぶ。以前は種別を選び直したときにしか読んでおらず、
+   * 街を移動すると施設だけが元の場所に取り残されていた。
+   *
+   * @param quiet 追従で呼ばれたとき。結果が 0 件でも通知しない
+   */
+  const loadPoisForView = useCallback(
+    async (categories: string[], quiet = false) => {
+      const engine = engineRef.current;
+      if (!engine || categories.length === 0) return;
+      if (poiLoadingRef.current) return;
+
+      const center = engine.getViewCenter();
+      if (!center) return;
+
+      poiLoadingRef.current = true;
+      try {
+        const res = await fetchPois(center, categories, 800);
+        if (engine.isDestroyed) return;
+        if (res.degraded) {
+          if (!quiet) notify(res.message ?? 'POI データを取得できませんでした');
+          return;
+        }
+        engine.showPois(res.pois);
+        engine.markPoisLoaded();
+        if (res.pois.length === 0 && !quiet) {
+          notify('この範囲では該当する施設が見つかりませんでした');
+        }
+      } catch (error) {
+        if (!quiet) notify((error as Error).message);
+      } finally {
+        poiLoadingRef.current = false;
+      }
+    },
+    [notify],
+  );
+
   const togglePoi = useCallback(
     async (category: string) => {
       const engine = engineRef.current;
@@ -476,22 +526,50 @@ export default function AppShell() {
         engine.clearPois();
         return;
       }
+      await loadPoisForView(next);
+    },
+    [loadPoisForView, poiCategories],
+  );
 
-      const center = engine.getViewCenter();
-      if (!center) return;
+  /**
+   * 街路樹・街灯を、いまの表示範囲で取り直す。
+   * こちらもカメラの移動から呼ぶ（以前は手動で入れ直すまで付いてこなかった）。
+   */
+  const loadFurnitureForView = useCallback(
+    async (quiet = false) => {
+      const engine = engineRef.current;
+      if (!engine || furnitureLoadingRef.current) return;
+      const bbox = engine.getViewBBox();
+      if (!bbox) {
+        if (!quiet) notify('表示範囲を特定できませんでした。ズームインしてください。');
+        return;
+      }
+
+      furnitureLoadingRef.current = true;
       try {
-        const res = await fetchPois(center, next, 800);
-        if (res.degraded) {
-          notify(res.message ?? 'POI データを取得できませんでした');
+        const res = await fetchStreetFurniture(bbox);
+        if (engine.isDestroyed) return;
+        if (res.degraded || res.points.length === 0) {
+          if (!quiet) {
+            notify(
+              res.degraded
+                ? '街路樹のデータを取り寄せられませんでした。少し待ってお試しください。'
+                : 'この範囲には街路樹・街灯が OSM に登録されていません',
+            );
+          }
           return;
         }
-        engine.showPois(res.pois);
-        if (res.pois.length === 0) notify('この範囲では該当する施設が見つかりませんでした');
+        await engine.loadStreetFurniture(res.points, bbox);
+        if (engine.isDestroyed) return;
+        engine.markFurnitureLoaded();
+        setFurnitureEnabled(true);
       } catch (error) {
-        notify((error as Error).message);
+        if (!quiet) notify((error as Error).message);
+      } finally {
+        furnitureLoadingRef.current = false;
       }
     },
-    [notify, poiCategories],
+    [notify],
   );
 
   /**
@@ -585,6 +663,20 @@ export default function AppShell() {
         const held = roadSceneRef.current;
         if (held) void engine.showRoadScene(held.scene, held.bbox, held.key);
       }
+    }
+    // 周辺施設と街路樹も付いてこさせる。
+    // どちらも「カメラ周辺ぶんだけ」取っているので、
+    // 追従させないと移動した先では何も出ない
+    const categories = poiCategoriesRef.current;
+    if (categories.length > 0 && !poiLoadingRef.current && engine.needsPoiRefresh()) {
+      void loadPoisForView(categories, true);
+    }
+    if (
+      furnitureEnabledRef.current &&
+      !furnitureLoadingRef.current &&
+      engine.needsFurnitureRefresh()
+    ) {
+      void loadFurnitureForView(true);
     }
     // loadStructuresForView / loadRoadsForView は再生成されない
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -692,25 +784,8 @@ export default function AppShell() {
       setFurnitureEnabled(false);
       return;
     }
-
-    const bbox = engine.getViewBBox();
-    if (!bbox) {
-      notify('表示範囲を特定できませんでした。ズームインしてください。');
-      return;
-    }
-
-    try {
-      const res = await fetchStreetFurniture(bbox);
-      if (res.degraded || res.points.length === 0) {
-        notify('街路樹・街灯のデータを取得できませんでした（OSM に登録がないか、範囲が広すぎます）');
-        return;
-      }
-      await engine.loadStreetFurniture(res.points, bbox);
-      setFurnitureEnabled(true);
-    } catch (error) {
-      notify((error as Error).message);
-    }
-  }, [furnitureEnabled, notify]);
+    await loadFurnitureForView();
+  }, [furnitureEnabled, loadFurnitureForView]);
 
   const changeHour = useCallback((next: number) => {
     setHour(next);
