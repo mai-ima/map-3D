@@ -23,7 +23,9 @@
     "docker:down": "docker compose -f docker/docker-compose.yml down",
     "api:start": "tsx apps/api/src/server.ts",
     "survey:lod": "node scripts/preprocessing/survey-lod.mjs",
-    "survey:city": "node scripts/preprocessing/survey-city.mjs"
+    "survey:city": "node scripts/preprocessing/survey-city.mjs",
+    "survey:roads": "tsx scripts/preprocessing/survey-roads.mts",
+    "survey:road-timing": "tsx scripts/preprocessing/survey-road-timing.mts"
   },
   "dependencies": {
     "cesium": "1.144.0",

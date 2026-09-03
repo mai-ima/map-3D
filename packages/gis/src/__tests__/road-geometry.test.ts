@@ -762,3 +762,77 @@ test('信号の無い交差点には停止線を引かない', () => {
   const found = buildIntersections([mainRoad, side]);
   assert.equal(stopLineShapes(side, found).length, 0);
 });
+
+/**
+ * 信号と交差点の突き合わせ。
+ *
+ * 素朴に「すべての信号との距離を測る」と、交差点候補 × 信号数の掛け算になる。
+ * 東京駅周辺 1km 四方の実測（2026-09）では候補が約 3 万点・信号が約 400 個で、
+ * 1,200 万回の距離計算になり、これだけで 13.7ms（1 フレームの 8 割）かかっていた。
+ *
+ * 25m の格子に入れて周囲 9 マスだけ見る形にしたので、
+ * 「格子の境目にある信号を取りこぼさないこと」をここで固定する。
+ * 速くなったが結果が変わった、では意味がない。
+ */
+test('格子の境目にある信号も同じ交差点として拾う', () => {
+  const { mainRoad, side, centre } = crossRoads();
+  const cos = Math.cos((centre.lat * Math.PI) / 180);
+  const move = (northM: number, eastM: number) => ({
+    lat: centre.lat + northM / 111_320,
+    lng: centre.lng + eastM / (111_320 * cos),
+  });
+
+  // 交差点の周り 8 方向に、判定の境目（25m）のすぐ内側で置く。
+  // 格子は 25m 幅なので、どの向きでも必ず隣のマスにまたがる
+  for (const [northM, eastM] of [
+    [24, 0],
+    [-24, 0],
+    [0, 24],
+    [0, -24],
+    [17, 17],
+    [-17, 17],
+    [17, -17],
+    [-17, -17],
+  ] as const) {
+    const signal: RoadPoint = {
+      id: `s-${northM}-${eastM}`,
+      kind: 'traffic_signal',
+      position: move(northM, eastM),
+    };
+    const found = buildIntersections([mainRoad, side], [signal]);
+    assert.equal(
+      [...found.values()][0].signalised,
+      true,
+      `北 ${northM}m・東 ${eastM}m の信号を取りこぼした`,
+    );
+  }
+});
+
+test('離れた信号は別の交差点のものとして扱う', () => {
+  // 交差点の幅は片側 2 車線でも 15m 前後。25m 以上離れていれば別の交差点
+  const { mainRoad, side, centre } = crossRoads();
+  const cos = Math.cos((centre.lat * Math.PI) / 180);
+  const signal: RoadPoint = {
+    id: 'far',
+    kind: 'traffic_signal',
+    position: { lat: centre.lat, lng: centre.lng + 40 / (111_320 * cos) },
+  };
+  const found = buildIntersections([mainRoad, side], [signal]);
+  assert.equal([...found.values()][0].signalised, false);
+});
+
+test('信号でない点は交差点の判定に混ざらない', () => {
+  const { mainRoad, side, centre } = crossRoads();
+  const crossing: RoadPoint = { id: 'c', kind: 'crossing', position: centre };
+  const found = buildIntersections([mainRoad, side], [crossing]);
+  assert.equal([...found.values()][0].signalised, false);
+});
+
+test('同じノードを共有する道は同じ交差点にまとまる', () => {
+  // 座標のキーの作り方を変えた（toFixed から整数への丸めへ）。
+  // OSM で同じノードを共有する way はまったく同じ値を持つので、
+  // 丸め方が変わってもまとまり方は変わらない
+  const { mainRoad, side } = crossRoads();
+  const found = buildIntersections([mainRoad, side]);
+  assert.equal(found.size, 1, '同じ点が 2 つの交差点に分かれている');
+});

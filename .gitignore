@@ -21,6 +21,9 @@ data/tiles/*
 data/icon-preview.html
 !data/**/.gitkeep
 
+# 調査スクリプトが控えた取得結果（消せば取り直す）
+.cache/
+
 # Cesium の静的アセット（prebuild で node_modules からコピーされる）
 public/cesium/
 
