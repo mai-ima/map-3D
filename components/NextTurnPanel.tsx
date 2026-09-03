@@ -63,6 +63,25 @@ function SpeedLimitSign({ value }: { value: number }) {
   );
 }
 
+/**
+ * 路線番号のバッジ。
+ *
+ * 日本の道路案内標識（118 の 2 系）に倣い、番号を四角で囲んで示す。
+ * 種別（国道・都道府県道・高速）で色を変えたいところだが、
+ * OSM の `ref` から確実に見分けられるとは限らないので色は付けない。
+ * **番号の意味を推測して色分けすると、実在しない案内になる。**
+ */
+function RouteRefBadge({ value }: { value: string }) {
+  return (
+    <span
+      className="shrink-0 rounded-[3px] border border-mist-500/50 px-1 py-px text-[11px] font-semibold tabular-nums text-mist-200"
+      title={`路線番号 ${value}（OSM の ref）`}
+    >
+      {value}
+    </span>
+  );
+}
+
 const STATE_LABELS: Record<string, string> = {
   FOLLOW: '追従',
   APPROACH_TURN: '交差点接近',
@@ -134,6 +153,18 @@ export default function NextTurnPanel({
                 <p className="mt-1 truncate text-[13px] text-mist-300">
                   {outlook.nextStreetName ?? next?.instruction ?? '直進します'}
                 </p>
+                {/*
+                  方面案内。案内標識に書かれている行き先と路線番号を出す。
+                  出典は OSM の destination / ref で、無ければ何も出さない
+                */}
+                {(next?.routeRef || next?.destination) && (
+                  <p className="mt-0.5 flex items-center gap-1.5 truncate text-[12px]">
+                    {next.routeRef && <RouteRefBadge value={next.routeRef} />}
+                    {next.destination && (
+                      <span className="truncate text-mist-400">{next.destination}方面</span>
+                    )}
+                  </p>
+                )}
               </>
             )}
           </div>

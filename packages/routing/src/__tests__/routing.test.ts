@@ -454,3 +454,84 @@ describe('OSRM の車線案内', () => {
     assert.equal(route.maneuvers[0].lanes, undefined);
   });
 });
+
+/**
+ * 方面案内（案内標識に書かれている行き先と路線番号）。
+ *
+ * 出典は OSM の `destination` / `destination:ref` / `ref`。
+ * 公開デモ（router.project-osrm.org）で東京駅 → 御殿場を引いたときの
+ * 実際の応答から形を取った（2026-09）:
+ *
+ *   {"name": "東名高速道路", "destinations": "E1: 横浜, 静岡"}
+ *   {"name": "", "destinations": "138: 山中湖, 箱根"}
+ *   {"name": "玉川通り", "ref": "246", "destinations": "三軒茶屋"}
+ *   {"name": "日比谷通り", "ref": "1; 20"}
+ */
+describe('OSRM の方面案内', () => {
+  function signed(step: Record<string, unknown>) {
+    return osrmRoute({
+      legs: [
+        {
+          steps: [
+            {
+              distance: 300,
+              duration: 60,
+              geometry: encodePolyline(PATH.slice(0, 2), 5),
+              maneuver: { type: 'depart', location: PATH[0] },
+              ...step,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  test('路線番号つきの方面を分けて読む', async () => {
+    reply(signed({ name: '東名高速道路', destinations: 'E1: 横浜, 静岡' }));
+    const route = await osrm.route(REQUEST);
+    const m = route.maneuvers[0];
+    assert.equal(m.routeRef, 'E1');
+    // 日本の案内標識の書き方に合わせて「・」で並べる
+    assert.equal(m.destination, '横浜・静岡');
+  });
+
+  test('路線番号の無い方面も読める', async () => {
+    reply(signed({ name: '玉川通り', ref: '246', destinations: '三軒茶屋' }));
+    const route = await osrm.route(REQUEST);
+    assert.equal(route.maneuvers[0].destination, '三軒茶屋');
+    // 標識に番号が無ければ、走っている道の番号を使う
+    assert.equal(route.maneuvers[0].routeRef, '246');
+  });
+
+  test('重複区間の路線番号を並べる', async () => {
+    // 国道 1 号と 20 号が重なる区間。OSM はセミコロンで並べる
+    reply(signed({ name: '日比谷通り', ref: '1; 20' }));
+    const route = await osrm.route(REQUEST);
+    assert.equal(route.maneuvers[0].routeRef, '1・20');
+    assert.equal(route.maneuvers[0].destination, undefined);
+  });
+
+  test('標識の番号を、走っている道の番号より優先する', async () => {
+    // 進む先の番号のほうが、いま走っている道の番号より役に立つ
+    reply(signed({ name: '', ref: '246', destinations: '138: 山中湖, 箱根' }));
+    const route = await osrm.route(REQUEST);
+    assert.equal(route.maneuvers[0].routeRef, '138');
+    assert.equal(route.maneuvers[0].destination, '山中湖・箱根');
+  });
+
+  test('方面が無ければ何も出さない', async () => {
+    // OSM に destination も ref も無い道はいくらでもある。作らない
+    reply(signed({ name: '市道' }));
+    const route = await osrm.route(REQUEST);
+    assert.equal(route.maneuvers[0].destination, undefined);
+    assert.equal(route.maneuvers[0].routeRef, undefined);
+  });
+
+  test('空白だけの方面は無いものとして扱う', async () => {
+    for (const value of ['', '   ', ': ', ' , , ']) {
+      reply(signed({ name: '市道', destinations: value }));
+      const route = await osrm.route(REQUEST);
+      assert.equal(route.maneuvers[0].destination, undefined, JSON.stringify(value));
+    }
+  });
+});

@@ -41,6 +41,10 @@ interface OsrmStep {
   duration?: number;
   name?: string;
   geometry?: string;
+  /** 路線番号。セミコロン区切りで複数（例: "1; 20"） */
+  ref?: string;
+  /** 案内標識の行き先（例: "E1: 横浜, 静岡"） */
+  destinations?: string;
   intersections?: OsrmIntersection[];
   maneuver?: {
     type?: string;
@@ -88,6 +92,56 @@ const LANE_INDICATIONS: Record<string, LaneIndication> = {
  * OSM に `turn:lanes` が無い交差点では OSRM も返さない。
  * そのときは車線案内を出さない（車線数から矢印を作らない）。
  */
+/**
+ * 路線番号を読む。
+ *
+ * OSM の `ref` はセミコロン区切りで複数入る（重複区間）。
+ * 実データの例: "406"（都道 406 号）/ "1; 20"（国道 1 号と 20 号）/ "E1"（東名）。
+ * 日本の案内標識の慣習に合わせ「・」で並べる。
+ */
+function readRef(value: string | undefined): string | undefined {
+  const parts = (value ?? '')
+    .split(';')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join('・') : undefined;
+}
+
+/**
+ * 方面（案内標識の行き先）を読む。
+ *
+ * OSM の `destination` を OSRM がそのまま渡してくる。
+ * 実データの例（2026-09）:
+ *   "E1: 横浜, 静岡"  路線番号つき（コロンの前が `destination:ref`）
+ *   "138: 山中湖, 箱根"
+ *   "三軒茶屋"        路線番号なし
+ *
+ * コロンの前は路線番号なので、方面としては外す
+ * （路線番号は `routeRef` で別に持つ）。
+ * カンマ区切りの行き先は「・」で並べる（日本の案内標識の書き方）。
+ */
+function readDestination(value: string | undefined): {
+  destination?: string;
+  ref?: string;
+} {
+  const raw = (value ?? '').trim();
+  if (!raw) return {};
+
+  // OSRM は `destination:ref` と `destination` をコロンでつないで返す。
+  // 番号が無ければコロンの前は空になる（":" だけの応答もありうる）
+  const colon = raw.indexOf(':');
+  const ref = colon >= 0 ? raw.slice(0, colon).trim() : '';
+  const places = (colon >= 0 ? raw.slice(colon + 1) : raw)
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+  return {
+    destination: places.length > 0 ? places.join('・') : undefined,
+    ref: ref ? readRef(ref) : undefined,
+  };
+}
+
 function readLanes(step: OsrmStep): Lane[] | undefined {
   const lanes = step.intersections?.[0]?.lanes;
   if (!Array.isArray(lanes) || lanes.length === 0) return undefined;
@@ -216,6 +270,7 @@ export class OsrmProvider implements RouteProvider {
         const point = at ?? coordinates[beginIndex];
         const distance = Math.round(finite(step.distance));
         const duration = Math.round(finite(step.duration));
+        const signed = readDestination(step.destinations);
 
         maneuvers.push({
           type,
@@ -230,6 +285,10 @@ export class OsrmProvider implements RouteProvider {
           streetName: step.name || undefined,
           shapeIndex: beginIndex,
           lanes: readLanes(step),
+          destination: signed.destination,
+          // 標識に書かれている番号（destination:ref）を優先する。
+          // いま走っている道の番号（ref）より、進む先の番号のほうが役に立つ
+          routeRef: signed.ref ?? readRef(step.ref),
         });
 
         steps.push({

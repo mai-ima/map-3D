@@ -123,7 +123,15 @@ export class GuidanceGenerator {
       return `${distanceText}先、${maneuver.verbalInstruction}`;
     }
 
+    /**
+     * 道路名と方面を添える。
+     *
+     * 案内標識に書かれている行き先（OSM の `destination`）があれば、
+     * 道路名より先に言う。標識と同じ語で言うほうが照らし合わせやすい。
+     * どちらも無ければ、距離と種別だけで言い切る（作り話をしない）。
+     */
+    const sign = maneuver.destination ? `${maneuver.destination}方面、` : '';
     const street = maneuver.streetName ? `${maneuver.streetName}方向、` : '';
-    return `${distanceText}先、${street}${label}です。`;
+    return `${distanceText}先、${sign}${street}${label}です。`;
   }
 }
