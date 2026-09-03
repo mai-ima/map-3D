@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { IconName, LatLng, Route, SearchResult, TravelMode } from '@ijm/shared';
-import { formatDistance, formatDuration } from '@ijm/navigation';
+import { formatDistance, formatDuration, formatEta } from '@ijm/navigation';
 import { Icon } from '@ijm/ui';
 import { searchPlaces } from '@/lib/api';
+import TurnList from './TurnList';
 
 export interface PlacePoint {
   name: string;
@@ -218,6 +219,10 @@ export default function SearchPanel(props: SearchPanelProps) {
                 <span className="text-[14px] tabular-nums text-mist-300">
                   約 {formatDuration(route.duration)}
                 </span>
+                {/* 到着予想時刻。約束の時間に間に合うかを出発前に判断できる */}
+                <span className="text-[14px] tabular-nums text-mist-300">
+                  {formatEta(route.duration)} 着
+                </span>
                 <span className="ml-auto text-[11px] text-mist-500">{route.engine}</span>
               </div>
 
@@ -228,18 +233,11 @@ export default function SearchPanel(props: SearchPanelProps) {
                 3D ナビゲーションを開始
               </button>
 
-              <ol className="mt-2.5 max-h-[26vh] space-y-1 overflow-y-auto">
-                {route.maneuvers.slice(0, 40).map((m, i) => (
-                  <li key={i} className="flex gap-2 rounded-lg px-1.5 py-1 text-[12px]">
-                    <span className="w-14 shrink-0 tabular-nums text-mist-500">
-                      {formatDistance(m.distanceToNext)}
-                    </span>
-                    <span className="min-w-0 flex-1 text-mist-300">
-                      {m.instruction || m.streetName || '直進'}
-                    </span>
-                  </li>
-                ))}
-              </ol>
+              <TurnList
+                route={route}
+                onFocus={onFocusPlace}
+                className="mt-2.5 max-h-[26vh] overflow-y-auto overscroll-contain"
+              />
             </div>
           )}
         </div>

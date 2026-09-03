@@ -13,10 +13,11 @@ import type {
   TravelMode,
 } from '@ijm/shared';
 import { BUILDING_MODEL_MODES, CITIES, availableBuildingModes } from '@ijm/shared';
-import { formatDistance, formatDuration } from '@ijm/navigation';
+import { formatDistance, formatDuration, formatEta } from '@ijm/navigation';
 import { Icon } from '@ijm/ui';
 import { searchPlaces } from '@/lib/api';
 import type { PlacePoint } from '@/components/SearchPanel';
+import TurnList from '@/components/TurnList';
 import BottomSheet from './BottomSheet';
 import { Chip, ChipRow, FloatingButton, ListGroup, ListRow, Segmented, SheetSection } from './controls';
 
@@ -333,9 +334,21 @@ export default function MobileShell(props: MobileShellProps) {
                     {formatDistance(props.route.distance)}
                   </span>
                 </div>
+                {/* 到着予想時刻。約束の時間に間に合うかを出発前に判断できる */}
                 <p className="mt-1 text-[12px] text-mist-500">
+                  <span className="tabular-nums text-mist-300">
+                    {formatEta(props.route.duration)} 着
+                  </span>
+                  {' / '}
                   {props.route.maneuvers.length} 手順 / {props.route.engine}
                 </p>
+
+                {/* 案内一覧。押すとその地点へ地図が飛ぶ */}
+                <TurnList
+                  route={props.route}
+                  onFocus={props.onFocusPlace}
+                  className="mt-2 max-h-[32vh] overflow-y-auto overscroll-contain border-t border-white/8 pt-2"
+                />
               </div>
             )}
 

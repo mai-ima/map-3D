@@ -199,3 +199,32 @@ export function formatDuration(seconds: number): string {
   const h = Math.floor(mins / 60);
   return `${h}時間${mins % 60}分`;
 }
+
+/**
+ * 各案内の「出発からの距離と時間」。
+ *
+ * 案内一覧（ターンリスト）で「出発から 3.2km の地点で右折」と出すために使う。
+ * 経路エンジンが各案内に持たせているのは「そこから次の案内まで」なので、
+ * 手前までの合計を足して積み上げる。
+ *
+ * 数として読めない値は 0 として飛ばす。1 つ壊れた案内のせいで、
+ * それ以降の距離がすべて NaN になると一覧が読めなくなる。
+ */
+export interface ManeuverOffset {
+  /** 出発地点からの距離 (m) */
+  distanceM: number;
+  /** 出発してからの経過時間 (s) */
+  seconds: number;
+}
+
+export function maneuverOffsets(maneuvers: Maneuver[]): ManeuverOffset[] {
+  const out: ManeuverOffset[] = [];
+  let distanceM = 0;
+  let seconds = 0;
+  for (const m of maneuvers) {
+    out.push({ distanceM, seconds });
+    distanceM += Number.isFinite(m.distanceToNext) ? Math.max(0, m.distanceToNext) : 0;
+    seconds += Number.isFinite(m.durationToNext) ? Math.max(0, m.durationToNext) : 0;
+  }
+  return out;
+}

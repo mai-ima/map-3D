@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Route } from '@ijm/shared';
 import { cumulativeDistances } from '@ijm/shared';
-import { ManeuverPlanner, formatDistance, formatEta } from '../maneuver-planner';
+import {
+  ManeuverPlanner,
+  formatDistance,
+  formatEta,
+  maneuverOffsets,
+} from '../maneuver-planner';
 import { CAMERA_PROFILES, NavigationCamera, scaleProfile } from '../navigation-camera';
 import { RouteFollower } from '../route-follower';
 import { NavigationSession } from '../session';
@@ -316,4 +321,55 @@ test('壊れた経路の座標でも例外にならない', () => {
   });
   const tick = session.tick(500);
   assert.ok(Number.isFinite(tick.camera.pose.heading));
+});
+
+/**
+ * 案内一覧（ターンリスト）の積み上げ。
+ *
+ * 経路エンジンが各案内に持たせているのは「そこから次の案内まで」の
+ * 距離と時間なので、一覧に「出発から 3.2km の地点で右折」と出すには
+ * 手前までの合計を足す必要がある。
+ */
+test('案内一覧の距離と時間は出発地点からの積み上げになる', () => {
+  const route = makeRoute();
+  const offsets = maneuverOffsets(route.maneuvers);
+
+  assert.equal(offsets.length, route.maneuvers.length);
+  // 最初の案内は出発地点そのもの
+  assert.deepEqual(offsets[0], { distanceM: 0, seconds: 0 });
+
+  // 2 つ目は、1 つ目の「次まで」の値そのもの
+  assert.equal(offsets[1].distanceM, route.maneuvers[0].distanceToNext);
+  assert.equal(offsets[1].seconds, route.maneuvers[0].durationToNext);
+
+  // 単調に増える（減ると一覧の並びと食い違う）
+  for (let i = 1; i < offsets.length; i += 1) {
+    assert.ok(offsets[i].distanceM >= offsets[i - 1].distanceM, `${i} 番目で距離が戻った`);
+    assert.ok(offsets[i].seconds >= offsets[i - 1].seconds, `${i} 番目で時間が戻った`);
+  }
+});
+
+test('壊れた案内があっても、その先の距離が NaN にならない', () => {
+  // 応答の欠けは実際に起きる。1 つ壊れた案内のせいで
+  // それ以降の距離がすべて NaN になると、一覧が丸ごと読めなくなる
+  const route = makeRoute();
+  const broken = {
+    ...route,
+    maneuvers: [
+      { ...route.maneuvers[0], distanceToNext: Number.NaN, durationToNext: Number.NaN },
+      { ...route.maneuvers[1], distanceToNext: -50, durationToNext: -10 },
+      ...route.maneuvers.slice(2),
+    ],
+  };
+  for (const offset of maneuverOffsets(broken.maneuvers)) {
+    assert.ok(Number.isFinite(offset.distanceM), `距離が ${offset.distanceM}`);
+    assert.ok(Number.isFinite(offset.seconds), `時間が ${offset.seconds}`);
+    // 負の距離は「戻る」ことになる。0 として飛ばす
+    assert.ok(offset.distanceM >= 0);
+    assert.ok(offset.seconds >= 0);
+  }
+});
+
+test('案内が無い経路でも空の一覧を返す', () => {
+  assert.deepEqual(maneuverOffsets([]), []);
 });
