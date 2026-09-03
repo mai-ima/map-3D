@@ -12,6 +12,13 @@ import { fetchElevatedStructures } from '@ijm/gis';
  */
 
 export const runtime = 'nodejs';
+/**
+ * 取得側（@ijm/gis）が合計 22 秒で諦めるので、その倍を上限にしておく。
+ *
+ * 以前はここが 45 秒で、取得側に合計の締め切りが無かった。
+ * Overpass の 3 か所が順に時間切れになり、そのあと OSM 本体に切り替えて
+ * 実測 80 秒。応答が返る前に打ち切られ、利用者にはエラーとして見えていた。
+ */
 export const maxDuration = 45;
 
 /** 広すぎる範囲は Overpass に負担をかけるので拒否する（約 6km 四方まで） */
@@ -27,12 +34,13 @@ export async function GET(request: Request) {
     );
   }
 
-  const structures = await fetchElevatedStructures(bbox);
+  const { structures, degraded } = await fetchElevatedStructures(bbox);
 
   return NextResponse.json(
     {
       structures,
-      degraded: structures.length === 0,
+      // 「この範囲に無い」と「取り寄せられなかった」を混同しない
+      degraded,
       attribution: attributionStrings(['osm']),
     },
     { headers: { 'Cache-Control': 'public, max-age=600, s-maxage=86400' } },

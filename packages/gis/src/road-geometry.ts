@@ -18,8 +18,10 @@
  */
 
 import type { BBox, GroundRibbon, LatLng, LatLngAlt, SceneShape } from '@ijm/shared';
+import { primaryDeadline } from './config';
 import { fetchOsmMap } from './osm-api';
-import { fetchRoadNetwork, type OverpassElement } from './overpass';
+import { fetchRoadNetwork, type OverpassElement, deadlineIn } from './overpass';
+import { trafficSignalShapes } from './street-furniture-geometry';
 import { classify } from './structures';
 
 /** 道路の種別。描き分けと幅員の決定に使う */
@@ -249,12 +251,27 @@ export interface RoadPoint {
   kind: 'traffic_signal' | 'crossing' | 'stop';
   position: LatLng;
   name?: string;
+  /**
+   * その点が付いている道の向き（真北 0・東回りの度）。
+   *
+   * 信号の灯器とアームをこの向きに合わせる。以前はすべて真北を向いていて、
+   * 交差点のどの方向を制御しているのか分からなかった。
+   * 値は OSM の way の形から取るので、創作ではない。
+   */
+  headingDeg?: number;
 }
 
 export interface RoadScene {
   roads: RoadPiece[];
   rails: RailPiece[];
   points: RoadPoint[];
+  /**
+   * 取り寄せそのものに失敗したか。
+   *
+   * 「この範囲に道が無い」と「取り寄せられなかった」は別のこと。
+   * 区別しないと、道のある場所でも「データがありません」と出てしまう。
+   */
+  degraded?: boolean;
 }
 
 /**
@@ -355,7 +372,48 @@ export function buildRoadScene(elements: OverpassElement[]): RoadScene {
     });
   }
 
-  return { roads, rails, points };
+  return { roads, rails, points: orientPoints(points, roads) };
+}
+
+/**
+ * 点（信号など）に、その点が付いている道の向きを与える。
+ *
+ * 信号の灯器とアームはこの向きに合わせる。以前は真北に固定していたため、
+ * 交差点のどの方向を制御しているのか分からず、
+ * 灯器を真横から見ることになって「信号が無い」ようにしか見えなかった。
+ *
+ * 向きは OSM の way の形から取る。信号のノードは必ずどれかの way の上に
+ * あるので、最も近い区間の方位をそのまま使う。
+ */
+export function orientPoints(points: RoadPoint[], roads: RoadPiece[]): RoadPoint[] {
+  if (roads.length === 0) return points;
+  return points.map((point) => {
+    if (point.kind !== 'traffic_signal') return point;
+    const heading = headingOfNearestSegment(point.position, roads);
+    return heading === null ? point : { ...point, headingDeg: heading };
+  });
+}
+
+/** その地点にいちばん近い道路区間の方位（真北 0・東回りの度）。無ければ null */
+function headingOfNearestSegment(point: LatLng, roads: RoadPiece[]): number | null {
+  let best = Number.POSITIVE_INFINITY;
+  let heading: number | null = null;
+  for (const road of roads) {
+    // 歩道や横断歩道ではなく、車道の向きに合わせる
+    if (road.lanes === 0) continue;
+    for (let i = 1; i < road.path.length; i += 1) {
+      const a = road.path[i - 1];
+      const b = road.path[i];
+      const d = distanceToSegment(point, a, b);
+      if (d >= best) continue;
+      best = d;
+      const cos = Math.cos((a.lat * Math.PI) / 180) || 1;
+      heading = (Math.atan2((b.lng - a.lng) * cos, b.lat - a.lat) * 180) / Math.PI;
+    }
+  }
+  // 20m 以上離れているなら、その道に付いている信号とは言えない
+  if (heading === null || best > 20) return null;
+  return heading;
 }
 
 // ---- 細切れの道をつなぐ -----------------------------------------------
@@ -699,32 +757,22 @@ export function railShapes(rail: RailPiece, groundHeight: (p: LatLng) => number)
  * 位置は OSM の実データ。柱の高さと灯器の大きさは
  * 日本の車両用交通信号灯器（300mm 灯 3 位）の標準寸法に合わせている。
  */
-export function signalShapes(point: RoadPoint, groundHeight: (p: LatLng) => number): SceneShape[] {
+/**
+ * 信号 1 基。
+ *
+ * 形と寸法は street-furniture-geometry が持つ（警察庁の設置基準の実寸）。
+ * ここは「どの点に、どの向きで置くか」だけを決める。
+ */
+export function signalShapes(
+  point: RoadPoint,
+  groundHeight: (p: LatLng) => number,
+): SceneShape[] {
   if (point.kind !== 'traffic_signal') return [];
   const raw = groundHeight(point.position);
-  const ground = Number.isFinite(raw) ? raw : 0;
-  const poleHeight = 5.0;
-
-  return [
-    // 柱
-    {
-      kind: 'box',
-      id: `${point.id}#pole`,
-      centre: { ...point.position, alt: ground + poleHeight / 2 },
-      headingDeg: 0,
-      size: { x: 0.14, y: 0.14, z: poleHeight },
-      color: '#5a5f63',
-    },
-    // 灯器。3 位の横型（幅 0.95m × 高さ 0.35m）
-    {
-      kind: 'box',
-      id: `${point.id}#head`,
-      centre: { ...point.position, alt: ground + poleHeight - 0.2 },
-      headingDeg: 0,
-      size: { x: 0.95, y: 0.28, z: 0.35 },
-      color: '#33383b',
-    },
-  ] as SceneShape[];
+  return trafficSignalShapes(point.position, {
+    ground: Number.isFinite(raw) ? raw : 0,
+    headingDeg: point.headingDeg,
+  });
 }
 
 /** 範囲内に収まる道路だけに絞る（表示範囲の外を組み立てない） */
@@ -825,14 +873,18 @@ export function nearestRoad(
  * 道が出なくても地図とナビは成立するので、例外は投げない。
  */
 export async function fetchRoadScene(bbox: BBox): Promise<RoadScene> {
+  // 切り替えぶんも含めた合計時間に締め切りを置く。
+  // 置かないと、Overpass の各エンドポイントが順に時間切れになったあとに
+  // OSM 本体を待つことになり、API 側の maxDuration を超える
+  const deadline = deadlineIn();
   let elements: OverpassElement[] = [];
   try {
-    elements = (await fetchRoadNetwork(bbox)).elements;
+    elements = (await fetchRoadNetwork(bbox, primaryDeadline(deadline))).elements;
   } catch {
     try {
-      elements = await fetchOsmMap(bbox);
+      elements = await fetchOsmMap(bbox, deadline);
     } catch {
-      return { roads: [], rails: [], points: [] };
+      return { roads: [], rails: [], points: [], degraded: true };
     }
   }
   return buildRoadScene(elements);

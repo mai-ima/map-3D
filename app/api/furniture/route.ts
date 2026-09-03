@@ -28,19 +28,39 @@ export async function GET(request: Request) {
 
   try {
     const elements = await fetchStreetFurniture(bbox);
+    // 樹種・樹高・樹冠幅は OSM に入っているときだけ使う。
+    // 形を決めるのに要るタグだけを通し、その他は落とす（転送量を増やさない）
+    const KEEP = [
+      'height',
+      'diameter_crown',
+      'leaf_type',
+      'leaf_cycle',
+      'genus',
+      'species',
+      'species:en',
+      'genus:en',
+    ];
     const points = elements
       .filter((e) => typeof e.lat === 'number' && typeof e.lon === 'number')
-      .map((e) => ({
-        lat: e.lat!,
-        lng: e.lon!,
-        kind:
-          e.tags?.natural === 'tree'
-            ? ('tree' as const)
-            : e.tags?.highway === 'street_lamp'
-              ? ('street_lamp' as const)
-              : ('bench' as const),
-        height: e.tags?.height ? Number(e.tags.height) : undefined,
-      }));
+      .map((e) => {
+        const tags: Record<string, string> = {};
+        for (const key of KEEP) {
+          const value = e.tags?.[key];
+          if (typeof value === 'string') tags[key] = value;
+        }
+        return {
+          lat: e.lat!,
+          lng: e.lon!,
+          kind:
+            e.tags?.natural === 'tree'
+              ? ('tree' as const)
+              : e.tags?.highway === 'street_lamp'
+                ? ('street_lamp' as const)
+                : ('bench' as const),
+          height: e.tags?.height ? Number(e.tags.height) : undefined,
+          tags,
+        };
+      });
 
     return NextResponse.json(
       { points, attribution: attributionStrings(['overpass', 'osm']) },

@@ -83,7 +83,14 @@ export function fetchBuilding(
 }
 
 export function fetchStreetFurniture(bbox: [number, number, number, number]): Promise<{
-  points: { lat: number; lng: number; kind: 'tree' | 'street_lamp' | 'bench'; height?: number }[];
+  points: {
+    lat: number;
+    lng: number;
+    kind: 'tree' | 'street_lamp' | 'bench';
+    height?: number;
+    /** 樹種・樹高・樹冠幅。形を決めるのに使う（OSM に入っているときだけ） */
+    tags?: Record<string, string>;
+  }[];
   degraded?: boolean;
 }> {
   return getJson(`/api/furniture?bbox=${bbox.join(',')}`);

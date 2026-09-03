@@ -1194,6 +1194,8 @@ export class MapEngine {
     if (this.destroyed) return;
     if (this.quality.maxFurniture <= 0) return;
     if (this.furniture.hasLoaded(bbox)) return;
+    // 近いときだけ枝ぶりを細かく組む。上空からは輪郭しか見えない
+    this.furniture.setDistance(this.viewer.camera.positionCartographic?.height ?? 0);
     await this.furniture.build(points, bbox);
     this.requestRender();
   }

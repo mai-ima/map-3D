@@ -17,8 +17,9 @@
 
 import type { BBox, ElevatedStructure, LatLng, StructureForm, StructureKind } from '@ijm/shared';
 import { distanceMeters } from '@ijm/shared';
+import { primaryDeadline } from './config';
 import { fetchOsmMap } from './osm-api';
-import { runOverpassQuery, type OverpassElement } from './overpass';
+import { runOverpassQuery, type OverpassElement, deadlineIn } from './overpass';
 import { consolidateStructures } from './structure-merge';
 
 /**
@@ -108,19 +109,6 @@ const PROFILE: Record<
     parapetHeight: 1.2,
   },
   /**
-   * 高架へ上がる階段。
-   *
-   * 寸法の出典は「立体横断施設技術基準・同解説」（日本道路協会）と
-   * 「移動等円滑化のために必要な道路の構造に関する基準」（国土交通省令）:
-   *   有効幅員  1.5m 以上（両側の手すりを含めて 2.0m 前後）
-   *   蹴上げ    0.15m 以下
-   *   踏面      0.30m 以上
-   *   手すり    路面から 0.8〜0.9m（転落防止の柵と兼ねる場合 1.1m）
-   *
-   * 段の寸法そのものは STEP_RISE_M / STEP_TREAD_M（structure-geometry）に置く。
-   * ここは階段を「1 本の細い斜めの構造物」として見たときの諸元。
-   */
-  /**
    * 盛土・擁壁の区間と、普通の道から高架へ上がる取付部。
    *
    * 柱を持たず、路面の下を壁（擁壁）で受ける。
@@ -140,6 +128,20 @@ const PROFILE: Record<
     pierSize: 0,
     parapetHeight: 1.0,
   },
+  /**
+   * 高架へ上がる階段。
+   *
+   * 寸法の出典は「立体横断施設技術基準・同解説」（日本道路協会）と
+   * 「移動等円滑化のために必要な道路の構造に関する基準」（国土交通省令）:
+   *   有効幅員  1.5m 以上（両側の手すりを含めて 2.0m 前後）
+   *   蹴上げ    0.15m 以下
+   *   踏面      0.30m 以上
+   *   手すり    路面から 0.8〜0.9m（転落防止の柵と兼ねる場合 1.1m）
+   *
+   * 段の寸法そのものは STEP_RISE_MAX_M / STEP_TREAD_MIN_M
+   * （structure-geometry）に置く。
+   * ここは階段を「1 本の細い斜めの構造物」として見たときの諸元。
+   */
   stair: {
     form: 'stair',
     width: 2.0,
@@ -923,7 +925,18 @@ export function clipPathToBBox(path: LatLng[], bbox: BBox): LatLng[][] {
  * geom 付きで取得するので、そのまま 3D 化できる。
  * 取得できなかった場合は空配列を返す（構造物が出なくても地図は成立する）。
  */
-export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStructure[]> {
+export interface ElevatedStructureResult {
+  structures: ElevatedStructure[];
+  /**
+   * 取り寄せそのものに失敗したか。
+   *
+   * 「この範囲に高架が無い」と「取り寄せられなかった」は別のこと。
+   * 区別しないと、高架のある場所でも「データがありません」と出てしまう。
+   */
+  degraded: boolean;
+}
+
+export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStructureResult> {
   const [minLng, minLat, maxLng, maxLat] = bbox;
   const b = `${minLat},${minLng},${maxLat},${maxLng}`;
 
@@ -965,15 +978,19 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
     out geom;
   `;
 
-  // Overpass が落ちていても構造物は出したいので、OSM 本体の API に切り替える
+  // Overpass が落ちていても構造物は出したいので、OSM 本体の API に切り替える。
+  // ただし切り替えぶんも含めた合計時間に締め切りを置く。
+  // 置かないと、Overpass の 3 か所が順に時間切れになったあと OSM 本体を待ち、
+  // 実測で 80 秒かかっていた（API の maxDuration は 45 秒）
+  const deadline = deadlineIn();
   let elements: OverpassElement[] = [];
   try {
-    elements = (await runOverpassQuery(query)).elements;
+    elements = (await runOverpassQuery(query, { deadline: primaryDeadline(deadline) })).elements;
   } catch {
     try {
-      elements = await fetchOsmMap(bbox);
+      elements = await fetchOsmMap(bbox, deadline);
     } catch {
-      return [];
+      return { structures: [], degraded: true };
     }
   }
 
@@ -1031,9 +1048,12 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
   const consolidated = consolidateStructures(list);
   // 階段と取付部の端点は、まとめる前の座標（OSM のノードそのもの）と照合する。
   // どちらも短いので範囲では切らない（切ると上がりきる前に途切れる）
-  return [
-    ...consolidated,
-    ...buildApproaches(groundWays, list, consolidated),
-    ...buildStairs(stepWays, list, consolidated),
-  ];
+  return {
+    structures: [
+      ...consolidated,
+      ...buildApproaches(groundWays, list, consolidated),
+      ...buildStairs(stepWays, list, consolidated),
+    ],
+    degraded: false,
+  };
 }

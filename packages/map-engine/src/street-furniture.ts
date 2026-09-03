@@ -1,17 +1,26 @@
 /**
- * 街路樹・街灯・ベンチなどの装飾。
+ * 街路樹・街灯・ベンチなどの装飾を描く。
  *
  * 重要な方針:
- *   位置は必ず OpenStreetMap の実データ（natural=tree, highway=street_lamp, amenity=bench）を使い、
- *   AI や乱数で「それらしい位置」を作らない。見た目（ジオメトリ）だけを手続き的に生成する。
+ *   位置は必ず OpenStreetMap の実データ（natural=tree, highway=street_lamp,
+ *   amenity=bench）を使い、AI や乱数で「それらしい位置」を作らない。
+ *
+ * **寸法と形を決めるのはここではない。**
+ * `packages/gis/src/street-furniture-geometry.ts` が形の記述（SceneShape）
+ * を組み立て、ここはそれを Cesium で描くだけにしてある。
+ * 以前はこのファイルの中で樹高や樹冠の大きさを決めていたため、
+ * Swift へ移すときに寸法の決め方まで書き直しになるうえ、
+ * 生成した形を測るテストも書けなかった。
  *
  * 描画は GeometryInstance をまとめた単一 Primitive にバッチ化し、
  * 数千本規模でもドローコールが増えないようにしている。
  */
 
 import * as Cesium from 'cesium';
-import type { BBox } from '@ijm/shared';
+import type { BBox, SceneShape } from '@ijm/shared';
+import { benchShapes, lampShapes, treeShapes } from '@ijm/gis';
 import { liveScene, waitForPrimitives } from './primitive-swap';
+import { batchShapes } from './scene-renderer';
 
 export interface FurniturePoint {
   lat: number;
@@ -19,22 +28,21 @@ export interface FurniturePoint {
   kind: 'tree' | 'street_lamp' | 'bench';
   /** OSM に高さがあれば使う */
   height?: number;
+  /** OSM のタグ。樹種・樹高・樹冠幅を読む */
+  tags?: Record<string, string>;
 }
 
-const TRUNK_COLOR = Cesium.Color.fromCssColorString('#6b5844');
-const CANOPY_COLORS = [
-  Cesium.Color.fromCssColorString('#4b7f3f'),
-  Cesium.Color.fromCssColorString('#568c46'),
-  Cesium.Color.fromCssColorString('#3f6f36'),
-];
-const LAMP_COLOR = Cesium.Color.fromCssColorString('#8d949c');
-const LAMP_HEAD_COLOR = Cesium.Color.fromCssColorString('#ffe9b0');
-const BENCH_COLOR = Cesium.Color.fromCssColorString('#8a6f4e');
-
-/** 位置に対して決定的な擬似乱数（同じ木は常に同じ大きさになる） */
-function hash01(lat: number, lng: number, salt = 0): number {
-  const x = Math.sin(lat * 12.9898 + lng * 78.233 + salt * 37.719) * 43758.5453;
-  return x - Math.floor(x);
+/**
+ * 樹冠のかたまりを何個作るか。
+ *
+ * 1 個だと棒付きキャンディにしか見えない。一方、木 1 本あたりの形が増えると
+ * 数千本では効いてくるので、近いときだけ細かくする。
+ * 幹 0.3m の枝ぶりは 400m 離れると輪郭にしか出ないため、そこから先は 1 個。
+ */
+function blobsForDistance(distanceM: number): number {
+  if (distanceM < 150) return 5;
+  if (distanceM < 400) return 3;
+  return 1;
 }
 
 export class StreetFurnitureLayer {
@@ -52,10 +60,18 @@ export class StreetFurnitureLayer {
    */
   private generation = 0;
 
+  /** カメラからの距離 (m)。近いときだけ枝ぶりを細かくする */
+  private distanceM = 0;
+
   constructor(
     private readonly viewer: Cesium.Viewer,
     private maxItems: number,
   ) {}
+
+  /** 次に組み立てるときの詳細度を決める（カメラからの距離） */
+  setDistance(distanceM: number): void {
+    this.distanceM = Number.isFinite(distanceM) ? Math.max(0, distanceM) : 0;
+  }
 
   setMaxItems(max: number): void {
     this.maxItems = max;
@@ -97,102 +113,23 @@ export class StreetFurnitureLayer {
       // 地形が取れない場合は高さ 0 のまま（海抜 0m の平地扱い）
     }
 
-    const instances: Cesium.GeometryInstance[] = [];
-
+    // 形と寸法は GIS 側で決める（Cesium に依存しない純粋な変換）
+    const shapes: SceneShape[] = [];
+    const blobs = blobsForDistance(this.distanceM);
     limited.forEach((point, i) => {
-      const groundHeight = cartographics[i]?.height ?? 0;
-      const r1 = hash01(point.lat, point.lng, 1);
-      const r2 = hash01(point.lat, point.lng, 2);
-
+      const ground = cartographics[i]?.height ?? 0;
+      const tags = point.tags ?? (point.height ? { height: String(point.height) } : {});
       if (point.kind === 'tree') {
-        const trunkHeight = 2.2 + r1 * 1.6;
-        const canopyRadius = 2.0 + r2 * 1.4;
-        const canopyHeight = 3.0 + r1 * 2.0;
-
-        instances.push(
-          new Cesium.GeometryInstance({
-            geometry: new Cesium.CylinderGeometry({
-              length: trunkHeight,
-              topRadius: 0.18,
-              bottomRadius: 0.26,
-              vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-            }),
-            modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(
-              Cesium.Cartesian3.fromDegrees(point.lng, point.lat, groundHeight + trunkHeight / 2),
-            ),
-            attributes: {
-              color: Cesium.ColorGeometryInstanceAttribute.fromColor(TRUNK_COLOR),
-            },
-          }),
-        );
-
-        instances.push(
-          new Cesium.GeometryInstance({
-            geometry: new Cesium.EllipsoidGeometry({
-              radii: new Cesium.Cartesian3(canopyRadius, canopyRadius, canopyHeight / 2),
-              vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-              stackPartitions: 8,
-              slicePartitions: 10,
-            }),
-            modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(
-              Cesium.Cartesian3.fromDegrees(
-                point.lng,
-                point.lat,
-                groundHeight + trunkHeight + canopyHeight / 2.4,
-              ),
-            ),
-            attributes: {
-              color: Cesium.ColorGeometryInstanceAttribute.fromColor(
-                CANOPY_COLORS[i % CANOPY_COLORS.length],
-              ),
-            },
-          }),
-        );
+        shapes.push(...treeShapes(point, { tags, ground, blobs }));
       } else if (point.kind === 'street_lamp') {
-        const poleHeight = point.height ?? 4.5 + r1 * 1.5;
-        instances.push(
-          new Cesium.GeometryInstance({
-            geometry: new Cesium.CylinderGeometry({
-              length: poleHeight,
-              topRadius: 0.08,
-              bottomRadius: 0.14,
-              vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-            }),
-            modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(
-              Cesium.Cartesian3.fromDegrees(point.lng, point.lat, groundHeight + poleHeight / 2),
-            ),
-            attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(LAMP_COLOR) },
-          }),
-        );
-        instances.push(
-          new Cesium.GeometryInstance({
-            geometry: new Cesium.BoxGeometry({
-              minimum: new Cesium.Cartesian3(-0.45, -0.18, -0.12),
-              maximum: new Cesium.Cartesian3(0.45, 0.18, 0.12),
-              vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-            }),
-            modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(
-              Cesium.Cartesian3.fromDegrees(point.lng, point.lat, groundHeight + poleHeight),
-            ),
-            attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(LAMP_HEAD_COLOR) },
-          }),
-        );
+        shapes.push(...lampShapes(point, { tags, ground }));
       } else {
-        instances.push(
-          new Cesium.GeometryInstance({
-            geometry: new Cesium.BoxGeometry({
-              minimum: new Cesium.Cartesian3(-0.9, -0.25, -0.22),
-              maximum: new Cesium.Cartesian3(0.9, 0.25, 0.22),
-              vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-            }),
-            modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(
-              Cesium.Cartesian3.fromDegrees(point.lng, point.lat, groundHeight + 0.45),
-            ),
-            attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(BENCH_COLOR) },
-          }),
-        );
+        shapes.push(...benchShapes(point, { ground }));
       }
     });
+
+    const batches = batchShapes(shapes);
+    const instances = [...batches.solids, ...batches.flatSolids];
 
     if (instances.length === 0) return;
     // 標高を取っている間に次の要求（または clear）が来ていたら、作らない

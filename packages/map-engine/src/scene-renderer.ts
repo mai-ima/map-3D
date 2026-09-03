@@ -23,7 +23,15 @@
  */
 
 import * as Cesium from 'cesium';
-import type { BoxShape, ExtrudedShape, GroundRibbon, LatLng, SceneShape } from '@ijm/shared';
+import type {
+  BoxShape,
+  ExtrudedShape,
+  GroundRibbon,
+  LatLng,
+  RevolvedShape,
+  SceneShape,
+  SpheroidShape,
+} from '@ijm/shared';
 import { distanceMeters } from '@ijm/shared';
 import { liveScene, waitForPrimitives } from './primitive-swap';
 
@@ -234,6 +242,59 @@ function boxInstance(shape: BoxShape): Cesium.GeometryInstance {
   });
 }
 
+/**
+ * 縦に立てた回転体。
+ *
+ * Cesium の CylinderGeometry は中心が原点なので、
+ * 底面を指定の高さに合わせるには半分だけ持ち上げる。
+ */
+function revolvedInstance(shape: RevolvedShape): Cesium.GeometryInstance {
+  const centre = Cesium.Cartesian3.fromDegrees(
+    shape.base.lng,
+    shape.base.lat,
+    (shape.base.alt ?? 0) + shape.height / 2,
+  );
+  return new Cesium.GeometryInstance({
+    id: shape.id,
+    modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(centre),
+    geometry: new Cesium.CylinderGeometry({
+      length: Math.max(0.01, shape.height),
+      topRadius: Math.max(0, shape.topRadius),
+      bottomRadius: Math.max(0.001, shape.bottomRadius),
+      // 木の幹や柱は細い。分割を上げても画面上はほとんど変わらないので、
+      // 頂点数を抑えるほうを取る
+      slices: 12,
+      vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+    }),
+    attributes: {
+      color: Cesium.ColorGeometryInstanceAttribute.fromColor(colorOf(shape.color)),
+    },
+  });
+}
+
+/** 回転楕円体（樹冠のかたまり） */
+function spheroidInstance(shape: SpheroidShape): Cesium.GeometryInstance {
+  const centre = Cesium.Cartesian3.fromDegrees(
+    shape.centre.lng,
+    shape.centre.lat,
+    shape.centre.alt ?? 0,
+  );
+  const r = Math.max(0.05, shape.radius);
+  return new Cesium.GeometryInstance({
+    id: shape.id,
+    modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(centre),
+    geometry: new Cesium.EllipsoidGeometry({
+      radii: new Cesium.Cartesian3(r, r, Math.max(0.05, shape.heightRadius)),
+      stackPartitions: 7,
+      slicePartitions: 9,
+      vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+    }),
+    attributes: {
+      color: Cesium.ColorGeometryInstanceAttribute.fromColor(colorOf(shape.color)),
+    },
+  });
+}
+
 /** 描き方ごとに振り分けた GeometryInstance */
 interface Batches {
   /** 地表に貼る面。order ごとに分ける（小さいほど奥） */
@@ -296,6 +357,16 @@ export function batchShapes(shapes: SceneShape[]): Batches {
       }
       case 'box': {
         const instance = boxInstance(shape);
+        (shape.castsShadow === false ? batches.flatSolids : batches.solids).push(instance);
+        break;
+      }
+      case 'revolved': {
+        const instance = revolvedInstance(shape);
+        (shape.castsShadow === false ? batches.flatSolids : batches.solids).push(instance);
+        break;
+      }
+      case 'spheroid': {
+        const instance = spheroidInstance(shape);
         (shape.castsShadow === false ? batches.flatSolids : batches.solids).push(instance);
         break;
       }

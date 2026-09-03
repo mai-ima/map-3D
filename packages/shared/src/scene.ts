@@ -83,7 +83,61 @@ export interface GroundRibbon {
   order?: number;
 }
 
-export type SceneShape = ExtrudedShape | BoxShape | GroundRibbon;
+/**
+ * 縦に立てた回転体。
+ *
+ * 木の幹、信号や街灯の柱、樹冠のふくらみなど、
+ * 「軸のまわりに回した形」をこれ 1 つで表す。
+ *
+ *   上下の半径が同じ      … 円柱（柱）
+ *   上が 0                … 円錐（針葉樹の樹冠）
+ *   上下の半径が違う      … 円錐台（根元が太い幹）
+ *
+ * 直方体で近似すると、拡大したときに角が見えて木に見えない。
+ * 一方これは SceneKit の SCNCylinder / SCNCone、
+ * RealityKit の MeshResource.generateCylinder にそのまま対応する。
+ */
+export interface RevolvedShape {
+  kind: 'revolved';
+  id?: string;
+  /** 底面の中心。alt は楕円体高 (m) */
+  base: LatLngAlt;
+  /** 高さ (m) */
+  height: number;
+  /** 底面の半径 (m) */
+  bottomRadius: number;
+  /** 上面の半径 (m)。0 なら円錐 */
+  topRadius: number;
+  color: string;
+  castsShadow?: boolean;
+}
+
+/**
+ * 回転楕円体。
+ *
+ * 樹冠のかたまりに使う。1 つでは棒付きキャンディにしか見えないので、
+ * ずらして重ねることで枝葉のふくらみを作る。
+ * SceneKit の SCNSphere（スケール付き）に対応する。
+ */
+export interface SpheroidShape {
+  kind: 'spheroid';
+  id?: string;
+  /** 中心。alt は楕円体高 (m) */
+  centre: LatLngAlt;
+  /** 水平方向の半径 (m) */
+  radius: number;
+  /** 鉛直方向の半径 (m) */
+  heightRadius: number;
+  color: string;
+  castsShadow?: boolean;
+}
+
+export type SceneShape =
+  | ExtrudedShape
+  | BoxShape
+  | GroundRibbon
+  | RevolvedShape
+  | SpheroidShape;
 
 /**
  * まとまりを持つ形の集合。
@@ -113,6 +167,12 @@ export function estimateVertexCount(shape: SceneShape): number {
       return 24;
     case 'ribbon':
       return shape.path.length * 2;
+    case 'revolved':
+      // 側面 16 分割 ×（上下 2 段）+ ふた
+      return 16 * 2 + 16 * 2;
+    case 'spheroid':
+      // 経度 10 × 緯度 8 の格子
+      return 10 * 8 * 2;
   }
 }
 

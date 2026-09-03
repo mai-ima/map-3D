@@ -16,7 +16,7 @@
  */
 
 import type { BBox } from '@ijm/shared';
-import { fetchWithTimeout, getGisConfig } from './config';
+import { fetchWithTimeout, getGisConfig, remainingMs } from './config';
 import type { OverpassElement } from './overpass';
 
 const OSM_API = 'https://api.openstreetmap.org/api/0.6/map';
@@ -112,10 +112,48 @@ export class OsmApiUnavailableError extends Error {
 }
 
 /**
+ * 分割して取り直す深さの上限。
+ *
+ * 1 段で 4 分割、2 段で 16 分割。市街地の 3km 四方は 1 段で足りる。
+ * 際限なく割ると、公開 API に大量の要求を投げることになる。
+ */
+const MAX_SPLIT_DEPTH = 2;
+
+/** OSM API が「1 回で返せるノード数の上限」を理由に断ったか */
+function isTooManyNodes(status: number, body: string): boolean {
+  return status === 400 && /too many nodes/i.test(body);
+}
+
+/** bbox を 4 つに割る */
+function quarters(bbox: BBox): BBox[] {
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const midLng = (minLng + maxLng) / 2;
+  const midLat = (minLat + maxLat) / 2;
+  return [
+    [minLng, minLat, midLng, midLat],
+    [midLng, minLat, maxLng, midLat],
+    [minLng, midLat, midLng, maxLat],
+    [midLng, midLat, maxLng, maxLat],
+  ];
+}
+
+/**
  * 範囲内の全要素を取得する。
  * タグを持つ node と way だけを返す（タグの無い形状点は使わない）。
+ *
+ * OSM 本体の API は **1 回の応答が 50,000 ノードを超えると 400 を返す。**
+ * 市街地では 3km 四方でこの上限に当たる（実測: 浜松駅周辺で
+ * 「You requested too many nodes (limit is 50000)」）。
+ * Overpass が混んでいるときの切り替え先がここなので、
+ * 断られたら範囲を 4 つに割って取り直す。割らないと、
+ * 切り替え先があるのに何も出ないまま終わる。
  */
-export async function fetchOsmMap(bbox: BBox): Promise<OverpassElement[]> {
+export async function fetchOsmMap(
+  bbox: BBox,
+  /** この時刻（Date.now() 基準）までに諦める。Overpass と合計の時間を共有する */
+  deadline?: number,
+  depth = 0,
+): Promise<OverpassElement[]> {
   const [minLng, minLat, maxLng, maxLat] = bbox;
   if (maxLng - minLng > MAX_SPAN_DEG || maxLat - minLat > MAX_SPAN_DEG) {
     throw new OsmApiUnavailableError(
@@ -124,14 +162,56 @@ export async function fetchOsmMap(bbox: BBox): Promise<OverpassElement[]> {
   }
 
   const cfg = getGisConfig();
+  const remaining = remainingMs(deadline, cfg.timeoutMs);
+  if (remaining < 1000) {
+    throw new OsmApiUnavailableError('取得にかけられる時間を使い切りました');
+  }
+
   const url = `${OSM_API}?bbox=${minLng},${minLat},${maxLng},${maxLat}`;
   const res = await fetchWithTimeout(url, {
     headers: { 'User-Agent': cfg.userAgent, Accept: 'application/xml' },
-    timeoutMs: cfg.timeoutMs,
+    timeoutMs: Math.min(cfg.timeoutMs, remaining),
   });
 
   if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    if (isTooManyNodes(res.status, body) && depth < MAX_SPLIT_DEPTH) {
+      return fetchOsmMapSplit(bbox, deadline, depth);
+    }
     throw new OsmApiUnavailableError(`OSM API から取得できませんでした (HTTP ${res.status})`);
   }
   return parseOsmXml(await res.text());
+}
+
+/**
+ * 4 つに割って取り直し、結果をつなぐ。
+ *
+ * 境界にまたがる way は複数の区画に現れるので、id で重複を落とす。
+ * 一部が失敗しても、取れたものは返す（切り替え先なので全部揃わなくてよい）。
+ */
+async function fetchOsmMapSplit(
+  bbox: BBox,
+  deadline: number | undefined,
+  depth: number,
+): Promise<OverpassElement[]> {
+  const parts = await Promise.all(
+    quarters(bbox).map((part) =>
+      fetchOsmMap(part, deadline, depth + 1).catch(() => [] as OverpassElement[]),
+    ),
+  );
+
+  const seen = new Set<string>();
+  const merged: OverpassElement[] = [];
+  for (const part of parts) {
+    for (const el of part) {
+      const key = `${el.type}/${el.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(el);
+    }
+  }
+  if (merged.length === 0) {
+    throw new OsmApiUnavailableError('OSM API から取得できませんでした（分割しても空）');
+  }
+  return merged;
 }

@@ -611,7 +611,14 @@ export default function AppShell() {
     try {
       const res = await fetchStructures(bbox);
       if (res.structures.length === 0) {
-        notify('この範囲に高架・橋のデータがありません');
+        // 「この範囲に無い」と「取り寄せられなかった」は別のこと。
+        // OSM の公開サーバが混んでいるときに前者と言うと、
+        // 高架のある場所でも「データがありません」と出てしまう
+        notify(
+          res.degraded
+            ? '地図データの取り寄せに時間がかかっています。少し待って、もう一度お試しください。'
+            : 'この範囲に高架・橋のデータがありません',
+        );
         return;
       }
       await engine.showElevatedStructures(res.structures, bbox.join(','));
@@ -649,7 +656,11 @@ export default function AppShell() {
     try {
       const res = await fetchRoads(bbox);
       if (res.roads.length === 0 && res.rails.length === 0) {
-        notify('この範囲に道路データがありません');
+        notify(
+          res.degraded
+            ? '地図データの取り寄せに時間がかかっています。少し待って、もう一度お試しください。'
+            : 'この範囲に道路データがありません',
+        );
         return;
       }
       const key = bbox.join(',');

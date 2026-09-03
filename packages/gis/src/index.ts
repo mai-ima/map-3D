@@ -6,6 +6,7 @@ export * from './structures';
 export * from './structure-merge';
 export * from './structure-geometry';
 export * from './road-geometry';
+export * from './street-furniture-geometry';
 export * from './poi-categories';
 export * from './gsi';
 export * from './plateau';

@@ -67,7 +67,7 @@ export async function GET(request: Request) {
       roads,
       rails,
       points,
-      degraded: roads.length === 0 && rails.length === 0,
+      degraded: scene.degraded ?? false,
       attribution: attributionStrings(['osm']),
     },
     { headers: { 'Cache-Control': 'public, max-age=600, s-maxage=86400' } },

@@ -180,20 +180,40 @@ test('高架の線路は地表に描かない（高架側が建てる）', () =>
   assert.equal(shapes.length, 0);
 });
 
-test('信号は柱と灯器で組む', () => {
+test('信号は柱・アーム・灯器で組み、道路の向きに合わせる', () => {
+  // 実物の車両用信号は車道の上へ灯器を張り出している。
+  // 柱だけだと遠目には細い棒が立っているだけで、信号と分からない。
+  // 向きも真北に固定していたため、交差点のどの方向を制御しているのか
+  // 分からず、灯器を真横から見ることになっていた
   const shapes = signalShapes(
-    { id: 'n1', kind: 'traffic_signal', position: { lat: 34.7, lng: 137.73 } },
+    {
+      id: 'n1',
+      kind: 'traffic_signal',
+      position: { lat: 34.7, lng: 137.73 },
+      headingDeg: 90, // 東西の道
+    },
     () => 5,
   );
-  assert.equal(shapes.length, 2);
-  const [pole, head] = shapes;
-  assert.equal(pole.kind, 'box');
-  if (pole.kind !== 'box' || head.kind !== 'box') return;
-  // 柱は 5m。灯器はその頭
-  assert.equal(pole.size.z, 5);
-  assert.ok(head.centre.alt! > pole.centre.alt!, '灯器は柱より高い');
-  // 3 位の横型灯器（幅 0.95m）
-  assert.ok(head.size.x > head.size.y, '灯器は横長');
+  const pole = shapes.find((s) => s.kind === 'revolved');
+  const arm = shapes.find((s) => s.id?.endsWith('#arm'));
+  const head = shapes.find((s) => s.id?.endsWith('#head'));
+  assert.ok(pole && arm && head, '柱・アーム・灯器が揃っていない');
+  if (pole.kind !== 'revolved' || head.kind !== 'box') return;
+
+  // 灯器の下端は車道上 5.0m 以上（警察庁の設置基準）
+  const bottom = (head.centre.alt ?? 0) - head.size.z / 2;
+  assert.ok(bottom - 5 >= 5.0 - 0.01, `灯器が低い: 路面から ${bottom - 5}m`);
+  // 3 位の横型灯器（幅 0.94m × 高さ 0.35m）
+  assert.ok(Math.abs(head.size.y - 0.94) < 0.01, '灯器の幅が実寸でない');
+  assert.ok(Math.abs(head.size.z - 0.35) < 0.01, '灯器の高さが実寸でない');
+  // 灯器は柱から離れて車道の上にある
+  const away = Math.hypot(
+    (head.centre.lat - pole.base.lat) * 111_320,
+    (head.centre.lng - pole.base.lng) * 111_320 * Math.cos((34.7 * Math.PI) / 180),
+  );
+  assert.ok(away > 2, `灯器が柱の真上にある: ${away.toFixed(1)}m`);
+  // 東西の道なら、アームは南北へ張り出す
+  assert.ok(Math.abs(head.centre.lat - pole.base.lat) > Math.abs(head.centre.lng - pole.base.lng));
 });
 
 test('横断歩道や停止線は信号として組み立てない', () => {
@@ -439,9 +459,8 @@ test('上空でも線路と信号は出す', () => {
       .length,
     3,
   );
-  assert.equal(
-    signalShapes({ id: 'n', kind: 'traffic_signal', position: line[0] }, () => 0).length,
-    2,
+  assert.ok(
+    signalShapes({ id: 'n', kind: 'traffic_signal', position: line[0] }, () => 0).length >= 3,
   );
 });
 

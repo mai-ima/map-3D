@@ -10,7 +10,7 @@
 
 import type { BBox, LatLng, Poi } from '@ijm/shared';
 import { distanceMeters } from '@ijm/shared';
-import { fetchWithTimeout, getGisConfig } from './config';
+import { fetchWithTimeout, getGisConfig, primaryDeadline, remainingMs } from './config';
 import { fetchOsmMap } from './osm-api';
 import { CATEGORY_DEFINITIONS, categoryOfTags, findCategory } from './poi-categories';
 
@@ -66,14 +66,40 @@ export class OverpassUnavailableError extends Error {
   }
 }
 
-export async function runOverpassQuery(query: string): Promise<OverpassResponse> {
+export interface OverpassQueryOptions {
+  /**
+   * この時刻（Date.now() 基準）までに諦める。
+   *
+   * エンドポイントを順に試すので、1 回あたりのタイムアウトだけを決めていると
+   * 合計が青天井になる。呼び出し側が「ここまで」を決められるようにする。
+   */
+  deadline?: number;
+}
+
+/** 合計時間の締め切りを、いまから budgetMs 後に置く */
+export function deadlineIn(budgetMs?: number): number {
+  return Date.now() + (budgetMs ?? getGisConfig().budgetMs);
+}
+
+export async function runOverpassQuery(
+  query: string,
+  options: OverpassQueryOptions = {},
+): Promise<OverpassResponse> {
   const cached = cacheGet(query);
   if (cached) return cached;
 
   const cfg = getGisConfig();
+  const deadline = options.deadline ?? Date.now() + cfg.budgetMs;
   const errors: string[] = [];
 
   for (const endpoint of cfg.overpassEndpoints) {
+    // 残り時間が短いなら、投げても結果は間に合わない。
+    // 呼び出し側が予備の取得先へ切り替える時間を残して打ち切る
+    const remaining = remainingMs(deadline, cfg.timeoutMs);
+    if (remaining < 1500) {
+      errors.push('時間切れ');
+      break;
+    }
     try {
       const res = await fetchWithTimeout(endpoint, {
         method: 'POST',
@@ -82,7 +108,7 @@ export async function runOverpassQuery(query: string): Promise<OverpassResponse>
           'User-Agent': cfg.userAgent,
         },
         body: `data=${encodeURIComponent(query)}`,
-        timeoutMs: cfg.timeoutMs,
+        timeoutMs: Math.min(cfg.timeoutMs, remaining),
       });
       if (!res.ok) {
         errors.push(`${endpoint}: HTTP ${res.status}`);
@@ -147,11 +173,12 @@ export async function searchNearbyPois(options: NearbySearchOptions): Promise<Po
 
   // Overpass の公開インスタンスは混雑時に落ちる。全滅した場合は
   // OSM 本体の API から範囲内の要素を取り、こちら側で絞り込む。
+  const deadline = deadlineIn();
   let elements: OverpassElement[];
   try {
-    elements = (await runOverpassQuery(query)).elements;
+    elements = (await runOverpassQuery(query, { deadline: primaryDeadline(deadline) })).elements;
   } catch (error) {
-    elements = await fallbackNearbyFromOsmApi(center, radius, defs);
+    elements = await fallbackNearbyFromOsmApi(center, radius, defs, deadline);
     if (elements.length === 0) throw error;
   }
 
@@ -186,6 +213,7 @@ async function fallbackNearbyFromOsmApi(
   center: LatLng,
   radius: number,
   defs: (typeof CATEGORY_DEFINITIONS)[number][],
+  deadline?: number,
 ): Promise<OverpassElement[]> {
   // 半径 700m 程度までに抑える（それ以上は転送量が跳ね上がる）
   const capped = Math.min(radius, 700);
@@ -193,12 +221,10 @@ async function fallbackNearbyFromOsmApi(
   const dLng = capped / (111_320 * Math.cos((center.lat * Math.PI) / 180) || 1);
 
   try {
-    const all = await fetchOsmMap([
-      center.lng - dLng,
-      center.lat - dLat,
-      center.lng + dLng,
-      center.lat + dLat,
-    ]);
+    const all = await fetchOsmMap(
+      [center.lng - dLng, center.lat - dLat, center.lng + dLng, center.lat + dLat],
+      deadline,
+    );
     const wanted = new Set(defs.map((d) => d.category));
     return all.filter((el) => el.tags && wanted.has(categoryOfTags(el.tags)));
   } catch {
@@ -237,7 +263,11 @@ export async function fetchBuildingAt(point: LatLng, radius = 40): Promise<Overp
  * 高架区間は elevated-structures が別に建てるので、
  * ここで取れたものを描くかどうかは bridge / layer で決める。
  */
-export async function fetchRoadNetwork(bbox: BBox): Promise<OverpassResponse> {
+export async function fetchRoadNetwork(
+  bbox: BBox,
+  /** 合計時間の締め切り。切り替え先と共有する */
+  deadline?: number,
+): Promise<OverpassResponse> {
   const [minLng, minLat, maxLng, maxLat] = bbox;
   const box = `${minLat},${minLng},${maxLat},${maxLng}`;
   const query = `[out:json][timeout:30];
@@ -249,14 +279,17 @@ export async function fetchRoadNetwork(bbox: BBox): Promise<OverpassResponse> {
   node["highway"="stop"](${box});
 );
 out geom;`;
-  return runOverpassQuery(query);
+  return runOverpassQuery(query, { deadline });
 }
 
 /**
  * 街路樹・街灯など、3D 装飾を「実在位置に」置くための点データ。
  * ※ 位置は必ず OSM の実データを使い、AI 生成で位置を捏造しない。
  */
-export async function fetchStreetFurniture(bbox: BBox): Promise<OverpassElement[]> {
+export async function fetchStreetFurniture(
+  bbox: BBox,
+  deadline?: number,
+): Promise<OverpassElement[]> {
   const [minLng, minLat, maxLng, maxLat] = bbox;
   const box = `${minLat},${minLng},${maxLat},${maxLng}`;
   const query = `[out:json][timeout:30];
@@ -266,6 +299,25 @@ export async function fetchStreetFurniture(bbox: BBox): Promise<OverpassElement[
   node["amenity"="bench"](${box});
 );
 out body 3000;`;
-  const res = await runOverpassQuery(query);
-  return res.elements;
+
+  // 道路や構造物と同じく、Overpass が駄目なら OSM 本体に切り替える。
+  // ここだけ切り替え先が無かったため、公開インスタンスが混んでいる間は
+  // 街路樹が必ず 0 件になっていた（実測: 浜松駅周辺で degraded のまま 0 件）
+  const until = deadline ?? deadlineIn();
+  try {
+    return (await runOverpassQuery(query, { deadline: primaryDeadline(until) })).elements;
+  } catch (error) {
+    const all = await fetchOsmMap(bbox, until).catch(() => [] as OverpassElement[]);
+    const points = all.filter((el) => el.type === 'node' && isStreetFurniture(el.tags));
+    if (points.length === 0) throw error;
+    return points;
+  }
+}
+
+/** 3D の装飾として置く点か（位置は必ず OSM の実データ） */
+function isStreetFurniture(tags: Record<string, string> | undefined): boolean {
+  if (!tags) return false;
+  return (
+    tags.natural === 'tree' || tags.highway === 'street_lamp' || tags.amenity === 'bench'
+  );
 }
