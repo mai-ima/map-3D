@@ -397,6 +397,7 @@ export class MapEngine {
   // ---- 基本設定 --------------------------------------------------------
 
   async setTerrain(url: string): Promise<void> {
+    if (this.destroyed) return;
     try {
       const provider = await Cesium.CesiumTerrainProvider.fromUrl(url, {
         requestVertexNormals: true,
@@ -430,6 +431,7 @@ export class MapEngine {
   }
 
   async loadCity(city: City): Promise<void> {
+    if (this.destroyed) return;
     await this.buildings.loadCity(city);
     this.furniture.clear();
     this.requestRender();
@@ -536,6 +538,7 @@ export class MapEngine {
    * 整備されていない範囲では false を返す（異常ではなく、単に重ねられない）。
    */
   async setOptionalLayer(id: OptionalLayerId, enabled: boolean): Promise<boolean> {
+    if (this.destroyed) return false;
     if (!enabled) {
       this.buildings.disableLayer(id);
       this.requestRender();
@@ -1152,6 +1155,8 @@ export class MapEngine {
   // ---- ルート表示 ------------------------------------------------------
 
   async showRoute(route: Route, fit = true): Promise<void> {
+    // 経路の取得は通信を伴う。その間に画面を離れているかもしれない
+    if (this.destroyed) return;
     await this.routeLayer.showRoute(route);
     if (fit) this.fitRoute(route);
     this.requestRender();

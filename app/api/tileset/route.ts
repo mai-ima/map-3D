@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { BBox } from '@ijm/shared';
 import {
   bboxIntersects,
+  parseBBoxParam,
   getCity,
   isDirectTileset,
   lodFallbackChain,
@@ -56,17 +57,6 @@ function regionToBBox(volume: BoundingVolume | undefined): BBox | null {
   if (!region || region.length < 4) return null;
   const [west, south, east, north] = region;
   return [west * RAD_TO_DEG, south * RAD_TO_DEG, east * RAD_TO_DEG, north * RAD_TO_DEG];
-}
-
-function parseBBox(value: string | null): BBox | null {
-  if (!value) return null;
-  const parts = value.split(',').map(Number);
-  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
-  const [minLng, minLat, maxLng, maxLat] = parts;
-  if (minLng >= maxLng || minLat >= maxLat) return null;
-  if (Math.abs(minLat) > 90 || Math.abs(maxLat) > 90) return null;
-  if (Math.abs(minLng) > 180 || Math.abs(maxLng) > 180) return null;
-  return [minLng, minLat, maxLng, maxLat];
 }
 
 /**
@@ -233,7 +223,8 @@ export async function GET(request: Request) {
   }
 
   // 明示指定が無ければ都市の bbox を使う
-  const bbox = parseBBox(url.searchParams.get('bbox')) ?? city.bbox;
+  // 読めない bbox は「絞り込まない」として都市全体を使う
+  const bbox = parseBBoxParam(url.searchParams.get('bbox')) ?? city.bbox;
 
   try {
     // 詳細レイヤはベース（LOD2）に重ねるものなので、LOD3 未満には落とさない。

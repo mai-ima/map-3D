@@ -8,6 +8,7 @@
 import * as Cesium from 'cesium';
 import type { IconName, LatLng, Poi, Route } from '@ijm/shared';
 import { markerUri, type MarkerKind } from './marker-icons';
+import { liveScene } from './primitive-swap';
 
 export interface MarkerOptions {
   id: string;
@@ -56,6 +57,8 @@ export class RouteLayer {
   /** ルートを描画する */
   async showRoute(route: Route): Promise<void> {
     await this.whenReady();
+    // データソースの用意を待っている間に画面を離れているかもしれない
+    if (!liveScene(this.viewer)) return;
     this.routeSource.entities.removeAll();
     this.currentRoute = route;
 

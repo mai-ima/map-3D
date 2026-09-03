@@ -29,6 +29,7 @@ import {
   stitchRoads,
   type RoadPiece,
 } from '../road-geometry';
+import { classify } from '../structures';
 
 const line: LatLng[] = [
   { lat: 34.7047, lng: 137.7342 },
@@ -518,5 +519,47 @@ test('地形の高さが取れなくても NaN を出さない', () => {
   for (const s of signals) {
     if (s.kind !== 'box') continue;
     assert.ok(Number.isFinite(s.centre.alt), '信号の高さが NaN');
+  }
+});
+
+test('地表に描かない判定は、高架を建てる判定と揃っている', () => {
+  // 揃っていないと、どちらからも描かれない道や線路ができる。
+  // 実際にそうなっていた。高架の判定を「layer > 0」から
+  // 「bridge があるか、250m 以上続いて上の層にある」に直したとき、
+  // 地表側は古いままだったので、layer=1 の短い線路が
+  // 高架としても建てられず、地表にも描かれなくなっていた。
+  const way = (tags: Record<string, string>, lengthM: number) => {
+    // 東へ lengthM だけ伸びる経路
+    const cos = Math.cos((34.7 * Math.PI) / 180);
+    return {
+      type: 'way' as const,
+      id: 1,
+      tags,
+      geometry: [
+        { lat: 34.7, lon: 137.73 },
+        { lat: 34.7, lon: 137.73 + lengthM / (111_320 * cos) },
+      ],
+    };
+  };
+
+  const cases: [Record<string, string>, number, boolean, string][] = [
+    // [タグ, 長さ, 地表に描くか, 説明]
+    [{ railway: 'rail', layer: '1' }, 8, true, '8m の交差部は高架にならないので地表に描く'],
+    [{ railway: 'rail', layer: '1' }, 100, true, '100m でも高架にはならない'],
+    [{ railway: 'rail', layer: '1' }, 400, false, '400m の高架は構造物側が建てる'],
+    [{ railway: 'rail', bridge: 'yes' }, 30, false, '橋は構造物側が建てる'],
+    [{ railway: 'rail' }, 400, true, 'ただの地上の線路'],
+    [{ highway: 'residential', layer: '1' }, 30, true, 'layer が付いた生活道路'],
+    [{ highway: 'residential', bridge: 'yes' }, 20, false, '橋は構造物側'],
+    [{ highway: 'motorway', layer: '1' }, 400, false, '長い都市高速は構造物側'],
+  ];
+
+  for (const [tags, lengthM, drawOnGround, why] of cases) {
+    const scene = buildRoadScene([way(tags, lengthM)]);
+    const piece = tags.railway ? scene.rails[0] : scene.roads[0];
+    assert.ok(piece, `${why}: 要素が取れていない`);
+    assert.equal(piece.elevated, !drawOnGround, why);
+    // 高架として建てられるかと、地表に描かないかが一致していること
+    assert.equal(classify(tags, lengthM) !== null, piece.elevated, `${why}: 判定が食い違う`);
   }
 });

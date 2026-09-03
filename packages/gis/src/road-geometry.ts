@@ -20,6 +20,7 @@
 import type { BBox, GroundRibbon, LatLng, LatLngAlt, SceneShape } from '@ijm/shared';
 import { fetchOsmMap } from './osm-api';
 import { fetchRoadNetwork, type OverpassElement } from './overpass';
+import { classify } from './structures';
 
 /** 道路の種別。描き分けと幅員の決定に使う */
 export type RoadClass =
@@ -256,14 +257,37 @@ export interface RoadScene {
   points: RoadPoint[];
 }
 
-function isElevated(tags: Record<string, string>): boolean {
-  const layer = parseNumber(tags.layer) ?? 0;
-  return (tags.bridge !== undefined && tags.bridge !== 'no') || layer > 0;
+/**
+ * 地表に描かないもの（高架として別に建てられるもの）か。
+ *
+ * 判定は高架を建てる側（structures.ts の classify）と必ず揃える。
+ * 揃っていないと、どちらからも描かれない道や線路ができる。
+ *
+ * 実際にそうなっていた。高架の判定を「layer > 0」から
+ * 「bridge があるか、250m 以上続いて上の層にある」に直したとき、
+ * こちらは古いままだったので、layer=1 の短い線路が
+ * 高架としても建てられず、地表にも描かれなくなっていた。
+ * 浜松駅周辺 1km 四方の実測で、地表の線路が 46 本すべて消えていた。
+ */
+function isElevated(tags: Record<string, string>, lengthM: number): boolean {
+  return classify(tags, lengthM) !== null;
 }
 
 function isUnderground(tags: Record<string, string>): boolean {
   const layer = parseNumber(tags.layer) ?? 0;
   return (tags.tunnel !== undefined && tags.tunnel !== 'no') || layer < 0;
+}
+
+/** 経路の長さ (m) */
+function pathLengthOf(path: LatLng[]): number {
+  let total = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const a = path[i - 1];
+    const b = path[i];
+    const cos = Math.cos((a.lat * Math.PI) / 180) || 1;
+    total += Math.hypot((b.lat - a.lat) * 111_320, (b.lng - a.lng) * 111_320 * cos);
+  }
+  return total;
 }
 
 /** OSM の要素から、道路・線路・点を取り出す */
@@ -299,6 +323,8 @@ export function buildRoadScene(elements: OverpassElement[]): RoadScene {
     const geometry = el.geometry ?? [];
     if (geometry.length < 2) continue;
     const path = geometry.map((p) => ({ lat: p.lat, lng: p.lon }));
+    // 高架として建てられるかは長さにも依る（市街地の高架は長く続く）
+    const lengthM = pathLengthOf(path);
 
     if (tags.railway) {
       if (!['rail', 'light_rail', 'subway', 'tram', 'monorail'].includes(tags.railway)) continue;
@@ -307,7 +333,7 @@ export function buildRoadScene(elements: OverpassElement[]): RoadScene {
         name: tags.name,
         path,
         tracks: clamp(Math.round(parseNumber(tags.tracks) ?? 1), 1, MAX_TRACKS),
-        elevated: isElevated(tags),
+        elevated: isElevated(tags, lengthM),
         underground: isUnderground(tags),
       });
       continue;
@@ -324,7 +350,7 @@ export function buildRoadScene(elements: OverpassElement[]): RoadScene {
       lanes: laneCountOf(cls, tags),
       oneway: tags.oneway === 'yes' || tags.oneway === '1' || tags.junction === 'roundabout',
       speedLimit: speedLimitOf(tags),
-      elevated: isElevated(tags),
+      elevated: isElevated(tags, lengthM),
       underground: isUnderground(tags),
     });
   }
