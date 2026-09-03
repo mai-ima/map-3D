@@ -38,6 +38,8 @@ export interface MobileShellProps {
   city: City;
   origin: PlacePoint | null;
   destination: PlacePoint | null;
+  /** 経由地。出発地から目的地へ向かう途中で、この順に必ず通る */
+  via: PlacePoint[];
   mode: TravelMode;
   route: Route | null;
   routing: boolean;
@@ -63,6 +65,7 @@ export interface MobileShellProps {
 
   viewCenter: () => LatLng | null;
   onSelectOrigin: (place: PlacePoint | null) => void;
+  onChangeVia: (via: PlacePoint[]) => void;
   onSelectDestination: (place: PlacePoint | null) => void;
   onModeChange: (mode: TravelMode) => void;
   onCalculateRoute: () => void;
@@ -120,6 +123,12 @@ const LAYERS: { id: string; label: string }[] = [
   { id: 'furniture', label: '都市設備' },
   { id: 'vegetation', label: '植生' },
 ];
+/**
+ * 経由地の上限。BFF 側も同じ数で止めている
+ * （app/api/route/route.ts の MAX_VIA）。
+ */
+const MAX_VIA = 8;
+
 const QUALITY_CHOICES = [
   { id: 'auto', label: '自動' },
   { id: 'high', label: '高品質' },
@@ -142,7 +151,8 @@ export default function MobileShell(props: MobileShellProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
-  const [pickingOrigin, setPickingOrigin] = useState(false);
+  /** 検索結果をどこに入れるか。地点の種類ごとに入口を分ける */
+  const [picking, setPicking] = useState<'origin' | 'via' | 'destination'>('destination');
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ナビ中はシートを畳んで地図に集中させる
@@ -183,20 +193,22 @@ export default function MobileShell(props: MobileShellProps) {
   const choose = useCallback(
     (r: SearchResult) => {
       const place: PlacePoint = { name: r.name, position: { lat: r.lat, lng: r.lng } };
-      if (pickingOrigin) {
+      if (picking === 'origin') {
         props.onSelectOrigin(place);
-        setPickingOrigin(false);
-        setTab('route');
+      } else if (picking === 'via') {
+        // 経由地は末尾に足す。順に通るので並びがそのまま経路になる
+        props.onChangeVia([...props.via, place]);
       } else {
         props.onSelectDestination(place);
         props.onFocusPlace(place);
-        setTab('route');
       }
+      setPicking('destination');
+      setTab('route');
       setQuery('');
       setResults([]);
       setSheetIndex(1);
     },
-    [pickingOrigin, props],
+    [picking, props],
   );
 
   return (
@@ -234,7 +246,13 @@ export default function MobileShell(props: MobileShellProps) {
                 onChange={(e) => setQuery(e.target.value)}
                 onFocus={() => setSheetIndex(2)}
                 enterKeyHint="search"
-                placeholder={pickingOrigin ? '出発地を検索' : '目的地を検索'}
+                placeholder={
+                  picking === 'origin'
+                    ? '出発地を検索'
+                    : picking === 'via'
+                      ? '経由地を検索'
+                      : '目的地を検索'
+                }
                 className="w-full rounded-[12px] bg-white/8 py-3 pl-9 pr-9 text-[16px] text-mist-100 outline-none ring-1 ring-white/8 placeholder:text-mist-500 focus:ring-signal-400/50"
               />
               {query && (
@@ -303,17 +321,46 @@ export default function MobileShell(props: MobileShellProps) {
                 title={props.origin?.name ?? '現在の画面中心から'}
                 detail="出発地"
                 onClick={() => {
-                  setPickingOrigin(true);
+                  setPicking('origin');
                   setTab('search');
                   setSheetIndex(2);
                 }}
               />
+              {/*
+                経由地。通る順に並ぶ。押すと消える（並べ替えは
+                いったん消して入れ直す。順序が要点なので、
+                中途半端な入れ替え操作より分かりやすい）
+              */}
+              {props.via.map((place, i) => (
+                <ListRow
+                  key={`${place.name}-${i}`}
+                  iconName="pin"
+                  title={place.name}
+                  detail={`経由地 ${i + 1}（押すと消す）`}
+                  onClick={() => props.onChangeVia(props.via.filter((_, k) => k !== i))}
+                />
+              ))}
               <ListRow
                 iconName="destination"
                 title={props.destination?.name ?? '目的地を選ぶ'}
                 detail="目的地"
                 onClick={() => {
-                  setPickingOrigin(false);
+                  setPicking('destination');
+                  setTab('search');
+                  setSheetIndex(2);
+                }}
+              />
+              <ListRow
+                iconName="pin"
+                title="経由地を追加"
+                detail={
+                  props.via.length >= MAX_VIA
+                    ? `経由地は ${MAX_VIA} か所までです`
+                    : '先に寄る場所を足す'
+                }
+                onClick={() => {
+                  if (props.via.length >= MAX_VIA) return;
+                  setPicking('via');
                   setTab('search');
                   setSheetIndex(2);
                 }}

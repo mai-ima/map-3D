@@ -49,11 +49,17 @@ export function fetchRoads(
   return getJson(`/api/roads?bbox=${bbox.map((n) => n.toFixed(5)).join(',')}`);
 }
 
-export function fetchRoute(from: LatLng, to: LatLng, mode: TravelMode): Promise<Route> {
+export function fetchRoute(
+  from: LatLng,
+  to: LatLng,
+  mode: TravelMode,
+  /** 経由地。出発地から目的地へ向かう途中で、この順に必ず通る */
+  via: LatLng[] = [],
+): Promise<Route> {
   return getJson<Route>('/api/route', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from, to, mode }),
+    body: JSON.stringify({ from, to, mode, ...(via.length > 0 ? { via } : {}) }),
   });
 }
 

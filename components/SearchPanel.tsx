@@ -15,18 +15,29 @@ export interface PlacePoint {
 export interface SearchPanelProps {
   origin: PlacePoint | null;
   destination: PlacePoint | null;
+  /** 経由地。出発地から目的地へ向かう途中で、この順に必ず通る */
+  via: PlacePoint[];
   mode: TravelMode;
   route: Route | null;
   routing: boolean;
   viewCenter: () => LatLng | null;
   onSelectOrigin: (place: PlacePoint | null) => void;
   onSelectDestination: (place: PlacePoint | null) => void;
+  onChangeVia: (via: PlacePoint[]) => void;
   onModeChange: (mode: TravelMode) => void;
   onCalculateRoute: () => void;
   onStartNavigation: () => void;
   onFocusPlace: (place: PlacePoint) => void;
   onClearRoute: () => void;
 }
+
+/**
+ * 経由地の上限。
+ *
+ * 経路エンジンは地点が増えるほど時間がかかる。
+ * BFF 側も同じ数で止めている（app/api/route/route.ts の MAX_VIA）。
+ */
+const MAX_VIA = 8;
 
 const MODES: { value: TravelMode; label: string; iconName: IconName }[] = [
   { value: 'walk', label: '徒歩', iconName: 'walk' },
@@ -38,12 +49,14 @@ export default function SearchPanel(props: SearchPanelProps) {
   const {
     origin,
     destination,
+    via,
     mode,
     route,
     routing,
     viewCenter,
     onSelectOrigin,
     onSelectDestination,
+    onChangeVia,
     onModeChange,
     onCalculateRoute,
     onStartNavigation,
@@ -146,6 +159,19 @@ export default function SearchPanel(props: SearchPanelProps) {
                 >
                   出発地に
                 </button>
+                <button
+                  onClick={() =>
+                    onChangeVia([
+                      ...via,
+                      { name: r.name, position: { lat: r.lat, lng: r.lng } },
+                    ])
+                  }
+                  disabled={via.length >= MAX_VIA}
+                  className="shrink-0 rounded-full border border-white/12 px-2 py-1 text-[11px] text-mist-300 hover:border-turn-400/50 hover:text-turn-400 disabled:pointer-events-none disabled:opacity-40"
+                  title={via.length >= MAX_VIA ? `経由地は ${MAX_VIA} か所までです` : undefined}
+                >
+                  経由地に
+                </button>
               </div>
             </li>
           ))}
@@ -164,6 +190,22 @@ export default function SearchPanel(props: SearchPanelProps) {
               onClear={() => onSelectOrigin(null)}
               onFocus={onFocusPlace}
             />
+            {/*
+              経由地。出発地と目的地の間に、通る順に並べる。
+              市販カーナビの標準機能で、「先に寄ってから」を表す
+            */}
+            {via.map((place, i) => (
+              <PlaceRow
+                key={`${place.name}-${i}`}
+                iconName="pin"
+                iconClass="text-turn-400"
+                label={`経由地 ${i + 1}`}
+                place={place}
+                placeholder=""
+                onClear={() => onChangeVia(via.filter((_, k) => k !== i))}
+                onFocus={onFocusPlace}
+              />
+            ))}
             <PlaceRow
               iconName="destination"
               iconClass="text-alert-400"

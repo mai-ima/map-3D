@@ -16,6 +16,36 @@ function parsePoint(value: string | null): LatLng | null {
 }
 
 /**
+ * 経由地の上限。
+ *
+ * 経路エンジンは地点が増えるほど時間がかかる。
+ * 公開デモには 1 リクエスト/秒の制限もあるので、
+ * 1 回の要求が長くなりすぎない数で止める。
+ * 市販カーナビの経由地も 5 か所前後が普通。
+ */
+const MAX_VIA = 8;
+
+/** 経由地を読む。読めない点は無かったことにする（経路そのものは出す） */
+function parseVia(values: (string | null)[] | LatLng[] | undefined): LatLng[] {
+  if (!Array.isArray(values)) return [];
+  const out: LatLng[] = [];
+  for (const value of values) {
+    const point =
+      typeof value === 'string' || value === null
+        ? parsePoint(value)
+        : Number.isFinite(value?.lat) &&
+            Number.isFinite(value?.lng) &&
+            Math.abs(value.lat) <= 90 &&
+            Math.abs(value.lng) <= 180
+          ? { lat: value.lat, lng: value.lng }
+          : null;
+    if (point) out.push(point);
+    if (out.length >= MAX_VIA) break;
+  }
+  return out;
+}
+
+/**
  * 返ってきた経路が案内に使える形かを確かめる。
  *
  * 経路エンジンの応答が壊れていると、座標が 1 点しかなかったり、
@@ -36,9 +66,15 @@ function isUsableRoute(route: { coordinates?: [number, number][] }): boolean {
   );
 }
 
-async function handle(from: LatLng, to: LatLng, mode: TravelMode) {
+async function handle(from: LatLng, to: LatLng, mode: TravelMode, via: LatLng[] = []) {
   try {
-    const route = await routeWithFallback({ from, to, mode, language: 'ja-JP' });
+    const route = await routeWithFallback({
+      from,
+      to,
+      mode,
+      language: 'ja-JP',
+      ...(via.length > 0 ? { via } : {}),
+    });
     if (!isUsableRoute(route)) {
       return NextResponse.json(
         { error: '経路の形状が壊れています。もう一度お試しください。' },
@@ -62,6 +98,8 @@ export async function GET(request: Request) {
   const from = parsePoint(url.searchParams.get('from'));
   const to = parsePoint(url.searchParams.get('to'));
   const mode = (url.searchParams.get('mode') ?? 'walk') as TravelMode;
+  // 経由地は via を繰り返して並べる（?via=35.6,139.7&via=35.7,139.8）
+  const via = parseVia(url.searchParams.getAll('via'));
 
   if (!from || !to) {
     return NextResponse.json(
@@ -73,13 +111,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: `未対応の移動手段です: ${mode}` }, { status: 400 });
   }
 
-  return handle(from, to, mode);
+  return handle(from, to, mode, via);
 }
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
     from?: LatLng;
     to?: LatLng;
+    via?: LatLng[];
     mode?: TravelMode;
   };
 
@@ -97,5 +136,5 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `未対応の移動手段です: ${mode}` }, { status: 400 });
   }
 
-  return handle(body.from, body.to, mode);
+  return handle(body.from, body.to, mode, parseVia(body.via));
 }

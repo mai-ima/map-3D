@@ -21,6 +21,7 @@ import {
 } from '@ijm/shared';
 import type { MapEngine, OptionalLayerId, QualityTier } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
+import { advancePassedVia, remainingVia } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
 import { nearestRoad, type RailPiece, type RoadPiece, type RoadPoint } from '@ijm/gis';
 import { Icon } from '@ijm/ui';
@@ -72,6 +73,11 @@ export default function AppShell() {
 
   const [origin, setOrigin] = useState<PlacePoint | null>(null);
   const [destination, setDestination] = useState<PlacePoint | null>(null);
+  /**
+   * 経由地。出発地から目的地へ向かう途中で、この順に必ず通る。
+   * 市販カーナビの標準機能で、「先に寄ってから」を表す
+   */
+  const [via, setVia] = useState<PlacePoint[]>([]);
   const [mode, setMode] = useState<TravelMode>('walk');
   const [route, setRoute] = useState<Route | null>(null);
   const [routing, setRouting] = useState(false);
@@ -127,6 +133,9 @@ export default function AppShell() {
   const furnitureLoadingRef = useRef(false);
   /** 建物モデルを読み直している最中か。連打で二重に読ませないための門 */
   const buildingModelBusyRef = useRef(false);
+  /** 案内中の経由地と、そのうち通過した数。再検索で引き返さないために持つ */
+  const viaRef = useRef<PlacePoint[]>([]);
+  const passedViaRef = useRef(0);
   /**
    * 読み込んだ道路。走行中の制限速度を引くために持っておく。
    * tick は毎秒走るので、再生成されない ref に置く。
@@ -229,6 +238,20 @@ export default function AppShell() {
     // 自動リルート。
     // 一瞬の測位のぶれで再検索すると案内が落ち着かないので、
     // 「外れた状態が続いていること」を条件にする。
+    /**
+     * 経由地の通過を進める。
+     *
+     * 順に通るので、先頭から見て近づいたものを通過済みにする。
+     * 再検索のときに、通過済みの経由地を渡さないために要る
+     */
+    if (viaRef.current.length > 0) {
+      passedViaRef.current = advancePassedVia(
+        viaRef.current.map((v) => v.position),
+        passedViaRef.current,
+        result.progress.rawPosition,
+      );
+    }
+
     if (result.progress.offRoute) {
       const now = Date.now();
       offRouteSinceRef.current ??= now;
@@ -317,6 +340,12 @@ export default function AppShell() {
     destinationRef.current = destination;
   }, [destination]);
 
+  useEffect(() => {
+    viaRef.current = via;
+    // 経由地を編集したら、通過の記録もやり直す
+    passedViaRef.current = 0;
+  }, [via]);
+
   // 音声のオン/オフは端末に覚えさせる
   useEffect(() => {
     try {
@@ -401,15 +430,21 @@ export default function AppShell() {
 
     setRouting(true);
     try {
-      const result = await fetchRoute(from, destination.position, mode);
+      const result = await fetchRoute(
+        from,
+        destination.position,
+        mode,
+        via.map((v) => v.position),
+      );
       setRoute(result);
+      passedViaRef.current = 0;
       await engine.showRoute(result);
     } catch (error) {
       notify((error as Error).message);
     } finally {
       setRouting(false);
     }
-  }, [destination, mode, notify, origin]);
+  }, [destination, mode, notify, origin, via]);
 
   const startNavigation = useCallback(() => {
     const engine = engineRef.current;
@@ -434,7 +469,17 @@ export default function AppShell() {
 
       setRerouting(true);
       try {
-        const next = await fetchRoute(from, to.position, modeRef.current);
+        /**
+         * まだ通っていない経由地だけを渡す。
+         *
+         * 通過済みまで渡すと、一度通った場所へ引き返す経路が出る。
+         * 経由地を通り過ぎた直後の再検索で U ターンを指示されることになる。
+         */
+        const rest = remainingVia(
+          viaRef.current.map((v) => v.position),
+          passedViaRef.current,
+        );
+        const next = await fetchRoute(from, to.position, modeRef.current, rest);
         // 再検索中に案内が終わっていたら捨てる
         if (!engine.isNavigating) return;
         setRoute(next);
@@ -469,6 +514,10 @@ export default function AppShell() {
     stopNavigation();
     engineRef.current?.clearRoute();
     setRoute(null);
+    // 経由地は経路といっしょに消す。残しておくと、次の検索で
+    // 前の経路の経由地を通ることになる
+    setVia([]);
+    passedViaRef.current = 0;
   }, [stopNavigation]);
 
   // ---- 表示設定 ---------------------------------------------------------
@@ -1036,12 +1085,14 @@ export default function AppShell() {
             <SearchPanel
               origin={origin}
               destination={destination}
+              via={via}
               mode={mode}
               route={route}
               routing={routing}
               viewCenter={viewCenter}
               onSelectOrigin={setOrigin}
               onSelectDestination={setDestination}
+              onChangeVia={setVia}
               onModeChange={setMode}
               onCalculateRoute={calculateRoute}
               onStartNavigation={startNavigation}
@@ -1090,6 +1141,7 @@ export default function AppShell() {
           city={city}
           origin={origin}
           destination={destination}
+          via={via}
           mode={mode}
           route={route}
           routing={routing}
@@ -1111,6 +1163,7 @@ export default function AppShell() {
           viewCenter={viewCenter}
           onSelectOrigin={setOrigin}
           onSelectDestination={setDestination}
+          onChangeVia={setVia}
           onModeChange={setMode}
           onCalculateRoute={calculateRoute}
           onStartNavigation={startNavigation}
