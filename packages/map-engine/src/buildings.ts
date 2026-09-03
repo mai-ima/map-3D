@@ -483,12 +483,16 @@ export class BuildingLayerManager {
       // 数秒間、街から建物が丸ごと消えてしまう。
       // カメラが 2km ほど動くたびにこれが起きていた。
       await this.waitForFirstTiles(tileset);
+      // 待っている間（最大で TILE_SWAP_TIMEOUT_MS）に画面を離れられることがある。
+      // 破棄済みの scene に触ると例外になるので、待ったあとに取り直す
+      const after = liveScene(this.viewer);
+      if (!after) return false;
       // 待っている間にさらに読み直されていたら、この入れ替えは古い
       if (this.loaded?.near !== tileset) {
-        this.viewer.scene.primitives.remove(tileset);
+        after.primitives.remove(tileset);
         return false;
       }
-      this.viewer.scene.primitives.remove(previous);
+      after.primitives.remove(previous);
       // 近景が動いたぶん、遠景のくり抜きも動かす
       this.updateFarClipping();
       return true;
@@ -571,7 +575,8 @@ export class BuildingLayerManager {
   disableLayer(id: OptionalLayerId): void {
     const tileset = this.optionalLayers.get(id);
     if (!tileset) return;
-    this.viewer.scene.primitives.remove(tileset);
+    // 画面を離れたあとに呼ばれることがある
+    liveScene(this.viewer)?.primitives.remove(tileset);
     this.optionalLayers.delete(id);
   }
 
@@ -611,7 +616,10 @@ export class BuildingLayerManager {
   /** 遠景タイルセットだけを破棄する（メモリ削減の最終手段の一歩手前） */
   dropFarTileset(): boolean {
     if (!this.loaded?.far) return false;
-    this.viewer.scene.primitives.remove(this.loaded.far);
+    // メモリ監視から呼ばれるので、画面を離れた直後に来ることがある
+    const scene = liveScene(this.viewer);
+    if (!scene) return false;
+    scene.primitives.remove(this.loaded.far);
     this.loaded = { city: this.loaded.city, near: this.loaded.near };
     return true;
   }
