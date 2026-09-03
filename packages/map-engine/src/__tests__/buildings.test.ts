@@ -52,11 +52,31 @@ test('選んだ見え方が BFF への要求に載る', () => {
   const tokyo = getCity('tokyo')!;
   const bbox: [number, number, number, number] = [139.75, 35.67, 139.78, 35.69];
   for (const mode of ['textured', 'untextured', 'block'] as const) {
-    const url = new URL(tilesetUrl(tokyo, 'near', bbox, mode), 'https://example');
-    assert.equal(url.searchParams.get('model'), mode);
-    assert.equal(url.searchParams.get('city'), 'tokyo');
-    assert.equal(url.searchParams.get('layer'), 'near');
+    assert.equal(
+      tilesetUrl(tokyo, 'near', bbox, mode),
+      `/api/tileset/tokyo/near/${mode}/139.7500,35.6700,139.7800,35.6900/tileset.json`,
+    );
   }
+});
+
+test('tileset.json の URL にクエリを付けない', () => {
+  // Cesium は tileset.json の URL のクエリを、その中の子 tileset.json や
+  // タイル本体（b3dm）にも引き継ぐ。bbox はカメラが動くたびに変わるので、
+  // クエリで渡すと同じタイルが毎回ちがう URL になり、
+  // ブラウザにも CDN にも一切キャッシュが効かなくなる
+  const tokyo = getCity('tokyo')!;
+  const url = tilesetUrl(tokyo, 'near', [139.75, 35.67, 139.78, 35.69], 'textured');
+  assert.ok(!url.includes('?'), `クエリが付いている: ${url}`);
+  assert.ok(url.endsWith('/tileset.json'), '拡張子から中身が分かる形にする');
+});
+
+test('わずかな移動では URL が変わらない', () => {
+  // 小数 4 桁（およそ 11m）で丸める。ここを細かくすると、
+  // カメラが少し動いただけで別の URL になってキャッシュが当たらない
+  const tokyo = getCity('tokyo')!;
+  const a = tilesetUrl(tokyo, 'near', [139.75, 35.67, 139.78, 35.69], 'textured');
+  const b = tilesetUrl(tokyo, 'near', [139.750001, 35.670001, 139.78, 35.69], 'textured');
+  assert.equal(a, b);
 });
 
 test('実際に配信されたものを見て塗り分けを決める', () => {

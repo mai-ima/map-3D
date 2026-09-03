@@ -385,18 +385,30 @@ export class MapEngine {
       duration: 0,
     });
 
-    await this.setTerrain(options.terrainUrl ?? PLATEAU_TERRAIN_URL);
+    /**
+     * 地形と建物は並べて取りにいく。
+     *
+     * 以前は地形を待ってから建物を読み始めていた。地形の配信が遅い・
+     * 応答しないときに、その分だけ建物の取得開始が丸ごと後ろへずれる。
+     * 実測（2026-09, 実機ブラウザで地形サーバへ到達できない状態）では、
+     * 地形の要求が失敗と判定されるまで 13 秒かかり、
+     * そのあいだ建物の tileset.json を 1 本も取りに行っていなかった。
+     *
+     * 建物の 3D Tiles は絶対座標を持っていて、地形とは独立に置ける。
+     * 待つ理由は無い。どちらか片方が落ちても、もう片方は表示できる。
+     */
+    const terrain = this.setTerrain(options.terrainUrl ?? PLATEAU_TERRAIN_URL);
 
     // 建物タイルセットが落ちていても、地形・ベースマップ・ルート表示は成立させる
-    try {
-      await this.loadCity(city);
-    } catch (error) {
+    const buildings = this.loadCity(city).catch((error: unknown) => {
       console.warn('[map-engine] 3D 建物データの読み込みに失敗しました', error);
       this.health.record(
         'tile-failed',
         `建物データを取得できません: ${(error as Error)?.message ?? error}`,
       );
-    }
+    });
+
+    await Promise.all([terrain, buildings]);
   }
 
   // ---- 基本設定 --------------------------------------------------------

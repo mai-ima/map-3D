@@ -28,6 +28,15 @@ import { liveScene } from './primitive-swap';
  * 視界に入る全市区町村の LOD2 を一斉に展開してしまう（東京都なら 23 区分）。
  * 開いた直後に数千リクエストと大量のメモリ確保が起きるため、
  * BFF (/api/tileset) で必要な範囲の子だけに絞ってから読み込む。
+ *
+ * **条件はクエリではなくパスに書く。**
+ * Cesium は tileset.json を読み込んだ URL のクエリを、その中の子 tileset.json や
+ * タイル本体（b3dm）にもそのまま引き継ぐ。bbox はカメラが動くたびに変わるので、
+ * クエリで渡すと同じタイルが毎回ちがう URL になり、
+ * ブラウザにも CDN にも一切キャッシュが効かない。実際にそうなっていた:
+ *
+ *   https://assets.cms.plateau.reearth.io/.../13101_chiyoda-ku_.../tileset.json
+ *     ?city=tokyo&layer=near&bbox=139.7395,35.6588,139.7948,35.7037&model=textured
  */
 export function tilesetUrl(
   city: City,
@@ -35,13 +44,10 @@ export function tilesetUrl(
   bbox: BBox,
   model: BuildingModelMode,
 ): string {
-  const params = new URLSearchParams({
-    city: city.id,
-    layer,
-    bbox: bbox.map((n) => n.toFixed(4)).join(','),
-    model,
-  });
-  return `/api/tileset?${params.toString()}`;
+  // 小数 4 桁（およそ 11m）。ここを細かくすると、わずかな移動でも
+  // 別の URL になってキャッシュが当たらなくなる
+  const box = bbox.map((n) => n.toFixed(4)).join(',');
+  return `/api/tileset/${encodeURIComponent(city.id)}/${encodeURIComponent(layer)}/${model}/${box}/tileset.json`;
 }
 
 /**

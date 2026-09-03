@@ -693,6 +693,51 @@ LOD2（テクスチャあり）が揃っている **姫路市（28201）** に�
 `packages/map-engine/src/buildings.ts` の `needsFarTileset(city)` で、
 近景がすでに直接タイルセットを指している都市では遠景を作らない。
 
+### Cesium は tileset.json のクエリを子へ引き継ぐ
+
+`Cesium3DTileset.fromUrl('/api/tileset?city=tokyo&bbox=...')` と読ませると、
+その tileset の中の子 tileset.json やタイル本体（b3dm）にも
+**同じクエリがそのまま付いて**飛ぶ。実機ブラウザでの実測（2026-09）:
+
+```
+https://assets.cms.plateau.reearth.io/.../13101_chiyoda-ku_.../tileset.json
+  ?city=tokyo&layer=near&bbox=139.7395,35.6588,139.7948,35.7037&model=textured
+```
+
+`Resource` が `queryParameters` を派生先へ継承する仕様による。
+
+bbox はカメラが動くたびに変わる。つまり **同じタイルが毎回ちがう URL になり、
+ブラウザにも CDN にも一切キャッシュが効かない。**
+街を往復するだけで同じ建物を何度も取り直していた。
+
+条件はパスに書く。
+
+```
+/api/tileset/{都市}/{レイヤ}/{建物モデル}/{bbox}/tileset.json
+```
+
+クエリが無ければ引き継がれるものも無い。
+bbox は小数 4 桁（およそ 11m）に丸める。細かくすると、
+カメラが少し動いただけで別の URL になってキャッシュが当たらない。
+
+### 地形を待ってから建物を読むと、地形が遅いぶんだけ街が出ない
+
+起動時に `await setTerrain()` してから `loadCity()` を呼んでいた。
+実機ブラウザで地形サーバへ到達できない状態にして測ると（2026-09）:
+
+| | 建物の tileset.json を要求した時刻 |
+|---|---:|
+| 地形を待つ（前） | 13,360ms |
+| 地形と並べる（後） | 672ms |
+
+失敗と判定されるまでの 13 秒、建物を 1 本も取りに行っていなかった。
+
+建物の 3D Tiles は絶対座標を持っていて、地形とは独立に置ける。
+待つ理由が無い。どちらか片方が落ちても、もう片方は表示できる。
+
+測り方: `npx tsx scripts/measure/startup-requests.mts`
+（Chromium は環境に入っているものを使う。`playwright install` は実行しない）
+
 ### テクスチャ無し版は整備範囲が狭い
 
 同じ地域について、PLATEAU は 3 通りの配信を持っている。
