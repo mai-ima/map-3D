@@ -377,3 +377,18 @@ export function parseLatLngParam(
   if (lat === null || lng === null) return null;
   return { lat, lng };
 }
+
+/**
+ * JSON の本文に入っている座標を読む。
+ *
+ * クエリ文字列と違い、こちらは型も形も何でも来る（配列、文字列、null、NaN）。
+ * そのまま外部への問い合わせに渡すと、NaN を含む URL を組み立てて投げてしまう。
+ */
+export function readLatLng(value: unknown): LatLng | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { lat, lng } = value as { lat?: unknown; lng?: unknown };
+  if (typeof lat !== 'number' || typeof lng !== 'number') return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+}

@@ -99,15 +99,27 @@ export class GeminiProvider implements AIProvider {
     }
 
     const baseUrl = this.options.baseUrl ?? 'https://generativelanguage.googleapis.com';
-    const res = await fetch(
-      `${baseUrl}/v1beta/models/${this.model}:generateContent?key=${encodeURIComponent(this.options.apiKey)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 60000),
-      },
-    );
+    // 鍵は URL のクエリ（?key=）ではなくヘッダで渡す。
+    // URL はアクセスログ・プロキシ・エラー報告にそのまま残るため、
+    // クエリに載せると鍵が意図しない場所に写る
+    let res: Response;
+    try {
+      res = await fetch(
+        `${baseUrl}/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': this.options.apiKey,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.options.timeoutMs ?? 60000),
+        },
+      );
+    } catch (e) {
+      // 通信の失敗は 'fetch failed' という英語の内部メッセージで来る
+      throw new Error('AI サービスに接続できませんでした', { cause: e });
+    }
 
     const json = (await res.json().catch(() => ({}))) as GeminiResponse;
     if (!res.ok) {

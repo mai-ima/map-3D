@@ -8,6 +8,7 @@ import {
   distanceMeters,
   parseBBoxParam,
   parseLatLngParam,
+  readLatLng,
   parseNumberParam,
 } from '../geo';
 import { CITIES, getCity } from '../cities';
@@ -130,4 +131,23 @@ test('緯度経度のクエリは地球上のものだけ受ける', () => {
   assert.equal(parseLatLngParam('35', '181'), null, '経度が範囲外');
   // 0,0 は大西洋上の実在する座標なので、値としては受ける
   assert.deepEqual(parseLatLngParam('0', '0'), { lat: 0, lng: 0 });
+});
+
+test('JSON 本文の座標は、型も形も確かめてから使う', () => {
+  // クエリ文字列と違い、本文には配列も null も NaN も入ってくる。
+  // そのまま外部への問い合わせに渡すと NaN を含む URL を組み立てて投げてしまう
+  assert.deepEqual(readLatLng({ lat: 34.7048, lng: 137.7345 }), { lat: 34.7048, lng: 137.7345 });
+
+  assert.equal(readLatLng(null), null, 'null');
+  assert.equal(readLatLng(undefined), null, '未指定');
+  assert.equal(readLatLng('34.7,137.7'), null, '文字列');
+  assert.equal(readLatLng([34.7, 137.7]), null, '配列');
+  assert.equal(readLatLng({ lat: '34.7', lng: '137.7' }), null, '数値でない');
+  assert.equal(readLatLng({ lat: Number.NaN, lng: 137.7 }), null, 'NaN');
+  assert.equal(readLatLng({ lat: 34.7, lng: Number.POSITIVE_INFINITY }), null, '無限大');
+  assert.equal(readLatLng({ lat: 91, lng: 137.7 }), null, '緯度が範囲外');
+  assert.equal(readLatLng({ lat: 34.7, lng: 181 }), null, '経度が範囲外');
+  // 0,0（大西洋）は地球上の座標なので、ここでは通す。
+  // 「指定が無い」ことと区別するのは呼び出し側の役目
+  assert.deepEqual(readLatLng({ lat: 0, lng: 0 }), { lat: 0, lng: 0 });
 });

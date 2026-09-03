@@ -16,10 +16,11 @@ export interface OpenAICompatibleOptions {
   displayName?: string;
 }
 
+/** 応答の型。相手はネットワーク越しの JSON なので、必須の項目も省略可で書く */
 interface OpenAIToolCall {
-  id: string;
-  type: string;
-  function: { name: string; arguments: string };
+  id?: string;
+  type?: string;
+  function: { name: string; arguments?: string };
 }
 
 interface OpenAIResponse {
@@ -77,12 +78,19 @@ export class OpenAICompatibleProvider implements AIProvider {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.options.apiKey) headers.Authorization = `Bearer ${this.options.apiKey}`;
 
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 60000),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 60000),
+      });
+    } catch (e) {
+      // 通信の失敗は 'fetch failed' という英語の内部メッセージで来る。
+      // ローカル LLM を設定していて起動していない場合もここに来る
+      throw new Error('AI サービスに接続できませんでした', { cause: e });
+    }
 
     const json = (await res.json().catch(() => ({}))) as OpenAIResponse;
     if (!res.ok) {
@@ -90,17 +98,21 @@ export class OpenAICompatibleProvider implements AIProvider {
     }
 
     const message = json.choices?.[0]?.message;
-    const toolCalls: ToolCall[] = (message?.tool_calls ?? []).map((tc) => ({
-      id: tc.id,
-      name: tc.function.name,
-      arguments: safeParse(tc.function.arguments),
-    }));
+    // OpenAI 互換を名乗るローカルモデルは function を欠いた tool_call を返すことがある。
+    // そのまま tc.function.name を読むと TypeError になる
+    const toolCalls: ToolCall[] = (message?.tool_calls ?? [])
+      .filter((tc) => typeof tc?.function?.name === 'string')
+      .map((tc, i) => ({
+        id: tc.id ?? `tool_${i}`,
+        name: tc.function.name,
+        arguments: safeParse(tc.function.arguments),
+      }));
 
     return { content: message?.content ?? '', toolCalls, model: json.model ?? this.model };
   }
 }
 
-function safeParse(text: string): Record<string, unknown> {
+function safeParse(text: string | undefined): Record<string, unknown> {
   try {
     const parsed = JSON.parse(text || '{}');
     return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};

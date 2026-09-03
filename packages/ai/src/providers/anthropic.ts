@@ -83,16 +83,22 @@ export class AnthropicProvider implements AIProvider {
     };
     if (request.system) body.system = request.system;
 
-    const res = await fetch(`${this.options.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.options.apiKey,
-        'anthropic-version': this.options.version ?? '2023-06-01',
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 60000),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.options.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.options.apiKey,
+          'anthropic-version': this.options.version ?? '2023-06-01',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 60000),
+      });
+    } catch (e) {
+      // 通信の失敗は 'fetch failed' という英語の内部メッセージで来る
+      throw new Error('AI サービスに接続できませんでした', { cause: e });
+    }
 
     const json = (await res.json().catch(() => ({}))) as AnthropicResponse;
     if (!res.ok) {
