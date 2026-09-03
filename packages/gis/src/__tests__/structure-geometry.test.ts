@@ -512,3 +512,111 @@ test('路面の高さは起点から終点へ直線的に上がる', () => {
     assert.ok(Number.isFinite(v), '高さが NaN になっている');
   }
 });
+
+// ---- 盛土・取付部 ------------------------------------------------------
+//
+// OSM が embankment=yes と書いているのは「土を盛って持ち上げてある」
+// という意味で、柱の上に載っているという意味ではない。柱を並べると
+// 実在しない構造物になる（実測では新幹線の盛土区間を高架橋にしていた）。
+//
+// 普通の道から高架へ上がる取付部も同じ造りなので、同じ形で組み立てる。
+
+/** 起点 startH から終点 endH まで、水平距離 runM で上がる盛土 */
+function ramp(runM: number, startH: number, endH: number): ElevatedStructure {
+  return {
+    id: 'ramp',
+    kind: 'embankment',
+    form: 'ramp',
+    path: eastLine(runM, 5),
+    width: 9,
+    layer: 1,
+    deckThickness: 0.3,
+    girderDepth: 0,
+    deckHeight: endH,
+    ...(startH === endH ? {} : { startHeight: startH }),
+    pierSpacing: 0,
+    pierSize: 0,
+    parapetHeight: 1.0,
+  };
+}
+
+test('盛土に柱を立てない', () => {
+  // ラーメン高架橋にしていたときは径間 8.9m の柱が延々と並んでいた
+  const built = onFlatGround(ramp(400, 9.4, 9.4));
+  const boxes = built.frame.filter((s): s is BoxShape => s.kind === 'box');
+  assert.ok(boxes.length > 0, '受けるものが何も無い');
+  // 柱は細い（断面 0.9m 前後）。壁は床版とほぼ同じ幅
+  for (const b of boxes) {
+    assert.ok(b.size.x > 7, `柱のように細い部材がある: 幅 ${b.size.x}m`);
+  }
+});
+
+test('盛土は壁で受け、その壁は地面から路面まで届く', () => {
+  const built = onFlatGround(ramp(200, 9.4, 9.4));
+  const walls = built.frame.filter((s): s is BoxShape => s.kind === 'box');
+  for (const w of walls) {
+    const bottom = (w.centre.alt ?? 0) - w.size.z / 2;
+    const top = (w.centre.alt ?? 0) + w.size.z / 2;
+    assert.ok(Math.abs(bottom - 12) < 0.01, `壁が地面から立っていない: ${bottom}`);
+    // 路面 12+9.4、床版の厚み 0.3 を引いたところまで
+    assert.ok(Math.abs(top - (12 + 9.4 - 0.3)) < 0.01, `壁が路面まで届いていない: ${top}`);
+  }
+});
+
+test('取付部は地表から高架の路面まで滑らかに上がる', () => {
+  const built = onFlatGround(ramp(80, 0, 5.6));
+  const slab = built.deck.find((s): s is ExtrudedShape => s.kind === 'extrusion');
+  assert.ok(slab, '路面が無い');
+  const alts = slab.path.map((p) => p.alt ?? 0);
+  // 起点は地表（床版の厚みぶん下）、終点は高架の路面
+  assert.ok(Math.abs(alts[0] - (12 - 0.3)) < 0.01, `起点の高さ: ${alts[0]}`);
+  assert.ok(Math.abs(alts[alts.length - 1] - (12 + 5.6 - 0.3)) < 0.01, `終点の高さ: ${alts[alts.length - 1]}`);
+  // 途中で段にならず、まっすぐ上がる
+  for (let i = 1; i < alts.length; i += 1) {
+    assert.ok(alts[i] > alts[i - 1], `${i} 番目で上がっていない`);
+  }
+  const step = alts[1] - alts[0];
+  for (let i = 2; i < alts.length; i += 1) {
+    assert.ok(Math.abs(alts[i] - alts[i - 1] - step) < 0.01, '勾配が一定でない');
+  }
+});
+
+test('取付部を受ける壁は、上がるにつれて高くなる', () => {
+  const built = onFlatGround(ramp(80, 0, 5.6));
+  const walls = built.frame.filter((s): s is BoxShape => s.kind === 'box');
+  assert.ok(walls.length >= 2, `壁の区間が ${walls.length} しかない`);
+  // 起点側は低く、終点側は高い
+  const heights = walls
+    .map((w) => ({ lng: w.centre.lng, h: w.size.z }))
+    .sort((a, b) => a.lng - b.lng)
+    .map((x) => x.h);
+  for (let i = 1; i < heights.length; i += 1) {
+    assert.ok(heights[i] > heights[i - 1], `${i} 区間目で低くなっている`);
+  }
+  // どの壁も地面から立っている
+  for (const w of walls) {
+    assert.ok(Math.abs((w.centre.alt ?? 0) - w.size.z / 2 - 12) < 0.01, '壁が地面から離れている');
+  }
+});
+
+test('取付部にも高欄が付く', () => {
+  const built = onFlatGround(ramp(80, 0, 5.6));
+  assert.equal(built.parapet.length, 2, '両側に 1 本ずつ');
+  for (const rail of built.parapet as ExtrudedShape[]) {
+    const h = rail.path.map((p) => p.alt ?? 0);
+    assert.ok(h[h.length - 1] - h[0] > 5, '高欄が路面に追従していない');
+  }
+});
+
+test('離れたら壁の区間を粗くする', () => {
+  // 区間の境目は床版に覆われて見えないので、粗くしても輪郭は変わらない
+  const near = onFlatGround(ramp(400, 9.4, 9.4), 50).frame.length;
+  const far = onFlatGround(ramp(400, 9.4, 9.4), 800).frame.length;
+  assert.ok(far < near, `遠くでも ${far} 個のまま`);
+  assert.ok(far > 0, '遠くで壁が消えている');
+});
+
+test('地面すれすれの区間には壁を作らない', () => {
+  const built = onFlatGround(ramp(80, 0, 0.2));
+  assert.equal(built.frame.length, 0);
+});

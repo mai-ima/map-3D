@@ -120,6 +120,26 @@ const PROFILE: Record<
    * 段の寸法そのものは STEP_RISE_M / STEP_TREAD_M（structure-geometry）に置く。
    * ここは階段を「1 本の細い斜めの構造物」として見たときの諸元。
    */
+  /**
+   * 盛土・擁壁の区間と、普通の道から高架へ上がる取付部。
+   *
+   * 柱を持たず、路面の下を壁（擁壁）で受ける。
+   * 壁の面を路肩の位置に置くのは、法面の勾配（盛土なら 1:1.5）まで
+   * 再現すると、実際には持っていない隣地まで構造物が広がってしまうため。
+   * OSM は擁壁か法面かを区別していないので、狭いほう（擁壁）に倒す。
+   *
+   * 縦断勾配の上限は APPROACH_GRADE（下記）を参照。
+   */
+  embankment: {
+    form: 'ramp',
+    width: 9,
+    deckThickness: 0.3,
+    girderDepth: 0,
+    deckHeight: 9.4,
+    pierSpacing: 0, // 柱は立てない
+    pierSize: 0,
+    parapetHeight: 1.0,
+  },
   stair: {
     form: 'stair',
     width: 2.0,
@@ -279,6 +299,9 @@ export function classify(tags: Record<string, string>, lengthM = 0): StructureKi
   const isBridge = tags.bridge !== undefined && tags.bridge !== 'no';
   const layer = layerOf(tags);
 
+  // 切土（cutting）は地面を掘り下げた区間。地表より下なので構造物にしない
+  if (!isBridge && tags.cutting !== undefined && tags.cutting !== 'no') return null;
+
   // 長く続くもの、または viaduct と明記されたものは高架
   const isViaduct = tags.bridge === 'viaduct' || lengthM >= VIADUCT_MIN_LENGTH_M;
 
@@ -286,6 +309,23 @@ export function classify(tags: Record<string, string>, lengthM = 0): StructureKi
   // 長く続いていて、かつ上の層にあると明記されているときだけ。
   // OSM ではそうした高架に bridge が付いていないことがある
   if (!isBridge && !(layer > 0 && isViaduct)) return null;
+
+  /**
+   * 盛土（embankment）は高架ではない。
+   *
+   * OSM が embankment=yes と書いているのは「土を盛って持ち上げてある」
+   * という意味で、柱の上に載っているという意味ではない。
+   * それを無視してラーメン高架橋にすると、盛土の区間に径間 8.9m の柱が
+   * 延々と並ぶ。実測（2026-09、東京駅周辺 2km 四方）では、
+   * bridge の無い構造物 35 本のうち、東北新幹線・東海道新幹線・京浜東北線
+   * などの盛土区間をそのまま高架橋にしていた。
+   *
+   * 盛土は「路面が上がっている」ことだけが分かる区間なので、
+   * 柱ではなく壁で受ける形（embankment）として別に組み立てる。
+   */
+  if (!isBridge && tags.embankment !== undefined && tags.embankment !== 'no') {
+    return 'embankment';
+  }
 
   if (tags.railway) {
     // 側線や引込線は景観への寄与が小さいので除く。
@@ -341,6 +381,10 @@ export function deckHeightOf(
   // 階段の高さは「上がった先」で決まる。接続先が分かるのは
   // 高架を組み立てたあとなので、ここでは既定値を返し、あとで差し替える
   if (kind === 'stair') return PROFILE[kind].deckHeight;
+  // 盛土は高架と同じ「市街地を持ち上げて通す」区間なので、路面の高さも同じ規則
+  if (kind === 'embankment') {
+    return PROFILE[kind].deckHeight + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
+  }
   // 高架は橋とは別。市街地を貫く構造なので、またぐものによらず高い
   if (kind === 'rail-elevated') return PROFILE[kind].deckHeight + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
   if (kind === 'road-elevated') return PROFILE[kind].deckHeight + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
@@ -368,6 +412,7 @@ export function formOf(kind: StructureKind, context: StructureContext): Structur
   if (kind === 'rail-elevated') return 'rigid-frame';
   if (kind === 'road-elevated') return 'girder';
   if (kind === 'stair') return 'stair';
+  if (kind === 'embankment') return 'ramp';
   // 歩道橋は桁を持たない薄い床版
   if (kind === 'footbridge') return 'slab';
   // 道路橋・鉄道橋は支間が短ければ床版橋
@@ -449,7 +494,8 @@ export function widthOf(kind: StructureKind, tags: Record<string, string>): numb
   if (Number.isFinite(explicit) && explicit > 1) return clampValue(explicit, 1, MAX_WIDTH_M);
 
   const base = PROFILE[kind].width;
-  if (kind === 'rail-elevated' || kind === 'rail-bridge') {
+  // 盛土・取付部は道路にも鉄道にもなる。タグのほうで見分ける
+  if (kind === 'rail-elevated' || kind === 'rail-bridge' || (kind === 'embankment' && tags.railway)) {
     // OSM の way は原則 1 本が線路 1 本。tracks が入っていればその本数ぶん。
     // 複線が 2 本の way で表されている場合は、平行なものをまとめる段階で
     // 実際の幅を計算するので、ここでは way 1 本ぶんに留める
@@ -650,6 +696,182 @@ function highestDeckAt(
   return best;
 }
 
+/**
+ * 縦断勾配の上限。ここから取付部の長さが決まる。
+ *
+ * 出典:
+ *   鉄道 35‰ … 鉄道に関する技術上の基準を定める省令の解釈基準（本線の最急勾配）
+ *   道路      … 道路構造令 第 20 条（最急縦断勾配）
+ *                設計速度 60km/h で 5%、50km/h で 6%、40km/h で 7%
+ *                自動車専用道路は 60km/h 以上なので 5%
+ *                市街地の一般道は 40〜50km/h なので 7%
+ *   歩行者 5% … 移動等円滑化基準（傾斜路は 1/12=8.3% 以下、屋外は 5% 以下が望ましい）
+ */
+const APPROACH_GRADE = { rail: 0.035, expressway: 0.05, road: 0.07, foot: 0.05 };
+
+/** 取付部として認める向きの差 (rad)。約 60 度 */
+const APPROACH_ALIGN_RAD = Math.PI / 3;
+
+/**
+ * 勾配をここまでは急にしてよいという倍率。
+ *
+ * 高架に接する道が短く、その先の道まで OSM から取れていないことがある。
+ * そのときに標準の勾配で取り付けようとすると道が足りず、
+ * 上がりきる前に途切れて元の段差が残る。
+ * 実測（浜松・東京の 2km 四方）では、高架の端に付いている道の長さは
+ * 中央値 65〜75m で、5.5m の跨道橋に必要な 79m に届かないことが多い。
+ *
+ * 段差をそのまま残すよりは、少し急でも道がつながっているほうがよい。
+ * ただし 2 倍まで許すと 14% の坂ができ、一般道には実在しない急さになった。
+ * 1.5 倍（一般道で 10.5%）までとする。市街地の跨線橋の取付部には
+ * この程度の勾配が実在する。
+ *
+ * これを超えるなら、それは取り付く道ではなく脇道（管理用通路など）が
+ * 端点を共有しているだけとみなして作らない。
+ */
+const APPROACH_MAX_GRADE_FACTOR = 1.5;
+
+/** その道に許される縦断勾配の上限 */
+function gradeFor(tags: Record<string, string>): number {
+  if (tags.railway) return APPROACH_GRADE.rail;
+  const hw = tags.highway ?? '';
+  if (['motorway', 'motorway_link', 'trunk', 'trunk_link'].includes(hw)) {
+    return APPROACH_GRADE.expressway;
+  }
+  if (['footway', 'path', 'pedestrian', 'cycleway', 'steps'].includes(hw)) {
+    return APPROACH_GRADE.foot;
+  }
+  return APPROACH_GRADE.road;
+}
+
+/** 真北を 0、東回りを正とする方位角 (rad) */
+function heading(from: LatLng, to: LatLng): number {
+  const cos = Math.cos((from.lat * Math.PI) / 180) || 1;
+  return Math.atan2((to.lng - from.lng) * cos, to.lat - from.lat);
+}
+
+/** 2 つの方位角の差 (rad)。0〜π */
+function angleBetween(a: number, b: number): number {
+  const d = Math.abs(a - b) % (2 * Math.PI);
+  return d > Math.PI ? 2 * Math.PI - d : d;
+}
+
+/** 経路を先頭から limitM まで切り詰める（足りなければ全部返す） */
+function trimPath(path: LatLng[], limitM: number): LatLng[] {
+  const out: LatLng[] = [path[0]];
+  let acc = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const step = distanceMeters(path[i - 1], path[i]);
+    if (acc + step >= limitM) {
+      // 途中で足りたら、その区間を按分した点で終える
+      const r = step > 0 ? (limitM - acc) / step : 1;
+      out.push({
+        lat: path[i - 1].lat + (path[i].lat - path[i - 1].lat) * r,
+        lng: path[i - 1].lng + (path[i].lng - path[i - 1].lng) * r,
+      });
+      return out;
+    }
+    acc += step;
+    out.push(path[i]);
+  }
+  return out;
+}
+
+/**
+ * 普通の道から高架へ上がっていく取付部を組み立てる。
+ *
+ * 高架の端では、路面が地表から数メートル上がったところで始まっている。
+ * その手前の道は地表に描かれるので、間に段差ができていた。
+ * 実物ではそこに盛土や擁壁があり、道が緩やかに上がっていく。
+ *
+ * 使うのは実データだけ:
+ *   平面形   … 高架に端点を共有している OSM の way
+ *   上がる高さ … その高架の路面高さ（すでに決まっている）
+ *   長さ     … 高さ ÷ 縦断勾配の上限（道路構造令・鉄道の省令解釈基準）
+ *
+ * 端点を共有していても向きが違う道（脇道・管理用通路）には作らない。
+ * 高架に取り付く道は、必ず高架と同じ向きに続いている。
+ *
+ * @param candidates 高架に端点を共有している、地表に描かれる道
+ * @param raw まとめる前の高架・橋。座標が OSM のままなので端点が厳密に一致する
+ * @param consolidated まとめ終えた高架・橋。路面高さはこちらが正しい
+ */
+export function buildApproaches(
+  candidates: { id: string; tags: Record<string, string>; path: LatLng[] }[],
+  raw: ElevatedStructure[],
+  consolidated: ElevatedStructure[] = raw,
+): ElevatedStructure[] {
+  const profile = PROFILE.embankment;
+  const heights = deckHeightIndex(consolidated);
+  const out: ElevatedStructure[] = [];
+  // 同じ道に両側から取り付かないよう、使った道を覚えておく
+  const used = new Set<string>();
+
+  for (const s of raw) {
+    if (s.kind === 'stair' || s.kind === 'embankment') continue;
+    if (s.path.length < 2) continue;
+    const deckHeight = heights.get(s.id) ?? s.deckHeight;
+    // 数十センチの段差に取付部は要らない
+    if (deckHeight < 1) continue;
+
+    for (const atEnd of [0, 1]) {
+      const end = atEnd === 0 ? s.path[0] : s.path[s.path.length - 1];
+      const inner = atEnd === 0 ? s.path[1] : s.path[s.path.length - 2];
+      // 高架が端で向いている向き（外向き）
+      const outward = heading(inner, end);
+
+      let best: { way: (typeof candidates)[number]; path: LatLng[]; angle: number } | null = null;
+      for (const way of candidates) {
+        if (used.has(way.id) || way.path.length < 2) continue;
+        // どちらの端で接しているか
+        const head = distanceMeters(way.path[0], end) <= STAIR_JOIN_TOLERANCE_M;
+        const tail = distanceMeters(way.path[way.path.length - 1], end) <= STAIR_JOIN_TOLERANCE_M;
+        if (!head && !tail) continue;
+        // 接続点を先頭にして、そこから離れていく向きに並べ直す
+        const path = head ? way.path : [...way.path].reverse();
+        const angle = angleBetween(outward, heading(path[0], path[1]));
+        // 端点を共有しているだけの脇道は取り付く道ではない
+        if (angle > APPROACH_ALIGN_RAD) continue;
+        if (!best || angle < best.angle) best = { way, path, angle };
+      }
+      if (!best) continue;
+
+      const grade = gradeFor(best.way.tags);
+      const needed = deckHeight / grade;
+      const available = pathLength(best.path.map((p) => ({ lat: p.lat, lon: p.lng })));
+      // 道が短すぎるなら、取り付く道ではなく端点を共有しているだけ
+      if (available < needed / APPROACH_MAX_GRADE_FACTOR) continue;
+
+      const path = trimPath(best.path, Math.min(needed, available));
+      if (path.length < 2) continue;
+      used.add(best.way.id);
+
+      const tags = best.way.tags;
+      out.push({
+        id: `approach:${best.way.id}@${s.id}`,
+        kind: 'embankment',
+        form: 'ramp',
+        name: tags.name,
+        // 起点を低いほうに揃える（描く側は「起点から終点へ上がる」だけ知っていればよい）
+        path: [...path].reverse(),
+        width: widthOf('embankment', tags),
+        layer: layerOf(tags),
+        deckThickness: profile.deckThickness,
+        girderDepth: 0,
+        deckHeight,
+        startHeight: 0,
+        pierSpacing: 0,
+        pierSize: 0,
+        parapetHeight: profile.parapetHeight,
+        lanes: parseIntTag(tags.lanes),
+        tracks: tags.tracks ? clampValue(parseIntTag(tags.tracks) ?? 1, 1, MAX_TRACKS) : undefined,
+      });
+    }
+  }
+
+  return out;
+}
+
 /** 表示範囲の外へどれだけはみ出させるか (度)。約 250m */
 const CLIP_MARGIN_DEG = 0.0023;
 
@@ -708,13 +930,35 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
   // 水路も一緒に取る。「川を渡る橋」と「道路をまたぐ跨道橋」は
   // タグでは区別できず、実際に交差するかどうかでしか分からない。
   // これが分からないと川の橋まで 5m 持ち上がり、道路から浮いてしまう
+  /**
+   * 橋に「ノードを共有して」つながる道も取る（取付部を作るため）。
+   *
+   * 範囲で取り直すのではなく橋から辿るので、下をくぐっているだけの道は
+   * 入ってこない（ノードを共有しないため）。
+   *
+   * 辿る相手を橋に限るのは負荷のため。`layer` だけで高架にしているものは
+   * 市街地を貫く長い way で、1 本あたりのノード数が桁違いに多い。
+   * そこから辿ると、橋の何十倍ものノードを経由することになる。
+   * 一方それらの端は表示範囲の外（切り取った先）であることがほとんどで、
+   * 取付部を作る相手ではない。実際に上がってくる道（ランプ）には
+   * bridge が付いている。
+   */
+  const CARRIER =
+    '^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|footway|cycleway|pedestrian|path)(_link)?$';
+
   const query = `
     [out:json][timeout:60];
     (
       way["bridge"]["bridge"!="no"]["highway"](${b});
       way["bridge"]["bridge"!="no"]["railway"](${b});
+    )->.br;
+    node(w.br)->.joints;
+    (
+      .br;
       way["layer"]["highway"](${b});
       way["layer"]["railway"](${b});
+      way(bn.joints)["highway"~"${CARRIER}"];
+      way(bn.joints)["railway"~"^(rail|light_rail|subway|tram|monorail)$"];
       way["waterway"~"^(river|stream|canal|drain|ditch)$"](${b});
       way["highway"="steps"](${b});
     );
@@ -742,6 +986,8 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
 
   const list: ElevatedStructure[] = [];
   const stepWays: { id: string; tags: Record<string, string>; path: LatLng[] }[] = [];
+  // 高架に接している、地表に描かれる道。取付部の平面形になる
+  const groundWays: { id: string; tags: Record<string, string>; path: LatLng[] }[] = [];
 
   for (const el of elements) {
     if (el.type !== 'way') continue;
@@ -760,7 +1006,18 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
       continue;
     }
     const s = toStructure(el, waterways);
-    if (!s) continue;
+    if (!s) {
+      // 構造物にならない道。高架に取り付く道の候補になる
+      const geometry = el.geometry ?? [];
+      if ((tags.highway || tags.railway) && geometry.length >= 2) {
+        groundWays.push({
+          id: String(el.id),
+          tags,
+          path: geometry.map((p) => ({ lat: p.lat, lng: p.lon })),
+        });
+      }
+      continue;
+    }
     const runs = clipPathToBBox(s.path, bbox);
     if (runs.length === 1) {
       list.push({ ...s, path: runs[0] });
@@ -772,7 +1029,11 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
   // OSM は線路を 1 本ずつ別の way にしているため、そのまま建てると
   // 複線の高架が 4m 間隔で積み上がる。実際の構造物の単位にまとめる
   const consolidated = consolidateStructures(list);
-  // 階段の端点は、まとめる前の座標（OSM のノードそのもの）と照合する。
-  // 階段は短いので範囲では切らない（切ると上がりきる前に途切れる）
-  return [...consolidated, ...buildStairs(stepWays, list, consolidated)];
+  // 階段と取付部の端点は、まとめる前の座標（OSM のノードそのもの）と照合する。
+  // どちらも短いので範囲では切らない（切ると上がりきる前に途切れる）
+  return [
+    ...consolidated,
+    ...buildApproaches(groundWays, list, consolidated),
+    ...buildStairs(stepWays, list, consolidated),
+  ];
 }

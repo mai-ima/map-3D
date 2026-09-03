@@ -38,6 +38,9 @@ const PARALLEL_GAP_M: Record<StructureKind, number> = {
   footbridge: 3,
   // 階段は 1 本ずつ独立した構造物。並んでいても 1 つにまとめない
   stair: 0,
+  // 盛土は線路 1 本ずつが別の way になっているので、高架と同じようにまとめる。
+  // 東京駅の north では新幹線・京浜東北線などの盛土が 6 本並んでいた
+  embankment: 6,
 };
 
 /** まとめた結果の床版がこれ以上広がったら、まとめすぎと判断する (m) */
@@ -48,6 +51,7 @@ const MAX_MERGED_WIDTH: Record<StructureKind, number> = {
   'road-bridge': 22,
   footbridge: 10,
   stair: 0,
+  embankment: 26,
 };
 
 /** 平行とみなす向きの差 (rad)。約 22 度 */

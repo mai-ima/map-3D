@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BBox } from '@ijm/shared';
 import { alignDeckHeights } from '../structure-merge';
-import { buildStairs, classify, clipPathToBBox, toStructure, widthOf } from '../structures';
+import {
+  buildApproaches,
+  buildStairs,
+  classify,
+  clipPathToBBox,
+  toStructure,
+  widthOf,
+} from '../structures';
 
 /** 20m ほどの短い橋（浜松の道路橋の長さ中央値は 10m） */
 const shortWay = (tags: Record<string, string>) => ({
@@ -464,4 +471,130 @@ test('まとめたあとの路面高さに合わせる', () => {
 test('長すぎるものは階段として扱わない', () => {
   // 200m の highway=steps は山道の階段や園路で、高架へ上がる階段ではない
   assert.deepEqual(buildStairs([stepsTo(200)], [deck]), []);
+});
+
+// ---- 盛土と取付部 ------------------------------------------------------
+
+test('盛土を高架橋にしない', () => {
+  // OSM の embankment=yes は「土を盛って持ち上げてある」という意味で、
+  // 柱の上に載っているという意味ではない。高架橋にすると、盛土の区間に
+  // 径間 8.9m の柱が延々と並ぶ。
+  //
+  // 実測（2026-09、東京駅周辺 2km 四方）: bridge の無い構造物 35 本のうち、
+  // 東北新幹線・東海道新幹線・京浜東北線の盛土区間をそのまま高架橋にしていた
+  assert.equal(
+    classify({ railway: 'rail', layer: '1', embankment: 'yes' }, 405),
+    'embankment',
+    '盛土の線路',
+  );
+  assert.equal(
+    classify({ highway: 'primary', layer: '1', embankment: 'yes' }, 400),
+    'embankment',
+    '盛土の道路',
+  );
+  // embankment=no は打ち消し
+  assert.equal(classify({ railway: 'rail', layer: '1', embankment: 'no' }, 400), 'rail-elevated');
+  // bridge が付いていれば橋。盛土の上に架かる橋という書き方がある
+  assert.equal(
+    classify({ railway: 'rail', bridge: 'yes', embankment: 'yes' }, 50),
+    'rail-bridge',
+  );
+});
+
+test('切土は構造物にしない', () => {
+  // cutting は地面を掘り下げた区間。地表より下にある
+  assert.equal(classify({ railway: 'rail', layer: '1', cutting: 'yes' }, 400), null);
+  assert.equal(classify({ railway: 'rail', layer: '1', cutting: 'no' }, 400), 'rail-elevated');
+});
+
+/** DECK の始点から西へ伸びる、地表の道 */
+function roadTo(lengthM: number, tags: Record<string, string> = { highway: 'primary' }) {
+  const cos = Math.cos((DECK.lat * Math.PI) / 180);
+  const far = { lat: DECK.lat, lng: DECK.lng - lengthM / (M_PER_DEG_LAT * cos) };
+  return { id: '20', tags, path: [DECK, far] };
+}
+
+/** 路面 5.6m の跨道橋。始点が DECK で、そこから真東へ 40m */
+const overpass = { ...deck, id: 'osm:way5', kind: 'road-bridge' as const, form: 'girder' as const };
+
+test('高架に取り付く道を、標準の勾配で上がる取付部にする', () => {
+  // 道路構造令 第 20 条: 設計速度 40〜50km/h の一般道は 7%
+  // 5.6m 上がるには 80m 要る
+  const [ramp] = buildApproaches([roadTo(200)], [overpass]);
+  assert.ok(ramp, '取付部が作られていない');
+  assert.equal(ramp.kind, 'embankment');
+  assert.equal(ramp.form, 'ramp');
+  assert.equal(ramp.startHeight, 0, '地表から始まっていない');
+  assert.equal(ramp.deckHeight, 5.6, '高架の路面まで上がっていない');
+  // 柱は立てない（盛土・擁壁なので）
+  assert.equal(ramp.pierSpacing, 0);
+
+  const length = ramp.path.reduce(
+    (a, _, i) => (i ? a + Math.hypot(
+      (ramp.path[i].lat - ramp.path[i - 1].lat) * M_PER_DEG_LAT,
+      (ramp.path[i].lng - ramp.path[i - 1].lng) * M_PER_DEG_LAT * Math.cos((DECK.lat * Math.PI) / 180),
+    ) : 0),
+    0,
+  );
+  assert.ok(Math.abs(length - 5.6 / 0.07) < 1, `長さが標準の勾配と合わない: ${length}m`);
+  // 起点が低いほう、終点が高架側
+  assert.ok(ramp.path[ramp.path.length - 1].lng > ramp.path[0].lng);
+});
+
+test('道が足りなければ、その長さぶんで上がる', () => {
+  // 高架に接する道が短く、その先が OSM から取れていないことがある。
+  // 標準の勾配にこだわると上がりきる前に途切れて、元の段差が残る。
+  // 60m で 5.6m なら 9.3%。標準（7%）の 1.5 倍以内なので作る
+  const [ramp] = buildApproaches([roadTo(60)], [overpass]);
+  assert.ok(ramp, '取付部が作られていない');
+  assert.equal(ramp.deckHeight, 5.6);
+  assert.equal(ramp.path.length, 2, '道が短いので全部使う');
+});
+
+test('短すぎる道には取り付けない', () => {
+  // 40m で 5.6m は 14%。一般道には実在しない急さで、
+  // それは取り付く道ではなく端点を共有しているだけの脇道（管理用通路など）
+  assert.deepEqual(buildApproaches([roadTo(40)], [overpass]), []);
+  assert.deepEqual(buildApproaches([roadTo(30)], [overpass]), []);
+});
+
+test('向きの違う脇道には取り付けない', () => {
+  // 高架に取り付く道は、必ず高架と同じ向きに続いている。
+  // 端点を共有しているだけの直角の道に取り付けると、
+  // 高架の脇に関係のない坂ができる
+  const side = {
+    id: '21',
+    tags: { highway: 'residential' },
+    // 高架は東西。こちらは真北へ 200m
+    path: [DECK, { lat: DECK.lat + 200 / M_PER_DEG_LAT, lng: DECK.lng }],
+  };
+  assert.deepEqual(buildApproaches([side], [overpass]), []);
+});
+
+test('鉄道の取付部は鉄道の勾配で上がる', () => {
+  // 鉄道に関する技術上の基準を定める省令の解釈基準: 本線の最急勾配 35‰
+  const rail = { ...overpass, id: 'osm:way6', kind: 'rail-elevated' as const, deckHeight: 9.4 };
+  const track = roadTo(600, { railway: 'rail' });
+  const [ramp] = buildApproaches([track], [rail]);
+  assert.ok(ramp, '取付部が作られていない');
+  const length = Math.hypot(
+    (ramp.path[1].lat - ramp.path[0].lat) * M_PER_DEG_LAT,
+    (ramp.path[1].lng - ramp.path[0].lng) * M_PER_DEG_LAT * Math.cos((DECK.lat * Math.PI) / 180),
+  );
+  assert.ok(Math.abs(length - 9.4 / 0.035) < 2, `鉄道の勾配になっていない: ${length}m`);
+  // 線路の幅は軌道の本数から決まる（道路の 9m にしない）
+  assert.ok(ramp.width < 6, `線路なのに幅 ${ramp.width}m`);
+});
+
+test('段差が小さい橋には取付部を作らない', () => {
+  // 川を渡る橋は前後の道路と同じ高さで渡る。数十センチの段差に坂は要らない
+  const low = { ...overpass, id: 'osm:way7', deckHeight: 0.8 };
+  assert.deepEqual(buildApproaches([roadTo(200)], [low]), []);
+});
+
+test('同じ道を両側から取り合わない', () => {
+  // 短い橋の両端に同じ道が付いていると、同じ平面形で上りと下りの
+  // 取付部が二重にできてしまう
+  const both = buildApproaches([roadTo(200)], [overpass, { ...overpass, id: 'osm:way8' }]);
+  assert.equal(both.length, 1);
 });

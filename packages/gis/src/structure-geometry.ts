@@ -49,7 +49,19 @@ const MATERIAL: Record<StructureKind, { deck: string; pier: string }> = {
   'road-bridge': { deck: '#b5b1aa', pier: '#aaa6a0' },
   footbridge: { deck: '#c2beb7', pier: '#b4b0a9' },
   stair: { deck: '#c2beb7', pier: '#b4b0a9' },
+  // 盛土・擁壁。路面はコンクリート、受けている壁は打ち放しのコンクリート
+  embankment: { deck: '#bcb8b1', pier: '#a8a49d' },
 };
+
+/**
+ * 盛土・擁壁を受ける壁を何区間に分けるか。
+ *
+ * 上がっていく区間では壁の高さが場所ごとに違う。押し出しの断面は
+ * 1 本につき 1 つしか持てないので、区間に分けて 1 区間 1 つの高さで作る。
+ * 区間の上端は床版（厚み 0.3m）で覆われるため、多少の段は表に出ない。
+ */
+const RAMP_WALL_SEGMENT_M = 12;
+const RAMP_WALL_MAX_SEGMENTS = 24;
 
 /**
  * 段の寸法。
@@ -620,6 +632,70 @@ function stairShapes(
   return out;
 }
 
+/**
+ * 盛土・擁壁を受ける壁。
+ *
+ * 柱は立てない。OSM が `embankment=yes` と書いているのは
+ * 「土を盛って持ち上げてある」という意味で、柱の上に載っているという
+ * 意味ではないため。取付部（普通の道から高架へ上がる区間）も同じ造り。
+ *
+ * 壁の面は路肩の位置に置く。盛土の法面（標準は 1:1.5）まで再現すると、
+ * 高さ 9m の区間で片側 13.5m ぶん、実際には持っていない隣地まで
+ * 構造物が広がってしまう。OSM は擁壁か法面かを区別していないので、
+ * 狭いほう（擁壁）に倒す。
+ *
+ * 幅を路面とほぼ同じ（0.92 倍）に取るのには、もう 1 つ理由がある。
+ * 取付部の平面形は地表にも道として描かれている（そこには実際に道があり、
+ * 立体だけにすると接続先が見つからなかったときに道が消える）。
+ * 壁が地面から路面まで塞いでいれば、その帯は横からも上からも隠れる。
+ */
+function rampWallShapes(
+  s: ElevatedStructure,
+  metrics: PathMetrics,
+  slabBottom: number[],
+  ground: number[],
+  color: string,
+  distanceM: number,
+  budget: number,
+): SceneShape[] {
+  if (budget <= 0 || metrics.total <= 0) return [];
+
+  // 離れるほど粗くする。区間の境目は床版に覆われて見えないので、
+  // 粗くしても輪郭は変わらない
+  const stride = pierStride(distanceM);
+  const wanted = Math.ceil(metrics.total / (RAMP_WALL_SEGMENT_M * stride));
+  const count = Math.max(1, Math.min(RAMP_WALL_MAX_SEGMENTS, wanted));
+  if (count > budget) return [];
+
+  const span = metrics.total / count;
+  const lats = s.path.map((p) => p.lat);
+  const lngs = s.path.map((p) => p.lng);
+  const out: SceneShape[] = [];
+
+  for (let i = 0; i < count; i += 1) {
+    const d = (i + 0.5) * span;
+    const point = pointAt(lats, lngs, metrics.cumulative, d);
+    const heading = headingAtDistance(s.path, metrics.cumulative, d);
+    const top = valueAt(slabBottom, metrics.cumulative, d);
+    const soil = valueAt(ground, metrics.cumulative, d);
+    const height = top - soil;
+    // 地面すれすれの区間には壁が見えない
+    if (height < 0.4) continue;
+
+    out.push(
+      boxAt(point, heading, {
+        // 床版よりわずかに内側。実物も路肩の下で受けている
+        halfX: s.width * 0.46,
+        halfY: span / 2,
+        halfZ: height / 2,
+        z: soil + height / 2,
+        color,
+      }),
+    );
+  }
+  return out;
+}
+
 /** 柱まわり（形式ごとに造りが変わる部分） */
 function frameShapes(
   s: ElevatedStructure,
@@ -793,11 +869,9 @@ export function buildStructureShapes(
 
     out.deck.push(...deckShapes(s, beamBottom, slabBottom, material.deck));
     out.parapet.push(...parapetShapes(s, deckTop, material.deck));
-    // 階段は上端で高架の床版に直接つながる。そこに橋台を立てると
-    // 上がりきったところに壁ができてしまう
-    if (s.form !== 'stair') {
-      out.frame.push(...abutmentShapes(s, metrics, beamBottom, ground, material.pier));
-    } else {
+    if (s.form === 'stair') {
+      // 階段は上端で高架の床版に直接つながる。そこに橋台を立てると
+      // 上がりきったところに壁ができてしまう
       const steps = stairShapes(
         s,
         metrics,
@@ -808,6 +882,21 @@ export function buildStructureShapes(
       );
       out.deck.push(...steps);
       budget -= steps.length;
+    } else if (s.form === 'ramp') {
+      // 盛土・取付部。柱でも橋台でもなく、路面の下を壁で受ける
+      const wall = rampWallShapes(
+        s,
+        metrics,
+        slabBottom,
+        ground,
+        material.pier,
+        options.distances[index] ?? 0,
+        budget,
+      );
+      out.frame.push(...wall);
+      budget -= wall.length;
+    } else {
+      out.frame.push(...abutmentShapes(s, metrics, beamBottom, ground, material.pier));
     }
 
     // 柱は均した路盤ではなく実際の地表まで伸ばす（浮かせない）

@@ -242,7 +242,18 @@ export type StructureKind =
    * その階段を作らないと、デッキだけが空中に浮いて上がる手段が無くなる。
    * 浜松駅周辺の実測では、階段 19 本のうち 5 本が高架のデッキに接している。
    */
-  | 'stair';
+  | 'stair'
+  /**
+   * 盛土・擁壁の区間、およびその取付部。
+   *
+   * OSM が `embankment=yes` と書いているのは「土を盛って持ち上げてある」
+   * という意味で、柱の上に載っているという意味ではない。柱を並べると
+   * 実在しない構造物になる。
+   *
+   * 普通の道から高架へ上がっていく取付部も同じ造りなので、ここに含める。
+   * startHeight を地表に置けば、そのまま滑らかに上がる区間になる。
+   */
+  | 'embankment';
 
 /**
  * 構造形式。見た目が大きく変わるので分けて扱う。
@@ -252,8 +263,9 @@ export type StructureKind =
  *   girder      … 桁橋。橋台・橋脚の上に桁を渡す。川や道路をまたぐ橋
  *   slab        … 床版橋。桁を持たない薄い板。歩道橋や小規模な橋
  *   stair       … 階段。斜めの段裏の上に段が並ぶ。地表から高架へ上がる
+ *   ramp        … 盛土・擁壁。路面の下を壁で受ける。柱を持たない
  */
-export type StructureForm = 'rigid-frame' | 'girder' | 'slab' | 'stair';
+export type StructureForm = 'rigid-frame' | 'girder' | 'slab' | 'stair' | 'ramp';
 
 export interface ElevatedStructure {
   id: string;
