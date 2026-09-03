@@ -48,7 +48,36 @@ const MATERIAL: Record<StructureKind, { deck: string; pier: string }> = {
   'road-elevated': { deck: '#bcb8b1', pier: '#b0aca5' },
   'road-bridge': { deck: '#b5b1aa', pier: '#aaa6a0' },
   footbridge: { deck: '#c2beb7', pier: '#b4b0a9' },
+  stair: { deck: '#c2beb7', pier: '#b4b0a9' },
 };
+
+/**
+ * 段の寸法。
+ *
+ * 蹴上げの上限は「立体横断施設技術基準・同解説」（日本道路協会）と
+ * 「移動等円滑化のために必要な道路の構造に関する基準」（国土交通省令）の
+ * 0.15m を使う。段の数はここから決まる。
+ *
+ * 踏面は基準値ではなく、OSM の平面形の長さを段の数で割って求める。
+ * 踏面を先に決めて長さを逆算すると、実在しない位置まで階段が伸びてしまう。
+ *
+ * 割り付けた踏面が 0.21m を下回ったときは段を作らない。
+ * 0.21m は建築基準法施行令 第 23 条が定める一般的な階段の踏面の下限で、
+ * これを割るなら、その平面形は 1 直線の階段としては短すぎる
+ * （実物には踊り場や折り返しがあり、OSM がそこまで描いていない）。
+ * 無い折り返しを作るのは創作なので、斜めの構造だけを出す。
+ */
+const STEP_RISE_MAX_M = 0.15;
+const STEP_TREAD_MIN_M = 0.21;
+
+/**
+ * 段を 1 つずつ作る距離の上限 (m)。
+ *
+ * 踏面 0.30m は 300m 離れると画面上でおよそ 1 画素になり、
+ * 段が並んでいることは見て取れない。斜めの段裏と手すりだけで
+ * 「上がっていく構造物」としては十分に読み取れる。
+ */
+const STEP_DETAIL_DISTANCE_M = 300;
 
 /**
  * 明度を変えた色を作る。
@@ -67,10 +96,14 @@ export function shade(hex: string, amount: number, towardsWhite = false): string
 }
 
 /**
- * 柱として作ってよい形の上限。
+ * 繰り返し部材（柱と段）として作ってよい形の上限。
  *
  * ラーメン高架橋の柱は径間 8.9m ごとに並ぶので、
- * 長い路線ではこれだけで数千個になる。
+ * 長い路線ではこれだけで数千個になる。階段の段も同じ性質で、
+ * 高さ 5.6m の階段 1 本が 38 個になる。まとめて 1 つの予算で抑える。
+ *
+ * 実測（2026-09）: 東京駅 2km 四方で、階段 11 本が近距離で 444 個、
+ * 400m 離れると 49 個（段は 300m で作らなくなる）。
  */
 export const MAX_FRAME_SHAPES = 6000;
 
@@ -302,6 +335,26 @@ export function gradeProfile(ground: number[], cumulative: number[]): number[] {
   return smoothed.map((v, i) => Math.max(v, ground[i]));
 }
 
+/**
+ * 経路の各頂点における「地盤からの路面高さ」(m)。
+ *
+ * ふつうの高架は全長にわたって同じ高さだが、階段や取付部は
+ * 起点で地表、終点で高架の路面と、距離に応じて上がっていく。
+ * ここを 1 か所で決めておけば、床版・手すり・柱の高さがすべて追従する。
+ */
+export function heightProfile(
+  deckHeight: number,
+  startHeight: number | undefined,
+  cumulative: number[],
+): number[] {
+  const level = cumulative.map(() => deckHeight);
+  if (startHeight === undefined || !Number.isFinite(startHeight)) return level;
+  const total = cumulative[cumulative.length - 1] ?? 0;
+  // 長さが 0 だと勾配を割り当てられない（0 除算で NaN になる）
+  if (!(total > 0)) return level;
+  return cumulative.map((d) => startHeight + ((deckHeight - startHeight) * d) / total);
+}
+
 /** 等間隔で並ぶ柱の位置（累積距離）。両端には必ず柱を置く */
 export function bayPositions(total: number, spacing: number): number[] {
   if (spacing <= 0 || total <= 0) return [];
@@ -510,6 +563,63 @@ function abutmentShapes(
   return out;
 }
 
+/**
+ * 段。
+ *
+ * 斜めの段裏（床版）の上に、段を 1 つずつ載せる。
+ * 段の高さの半分が段裏に埋まる位置に置くことで、
+ * 側面から見たときに段裏の斜面から段鼻が並んで突き出る形になる。
+ *
+ * 段の割り付け方は STEP_RISE_MAX_M / STEP_TREAD_MIN_M の説明を参照。
+ */
+function stairShapes(
+  s: ElevatedStructure,
+  metrics: PathMetrics,
+  base: number[],
+  deckColor: string,
+  distanceM: number,
+  budget: number,
+): SceneShape[] {
+  const start = s.startHeight ?? s.deckHeight;
+  const rise = s.deckHeight - start;
+  // 上がらないものは階段ではない
+  if (!(rise > 0.3) || !(metrics.total > 0)) return [];
+  if (distanceM > STEP_DETAIL_DISTANCE_M) return [];
+
+  const count = Math.ceil(rise / STEP_RISE_MAX_M);
+  const tread = metrics.total / count;
+  if (tread < STEP_TREAD_MIN_M) return [];
+  if (count > budget) return [];
+
+  const riser = rise / count;
+  const lats = s.path.map((p) => p.lat);
+  const lngs = s.path.map((p) => p.lng);
+  // 段は段裏より明るくして、影の付き方で段が読み取れるようにする
+  const color = shade(deckColor, 0.1, true);
+  // 手すりの内側に収める
+  const halfX = Math.max(0.3, s.width / 2 - 0.15);
+
+  const out: SceneShape[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const d = (i + 0.5) * tread;
+    const point = pointAt(lats, lngs, metrics.cumulative, d);
+    const heading = headingAtDistance(s.path, metrics.cumulative, d);
+    const soil = valueAt(base, metrics.cumulative, d);
+    // i 段目の踏面は、起点の高さから (i+1) 段ぶん上がったところ
+    const treadTop = soil + start + (i + 1) * riser;
+    out.push(
+      boxAt(point, heading, {
+        halfX,
+        halfY: tread / 2,
+        halfZ: riser / 2,
+        z: treadTop - riser / 2,
+        color,
+      }),
+    );
+  }
+  return out;
+}
+
 /** 柱まわり（形式ごとに造りが変わる部分） */
 function frameShapes(
   s: ElevatedStructure,
@@ -578,8 +688,8 @@ function frameShapes(
       continue;
     }
 
-    if (s.form === 'slab') {
-      // 歩道橋。細い柱 1 本
+    if (s.form === 'slab' || s.form === 'stair') {
+      // 歩道橋・階段。細い柱 1 本
       out.push(
         boxAt(point, heading, {
           halfX: s.pierSize * 0.5,
@@ -670,17 +780,37 @@ export function buildStructureShapes(
     const ground = s.path.map((_, i) =>
       Number.isFinite(raw[i]) ? raw[i] : 0,
     );
-    const grade = gradeProfile(ground, metrics.cumulative);
+    // 階段は地表に足を着けている。地形を均した路盤に載せると、
+    // 均しで上がったぶんだけ下の段が地面から浮く
+    const base = s.form === 'stair' ? ground : gradeProfile(ground, metrics.cumulative);
     const material = MATERIAL[s.kind];
 
-    const deckTop = grade.map((g) => g + s.deckHeight);
+    // 路面の高さは、起点から終点へ変化しうる（階段・取付部）
+    const rise = heightProfile(s.deckHeight, s.startHeight, metrics.cumulative);
+    const deckTop = base.map((g, i) => g + rise[i]);
     const slabBottom = deckTop.map((h) => h - s.deckThickness);
     const beamBottom = slabBottom.map((h) => h - s.girderDepth);
 
     out.deck.push(...deckShapes(s, beamBottom, slabBottom, material.deck));
     out.parapet.push(...parapetShapes(s, deckTop, material.deck));
-    out.frame.push(...abutmentShapes(s, metrics, beamBottom, ground, material.pier));
+    // 階段は上端で高架の床版に直接つながる。そこに橋台を立てると
+    // 上がりきったところに壁ができてしまう
+    if (s.form !== 'stair') {
+      out.frame.push(...abutmentShapes(s, metrics, beamBottom, ground, material.pier));
+    } else {
+      const steps = stairShapes(
+        s,
+        metrics,
+        ground,
+        material.deck,
+        options.distances[index] ?? 0,
+        budget,
+      );
+      out.deck.push(...steps);
+      budget -= steps.length;
+    }
 
+    // 柱は均した路盤ではなく実際の地表まで伸ばす（浮かせない）
     const frame = frameShapes(
       s,
       metrics,

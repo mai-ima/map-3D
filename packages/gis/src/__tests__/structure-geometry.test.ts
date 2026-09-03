@@ -19,6 +19,7 @@ import type { BoxShape, ElevatedStructure, ExtrudedShape, SceneShape } from '@ij
 import {
   bayPositions,
   buildStructureShapes,
+  heightProfile,
   girderOffsets,
   girderSection,
   parapetSection,
@@ -365,4 +366,149 @@ test('地形が取れなくても NaN の形を作らない', () => {
   // 地形の配列が短くても落ちない
   buildStructureShapes([railViaduct], { ground: [[]], distances: [0] });
   buildStructureShapes([railViaduct], { ground: [], distances: [] });
+});
+
+// ---- 高架へ上がる階段 --------------------------------------------------
+//
+// 歩道橋・ペデストリアンデッキは必ずどこかで地表とつながっている。
+// その階段が無いと、デッキだけが空中に浮いて上がる手段が無くなる。
+//
+// 見た目では「段が地面に埋まっている」「上がりきる前に終わっている」に
+// 気づけないので、段の座標そのものを測る。
+//
+// 寸法の出典:
+//   蹴上げ 0.15m 以下 … 立体横断施設技術基準・同解説（日本道路協会）
+//   踏面   0.21m 以上 … 建築基準法施行令 第 23 条（一般的な階段の下限）
+
+/** 地表から高さ h まで、水平距離 runM で上がる階段 */
+function stair(runM: number, h: number): ElevatedStructure {
+  return {
+    id: 'stair',
+    kind: 'stair',
+    form: 'stair',
+    path: eastLine(runM, 3),
+    width: 2,
+    layer: 1,
+    deckThickness: 0.25,
+    girderDepth: 0,
+    deckHeight: h,
+    startHeight: 0,
+    pierSpacing: 6,
+    pierSize: 0.4,
+    parapetHeight: 1.1,
+  };
+}
+
+/** 平地 12m の上に組み立てる */
+function onFlatGround(s: ElevatedStructure, distanceM = 50) {
+  return buildStructureShapes([s], {
+    ground: [s.path.map(() => 12)],
+    distances: [distanceM],
+  });
+}
+
+test('階段は地表から接続先の路面まで、段を刻んで上がる', () => {
+  // 浜松駅前のペデストリアンデッキ（路面 5.6m）に上がる 12.3m の階段
+  const built = onFlatGround(stair(12.3, 5.6));
+  const steps = built.deck.filter((s): s is BoxShape => s.kind === 'box');
+
+  assert.ok(steps.length > 0, '段が 1 つも作られていない');
+  // 蹴上げは基準の上限以下
+  for (const step of steps) {
+    assert.ok(step.size.z <= 0.1501, `蹴上げが基準超え: ${step.size.z}m`);
+  }
+  // 踏面も下限以上
+  for (const step of steps) {
+    assert.ok(step.size.y >= 0.21, `踏面が基準未満: ${step.size.y}m`);
+  }
+
+  const tops = steps.map((s) => (s.centre.alt ?? 0) + s.size.z / 2);
+  const lowest = Math.min(...tops);
+  const highest = Math.max(...tops);
+
+  // 最下段は地表のすぐ上（1 段ぶん）。埋まっても浮いてもいない
+  assert.ok(
+    Math.abs(lowest - (12 + 5.6 / steps.length)) < 0.01,
+    `最下段が地表から離れている: ${lowest}`,
+  );
+  // 最上段は接続先の路面と同じ高さ。ここが合わないとデッキとの間に段差ができる
+  assert.ok(Math.abs(highest - 17.6) < 0.01, `上がりきっていない: ${highest}`);
+});
+
+test('段は単調に上がる', () => {
+  // 途中で下がると、その 1 段だけ床に埋まって見える
+  const built = onFlatGround(stair(15.7, 5.6));
+  const steps = built.deck.filter((s): s is BoxShape => s.kind === 'box');
+  const tops = steps.map((s) => (s.centre.alt ?? 0) + s.size.z / 2);
+  for (let i = 1; i < tops.length; i += 1) {
+    assert.ok(tops[i] > tops[i - 1], `${i} 段目で下がっている`);
+  }
+});
+
+test('平面形が短すぎるときは段を作らない', () => {
+  // 4.6m の平面形で 5.6m 上がるには、踏面が 0.12m の階段が要る。
+  // 実物には踊り場や折り返しがあり、OSM がそこまで描いていないということ。
+  // 無い折り返しを作るのは創作なので、斜めの構造だけを出す
+  const built = onFlatGround(stair(4.6, 5.6));
+  assert.equal(built.deck.filter((s) => s.kind === 'box').length, 0, '段を作ってしまっている');
+  // 斜めの段裏（と手すり）は出る。上がる構造があること自体は分かる
+  assert.ok(built.deck.some((s) => s.kind === 'extrusion'), '段裏が無い');
+  assert.ok(built.parapet.length > 0, '手すりが無い');
+});
+
+test('離れたら段を 1 つずつ作らない', () => {
+  // 踏面 0.3m は 300m 離れると画面上で 1 画素になり、段は見て取れない
+  const near = onFlatGround(stair(12.3, 5.6), 50);
+  const far = onFlatGround(stair(12.3, 5.6), 400);
+  assert.ok(near.deck.filter((s) => s.kind === 'box').length > 30);
+  assert.equal(far.deck.filter((s) => s.kind === 'box').length, 0);
+  // 段裏と手すりは遠くでも残る（無くすと歩道橋が空中で途切れる）
+  assert.ok(far.deck.some((s) => s.kind === 'extrusion'));
+  assert.ok(far.parapet.length > 0);
+});
+
+test('段裏と手すりは起点から終点へ斜めに上がる', () => {
+  const built = onFlatGround(stair(12.3, 5.6));
+  const slab = built.deck.find((s): s is ExtrudedShape => s.kind === 'extrusion');
+  assert.ok(slab, '段裏が無い');
+  const alts = slab.path.map((p) => p.alt ?? 0);
+  // 起点は地表付近（版厚のぶんだけ下）、終点は接続先の路面 − 版厚
+  assert.ok(Math.abs(alts[0] - (12 - 0.25)) < 0.01, `起点の高さ: ${alts[0]}`);
+  assert.ok(Math.abs(alts[alts.length - 1] - (17.6 - 0.25)) < 0.01, `終点の高さ: ${alts[alts.length - 1]}`);
+  for (let i = 1; i < alts.length; i += 1) {
+    assert.ok(alts[i] > alts[i - 1], '段裏が上がっていない');
+  }
+
+  // 手すりは両側に 1 本ずつ。どちらも同じように上がる
+  assert.equal(built.parapet.length, 2);
+  for (const rail of built.parapet as ExtrudedShape[]) {
+    const h = rail.path.map((p) => p.alt ?? 0);
+    assert.ok(h[h.length - 1] - h[0] > 5, '手すりが上がっていない');
+  }
+});
+
+test('階段の上端に橋台を立てない', () => {
+  // 立てると、上がりきったところに壁ができてデッキへ出られなくなる。
+  // 支えるのは柱の役目
+  const built = onFlatGround(stair(15.7, 5.6));
+  const wide = built.frame.filter((s): s is BoxShape => s.kind === 'box' && s.size.x > 1.5);
+  assert.equal(wide.length, 0, '橋台らしい幅広の箱がある');
+});
+
+test('上がらない階段は段を作らない', () => {
+  // 高架の上を歩く通路を階段と取り違えると、平らな面に段が並ぶ
+  const flat = { ...stair(12, 5.6), startHeight: 5.6 };
+  assert.equal(onFlatGround(flat).deck.filter((s) => s.kind === 'box').length, 0);
+});
+
+test('路面の高さは起点から終点へ直線的に上がる', () => {
+  // ふつうの高架は全長にわたって同じ高さ。startHeight があるものだけ上がる
+  assert.deepEqual(heightProfile(9.4, undefined, [0, 50, 100]), [9.4, 9.4, 9.4]);
+  assert.deepEqual(heightProfile(6, 0, [0, 5, 10]), [0, 3, 6]);
+  // 長さ 0 で 0 除算にならない（NaN が高さに混ざると何も描かれなくなる）
+  assert.deepEqual(heightProfile(6, 0, [0, 0]), [6, 6]);
+  assert.deepEqual(heightProfile(6, 0, []), []);
+  for (const v of heightProfile(6, Number.NaN, [0, 5, 10])) {
+    assert.ok(Number.isFinite(v), '高さが NaN になっている');
+  }
 });

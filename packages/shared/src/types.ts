@@ -234,7 +234,15 @@ export type StructureKind =
   | 'rail-bridge'
   | 'road-elevated'
   | 'road-bridge'
-  | 'footbridge';
+  | 'footbridge'
+  /**
+   * 高架下から上へ上がる階段。
+   *
+   * 歩道橋・ペデストリアンデッキは、必ずどこかで地表とつながっている。
+   * その階段を作らないと、デッキだけが空中に浮いて上がる手段が無くなる。
+   * 浜松駅周辺の実測では、階段 19 本のうち 5 本が高架のデッキに接している。
+   */
+  | 'stair';
 
 /**
  * 構造形式。見た目が大きく変わるので分けて扱う。
@@ -243,8 +251,9 @@ export type StructureKind =
  *                 都市部の鉄道高架はほぼこれ
  *   girder      … 桁橋。橋台・橋脚の上に桁を渡す。川や道路をまたぐ橋
  *   slab        … 床版橋。桁を持たない薄い板。歩道橋や小規模な橋
+ *   stair       … 階段。斜めの段裏の上に段が並ぶ。地表から高架へ上がる
  */
-export type StructureForm = 'rigid-frame' | 'girder' | 'slab';
+export type StructureForm = 'rigid-frame' | 'girder' | 'slab' | 'stair';
 
 export interface ElevatedStructure {
   id: string;
@@ -272,6 +281,14 @@ export interface ElevatedStructure {
    * 実物では路面が連続していて、その下の造りだけが変わる。
    */
   deckHeight: number;
+  /**
+   * 経路の起点における路面の高さ (m)。省略時は deckHeight（＝水平）。
+   *
+   * 階段や取付部のように、地表から高架へ上がっていく構造で使う。
+   * 起点を低いほう、終点を高いほうに揃えて持つ。
+   * これがあると、床版・高欄・柱の高さがそのまま勾配に追従する。
+   */
+  startHeight?: number;
   /** 柱・橋脚を立てる間隔 (m)。0 なら支柱なし */
   pierSpacing: number;
   /** 柱の断面の一辺 (m) */

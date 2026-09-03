@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BBox } from '@ijm/shared';
 import { alignDeckHeights } from '../structure-merge';
-import { classify, clipPathToBBox, toStructure, widthOf } from '../structures';
+import { buildStairs, classify, clipPathToBBox, toStructure, widthOf } from '../structures';
 
 /** 20m ほどの短い橋（浜松の道路橋の長さ中央値は 10m） */
 const shortWay = (tags: Record<string, string>) => ({
@@ -54,8 +54,21 @@ test('layer が付いているだけのものは高架にしない', () => {
   assert.equal(classify({ highway: 'residential', layer: '1' }, 30), null, '生活道路');
 
   // bridge が付いていれば、短くても橋として建てる
-  assert.equal(classify({ highway: 'steps', bridge: 'yes' }, 9), 'footbridge');
+  assert.equal(classify({ highway: 'footway', bridge: 'yes' }, 9), 'footbridge');
   assert.equal(classify({ railway: 'rail', bridge: 'yes' }, 8), 'rail-bridge');
+});
+
+test('階段は classify では判定しない（上がった先が分からないため）', () => {
+  // 階段の高さは「上がった先の構造物の路面高さ」で決まる。
+  // それが分かるのは高架を組み立てたあとなので、buildStairs が受け持つ。
+  // ここで null を返すのは「地表にも描く」という意味で、意図どおり。
+  // 階段には地表に足元があり、平面図としての踏み跡はそこにある。
+  //
+  // 逆にここで階段を返してしまうと、接続先が見つからなかった階段が
+  // 地表にも立体にも描かれなくなる（線路と歩道で実際に起きた欠陥と同じ形）
+  assert.equal(classify({ highway: 'steps' }, 9), null);
+  assert.equal(classify({ highway: 'steps', layer: '1' }, 9), null);
+  assert.equal(classify({ highway: 'steps', bridge: 'yes' }, 9), null);
 });
 
 test('トンネル・屋内のものは高架にしない', () => {
@@ -105,7 +118,7 @@ test('駅構内の通路を歩道橋にしない', () => {
 
   // bridge があれば、覆いが掛かっていても建てる（駅の跨線橋は実在する）
   assert.equal(
-    classify({ highway: 'steps', bridge: 'yes', covered: 'yes', layer: '1' }, 44),
+    classify({ highway: 'footway', bridge: 'yes', covered: 'yes', layer: '1' }, 44),
     'footbridge',
   );
 });
@@ -339,4 +352,116 @@ test('短い橋は床版橋にして橋脚を立てない', () => {
   // 高架は連続した橋脚で支えられている
   const elevated = toStructure(longWay({ railway: 'rail', layer: '1' }));
   assert.ok(elevated && elevated.pierSpacing > 0);
+});
+
+// ---- 高架へ上がる階段 --------------------------------------------------
+//
+// 階段の高さは OSM には入っていない。入っているのは平面形と、
+// その端が「どの構造物につながっているか」である。
+// つながった先の路面高さが分かれば、そこまで上がることが実データから決まる。
+//
+// 浜松駅周辺の実測（2026-09）: highway=steps が 19 本、
+// うち 5 本がペデストリアンデッキ（路面 5.6m）に接している。
+
+const DECK = { lat: 34.7047, lng: 137.7342 };
+const M_PER_DEG_LAT = 111_320;
+
+/** DECK から真東へ lengthM 伸びる線 */
+function eastFrom(from: { lat: number; lng: number }, lengthM: number) {
+  const cos = Math.cos((from.lat * Math.PI) / 180);
+  return [from, { lat: from.lat, lng: from.lng + lengthM / (M_PER_DEG_LAT * cos) }];
+}
+
+/** 路面 5.6m の歩道デッキ。始点が DECK */
+const deck = {
+  id: 'osm:way1',
+  kind: 'footbridge' as const,
+  form: 'slab' as const,
+  path: eastFrom(DECK, 40),
+  width: 3.5,
+  layer: 1,
+  deckThickness: 0.45,
+  girderDepth: 0,
+  deckHeight: 5.6,
+  pierSpacing: 18,
+  pierSize: 0.5,
+  parapetHeight: 1.2,
+};
+
+/** DECK から西へ伸びる階段（終点が DECK の始点と一致する） */
+function stepsTo(lengthM: number, tags: Record<string, string> = {}) {
+  const cos = Math.cos((DECK.lat * Math.PI) / 180);
+  const ground = { lat: DECK.lat, lng: DECK.lng - lengthM / (M_PER_DEG_LAT * cos) };
+  return { id: '10', tags: { highway: 'steps', ...tags }, path: [ground, DECK] };
+}
+
+test('高架につながる階段は、地表からその路面まで上がる', () => {
+  const [stair] = buildStairs([stepsTo(12)], [deck]);
+  assert.ok(stair, '階段が作られていない');
+  assert.equal(stair.kind, 'stair');
+  assert.equal(stair.startHeight, 0, '地表から始まっていない');
+  assert.equal(stair.deckHeight, 5.6, '接続先の路面まで上がっていない');
+  // 起点が低いほうに揃っている（描く側は「起点から終点へ上がる」だけ知っていればよい）
+  assert.ok(stair.path[stair.path.length - 1].lng > stair.path[0].lng);
+});
+
+test('どちらの端もつながっていない階段は作らない', () => {
+  // 地下街への階段や法面の階段。どこまで上がるのか分からないので
+  // 高さを決められない。推測すると実在しない構造物を建てることになる
+  const far = { ...stepsTo(12), path: [{ lat: 34.6, lng: 137.6 }, { lat: 34.6, lng: 137.601 }] };
+  assert.deepEqual(buildStairs([far], [deck]), []);
+});
+
+test('高架の上を歩く通路は階段にしない', () => {
+  // 両端が同じ高さなら上がっていない
+  const onDeck = {
+    id: '11',
+    tags: { highway: 'steps' },
+    path: [deck.path[0], deck.path[1]],
+  };
+  assert.deepEqual(buildStairs([onDeck], [deck]), []);
+});
+
+test('階段の向きが逆でも、低いほうを起点に揃える', () => {
+  // OSM の way の向きは描かれた順であって、上り下りとは関係がない
+  const reversed = { ...stepsTo(12), path: [...stepsTo(12).path].reverse() };
+  const [stair] = buildStairs([reversed], [deck]);
+  assert.ok(stair);
+  assert.equal(stair.startHeight, 0);
+  assert.equal(stair.deckHeight, 5.6);
+});
+
+test('接続の判定はまとめる前の座標で行う', () => {
+  // まとめたあとの中心線と照合すると、下をくぐっているだけのデッキまで
+  // 「つながっている」と判定してしまう。実測では 1.34m 離れた別のデッキを
+  // 拾って、階段 1 本を取りこぼしていた
+  const nearby = {
+    ...deck,
+    id: 'osm:way2',
+    // 1.3m 北にずれた別のデッキ（階段はその下をくぐっている）
+    path: eastFrom({ lat: DECK.lat + 1.3 / M_PER_DEG_LAT, lng: DECK.lng }, 40),
+    deckHeight: 9.0,
+  };
+  const [stair] = buildStairs([stepsTo(12)], [deck, nearby]);
+  assert.ok(stair);
+  assert.equal(stair.deckHeight, 5.6, 'くぐっているだけのデッキを拾っている');
+});
+
+test('まとめたあとの路面高さに合わせる', () => {
+  // 平行なものをまとめると id が変わり、接続部で段差が出ないよう
+  // 路面高さも揃え直される。階段の上端はその高さに合わせないと段差になる
+  const merged = {
+    ...deck,
+    id: 'merged:1',
+    deckHeight: 6.2,
+    sourceIds: ['osm:way1', 'osm:way9'],
+  };
+  const [stair] = buildStairs([stepsTo(12)], [deck], [merged]);
+  assert.ok(stair);
+  assert.equal(stair.deckHeight, 6.2);
+});
+
+test('長すぎるものは階段として扱わない', () => {
+  // 200m の highway=steps は山道の階段や園路で、高架へ上がる階段ではない
+  assert.deepEqual(buildStairs([stepsTo(200)], [deck]), []);
 });

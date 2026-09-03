@@ -36,6 +36,8 @@ const PARALLEL_GAP_M: Record<StructureKind, number> = {
   'road-elevated': 5,
   'road-bridge': 4,
   footbridge: 3,
+  // 階段は 1 本ずつ独立した構造物。並んでいても 1 つにまとめない
+  stair: 0,
 };
 
 /** まとめた結果の床版がこれ以上広がったら、まとめすぎと判断する (m) */
@@ -45,6 +47,7 @@ const MAX_MERGED_WIDTH: Record<StructureKind, number> = {
   'road-elevated': 24,
   'road-bridge': 22,
   footbridge: 10,
+  stair: 0,
 };
 
 /** 平行とみなす向きの差 (rad)。約 22 度 */

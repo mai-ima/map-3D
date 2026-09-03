@@ -16,6 +16,7 @@
  */
 
 import type { BBox, ElevatedStructure, LatLng, StructureForm, StructureKind } from '@ijm/shared';
+import { distanceMeters } from '@ijm/shared';
 import { fetchOsmMap } from './osm-api';
 import { runOverpassQuery, type OverpassElement } from './overpass';
 import { consolidateStructures } from './structure-merge';
@@ -105,6 +106,29 @@ const PROFILE: Record<
     pierSpacing: 18,
     pierSize: 0.5,
     parapetHeight: 1.2,
+  },
+  /**
+   * 高架へ上がる階段。
+   *
+   * 寸法の出典は「立体横断施設技術基準・同解説」（日本道路協会）と
+   * 「移動等円滑化のために必要な道路の構造に関する基準」（国土交通省令）:
+   *   有効幅員  1.5m 以上（両側の手すりを含めて 2.0m 前後）
+   *   蹴上げ    0.15m 以下
+   *   踏面      0.30m 以上
+   *   手すり    路面から 0.8〜0.9m（転落防止の柵と兼ねる場合 1.1m）
+   *
+   * 段の寸法そのものは STEP_RISE_M / STEP_TREAD_M（structure-geometry）に置く。
+   * ここは階段を「1 本の細い斜めの構造物」として見たときの諸元。
+   */
+  stair: {
+    form: 'stair',
+    width: 2.0,
+    deckThickness: 0.25, // 段裏のコンクリート板
+    girderDepth: 0,
+    deckHeight: 5.45, // 接続先が分からないときの既定。実際は接続先から取る
+    pierSpacing: 6,
+    pierSize: 0.4,
+    parapetHeight: 1.1,
   },
 };
 
@@ -272,7 +296,14 @@ export function classify(tags: Record<string, string>, lengthM = 0): StructureKi
 
   const hw = tags.highway;
   if (!hw) return null;
-  if (['footway', 'path', 'pedestrian', 'steps', 'cycleway'].includes(hw)) {
+  // 階段は別扱い。上がった先が分からないと高さが決まらないので、
+  // 高架を組み立てたあとに buildStairs が接続先から高さを取る。
+  // ここで null を返すのは「地表にも描く」という意味で、これは意図どおり。
+  // 階段は地表にも足元があり、平面図としての踏み跡はそこにある。
+  // 逆に null を返さないと、接続先が見つからなかった階段が
+  // 地表にも立体にも描かれない（過去に線路と歩道で起きた欠陥と同じ形）
+  if (hw === 'steps') return null;
+  if (['footway', 'path', 'pedestrian', 'cycleway'].includes(hw)) {
     // 歩道橋やペデストリアンデッキには bridge が付く。
     // bridge が無いまま上の層にある歩行者用の道は、駅の構内通路や
     // ビルの中の通路であることがほとんどで、独立した構造物ではない。
@@ -307,6 +338,9 @@ export function deckHeightOf(
   layer: number,
   context: StructureContext,
 ): number {
+  // 階段の高さは「上がった先」で決まる。接続先が分かるのは
+  // 高架を組み立てたあとなので、ここでは既定値を返し、あとで差し替える
+  if (kind === 'stair') return PROFILE[kind].deckHeight;
   // 高架は橋とは別。市街地を貫く構造なので、またぐものによらず高い
   if (kind === 'rail-elevated') return PROFILE[kind].deckHeight + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
   if (kind === 'road-elevated') return PROFILE[kind].deckHeight + Math.max(0, layer - 1) * DECK_HEIGHT.perLayer;
@@ -333,6 +367,7 @@ export function formOf(kind: StructureKind, context: StructureContext): Structur
   // どちらも長い構造なので、長さでは切り替えない
   if (kind === 'rail-elevated') return 'rigid-frame';
   if (kind === 'road-elevated') return 'girder';
+  if (kind === 'stair') return 'stair';
   // 歩道橋は桁を持たない薄い床版
   if (kind === 'footbridge') return 'slab';
   // 道路橋・鉄道橋は支間が短ければ床版橋
@@ -490,6 +525,131 @@ export function toStructure(
   };
 }
 
+/**
+ * 階段の端が高架につながっているとみなす距離 (m)。
+ *
+ * OSM で同じ地点を指す way は同一のノードを共有するので、本来は距離 0 で一致する。
+ * 照合はまとめる前の座標に対して行うため、この値は浮動小数の誤差ぶんでよい。
+ *
+ * 実測（浜松駅周辺）: まとめたあとの中心線に対して 2.0m で照合していたときは、
+ * 下をくぐっているだけの歩道デッキ（1.34m）まで「つながっている」と判定し、
+ * 階段 1 本を取りこぼしていた。平行な歩道橋をまとめると中心線が最大 1.5m 動く。
+ */
+const STAIR_JOIN_TOLERANCE_M = 0.6;
+
+/** 階段として扱う長さの上限 (m)。これを超えるものは坂道や園路で、階段ではない */
+const STAIR_MAX_LENGTH_M = 120;
+
+/**
+ * 高架へ上がる階段を組み立てる。
+ *
+ * 歩道橋やペデストリアンデッキは、必ずどこかで地表とつながっている。
+ * その階段が無いと、デッキだけが空中に浮いて上がる手段が無くなる。
+ *
+ * 階段の高さは OSM には入っていないが、**上がった先の構造物の路面高さ**は
+ * すでに決まっている。端点がその構造物に接していれば、
+ * 「地表から、その路面まで上がる」ことが実データから分かる。
+ * 創作しているのは段の寸法（蹴上げ・踏面）だけで、これは設計基準の値。
+ *
+ * 接続先が見つからない階段は高さを決められないので作らない。
+ * 地下街への階段や、法面の階段がこれにあたる。
+ *
+ * @param steps `highway=steps` の way
+ * @param raw まとめる前の高架・橋。座標が OSM のままなので端点が厳密に一致する
+ * @param consolidated まとめ終えた高架・橋。路面高さはこちらが正しい
+ */
+export function buildStairs(
+  steps: { id: string; tags: Record<string, string>; path: LatLng[] }[],
+  raw: ElevatedStructure[],
+  consolidated: ElevatedStructure[] = raw,
+): ElevatedStructure[] {
+  const profile = PROFILE.stair;
+  const heights = deckHeightIndex(consolidated);
+  const out: ElevatedStructure[] = [];
+
+  for (const step of steps) {
+    if (step.path.length < 2) continue;
+    const lengthM = pathLength(step.path.map((p) => ({ lat: p.lat, lon: p.lng })));
+    if (lengthM < 1 || lengthM > STAIR_MAX_LENGTH_M) continue;
+
+    // 両端それぞれについて、接している高架の路面高さを調べる
+    const ends = [step.path[0], step.path[step.path.length - 1]];
+    const found = ends.map((end) => highestDeckAt(end, raw, heights));
+
+    // どちらの端もつながっていなければ、どこまで上がるのか分からない
+    if (found[0] === null && found[1] === null) continue;
+    // 両端とも同じ高さなら、それは高架の上を歩く通路であって階段ではない
+    if (found[0] !== null && found[1] !== null && Math.abs(found[0] - found[1]) < 0.5) {
+      continue;
+    }
+
+    // 低いほうを起点、高いほうを終点に揃える。
+    // こうしておくと、描く側は「起点から終点へ上がる」とだけ知っていればよい
+    const startHeight = found[0] ?? 0;
+    const endHeight = found[1] ?? 0;
+    const ascending = endHeight > startHeight;
+    const path = ascending ? step.path : [...step.path].reverse();
+    const low = Math.min(startHeight, endHeight);
+    const high = Math.max(startHeight, endHeight);
+
+    out.push({
+      id: `osm:way${step.id}`,
+      kind: 'stair',
+      form: 'stair',
+      name: step.tags.name,
+      path,
+      width: widthOf('stair', step.tags),
+      layer: layerOf(step.tags),
+      deckThickness: profile.deckThickness,
+      girderDepth: 0,
+      deckHeight: high,
+      startHeight: low,
+      // 階段は自立できないので、高いところだけ柱で支える
+      pierSpacing: high - low > 2.5 ? profile.pierSpacing : 0,
+      pierSize: profile.pierSize,
+      parapetHeight: profile.parapetHeight,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * まとめる前の id から、まとめたあとの路面高さを引く表。
+ *
+ * 平行なものをまとめたり縦につないだりすると id が変わり、
+ * 接続部で段差が出ないよう路面高さも揃え直される。
+ * 階段の上端は、揃え直したあとの高さに合わせないと段差になる。
+ */
+function deckHeightIndex(consolidated: ElevatedStructure[]): Map<string, number> {
+  const byId = new Map<string, number>();
+  for (const s of consolidated) {
+    byId.set(s.id, s.deckHeight);
+    for (const src of s.sourceIds ?? []) byId.set(src, s.deckHeight);
+  }
+  return byId;
+}
+
+/** その地点に接している構造物のうち、いちばん高い路面の高さ。無ければ null */
+function highestDeckAt(
+  point: LatLng,
+  raw: ElevatedStructure[],
+  heights: Map<string, number>,
+): number | null {
+  let best: number | null = null;
+  for (const s of raw) {
+    // 階段どうしをつなぐと高さが循環するので、階段は相手にしない
+    if (s.kind === 'stair') continue;
+    for (const p of s.path) {
+      if (distanceMeters(point, p) > STAIR_JOIN_TOLERANCE_M) continue;
+      const height = heights.get(s.id) ?? s.deckHeight;
+      if (best === null || height > best) best = height;
+      break;
+    }
+  }
+  return best;
+}
+
 /** 表示範囲の外へどれだけはみ出させるか (度)。約 250m */
 const CLIP_MARGIN_DEG = 0.0023;
 
@@ -556,6 +716,7 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
       way["layer"]["highway"](${b});
       way["layer"]["railway"](${b});
       way["waterway"~"^(river|stream|canal|drain|ditch)$"](${b});
+      way["highway"="steps"](${b});
     );
     out geom;
   `;
@@ -580,8 +741,24 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
   }
 
   const list: ElevatedStructure[] = [];
+  const stepWays: { id: string; tags: Record<string, string>; path: LatLng[] }[] = [];
+
   for (const el of elements) {
     if (el.type !== 'way') continue;
+    const tags = el.tags ?? {};
+    // 階段は「上がった先」の高さが決まってからでないと組み立てられない。
+    // 先に取り分けておく（bridge が付いた階段もここで扱う）
+    if (tags.highway === 'steps') {
+      const geometry = el.geometry ?? [];
+      if (geometry.length >= 2) {
+        stepWays.push({
+          id: String(el.id),
+          tags,
+          path: geometry.map((p) => ({ lat: p.lat, lng: p.lon })),
+        });
+      }
+      continue;
+    }
     const s = toStructure(el, waterways);
     if (!s) continue;
     const runs = clipPathToBBox(s.path, bbox);
@@ -594,5 +771,8 @@ export async function fetchElevatedStructures(bbox: BBox): Promise<ElevatedStruc
   }
   // OSM は線路を 1 本ずつ別の way にしているため、そのまま建てると
   // 複線の高架が 4m 間隔で積み上がる。実際の構造物の単位にまとめる
-  return consolidateStructures(list);
+  const consolidated = consolidateStructures(list);
+  // 階段の端点は、まとめる前の座標（OSM のノードそのもの）と照合する。
+  // 階段は短いので範囲では切らない（切ると上がりきる前に途切れる）
+  return [...consolidated, ...buildStairs(stepWays, list, consolidated)];
 }
