@@ -6,6 +6,7 @@ import {
   forceDegradeTier,
   getQualitySettings,
   MemoryWatchdog,
+  PerformanceWatchdog,
   resolveMemoryBudget,
   type DeviceInfo,
 } from '../quality';
@@ -191,4 +192,51 @@ test('高度が上がるほど精細度は単調に粗くなる', () => {
     assert.ok(sse >= prev, `${h}m で精細度が逆転している (${prev} → ${sse})`);
     prev = sse;
   }
+});
+
+test('高度が数値で来なくても精細度は数値のまま返る', () => {
+  // カメラ姿勢が壊れた直後は positionCartographic.height が NaN になりうる。
+  // NaN の SSE を Cesium に渡すとタイルツリーの評価が止まり、建物が一切出なくなる
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    const sse = adaptiveScreenSpaceError(12, bad);
+    assert.ok(Number.isFinite(sse), `高度 ${bad} で SSE が ${sse}`);
+    assert.ok(sse > 0, `高度 ${bad} で SSE が ${sse}`);
+  }
+});
+
+test('画面サイズが取れなくても描画倍率は数値のまま返る', () => {
+  const settings = getQualitySettings('ios-high');
+  for (const [w, h] of [
+    [Number.NaN, 874],
+    [402, Number.NaN],
+    [0, 0],
+  ]) {
+    const scale = computeResolutionScale(settings, w, h, 3);
+    assert.ok(Number.isFinite(scale), `${w}×${h} で倍率が ${scale}`);
+    assert.ok(scale >= 0.6, `${w}×${h} で倍率が ${scale}`);
+  }
+});
+
+test('中断をまたいだフレームは FPS の標本に混ぜない', () => {
+  // タブを裏に回す・案内を止めて再開すると、次のフレームまでの間隔が数秒空く。
+  // それを 0 fps として数えると、実際は快適でも品質を下げてしまう
+  let degraded = 0;
+  const watchdog = new PerformanceWatchdog(() => (degraded += 1), 28, 10);
+
+  let t = 0;
+  // 60fps を 5 枚 → 5 秒の中断 → また 60fps を 10 枚
+  for (let i = 0; i < 5; i += 1) watchdog.frame((t += 16.7));
+  watchdog.frame((t += 5000));
+  for (let i = 0; i < 10; i += 1) watchdog.frame((t += 16.7));
+
+  assert.equal(degraded, 0, '中断を遅さと取り違えている');
+});
+
+test('本当に遅いときは品質を下げる', () => {
+  let degraded = 0;
+  const watchdog = new PerformanceWatchdog(() => (degraded += 1), 28, 10);
+  let t = 0;
+  // 1 枚 50ms（20fps）が続く状態
+  for (let i = 0; i < 12; i += 1) watchdog.frame((t += 50));
+  assert.equal(degraded, 1);
 });

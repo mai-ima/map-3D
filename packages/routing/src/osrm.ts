@@ -15,15 +15,19 @@ export interface OsrmOptions {
   timeoutMs?: number;
 }
 
+/**
+ * 応答の型。ネットワーク越しの JSON なので、
+ * 仕様上は必ずある項目も省略可として書く（無いことを解析側で確かめられるように）。
+ */
 interface OsrmStep {
-  distance: number;
-  duration: number;
-  name: string;
-  geometry: string;
-  maneuver: {
-    type: string;
+  distance?: number;
+  duration?: number;
+  name?: string;
+  geometry?: string;
+  maneuver?: {
+    type?: string;
     modifier?: string;
-    location: [number, number];
+    location?: [number, number];
     bearing_before?: number;
     bearing_after?: number;
   };
@@ -33,10 +37,10 @@ interface OsrmResponse {
   code: string;
   message?: string;
   routes?: {
-    distance: number;
-    duration: number;
-    geometry: string;
-    legs: { steps: OsrmStep[] }[];
+    distance?: number;
+    duration?: number;
+    geometry?: string;
+    legs?: { steps?: OsrmStep[] }[];
   }[];
 }
 
@@ -118,36 +122,48 @@ export class OsrmProvider implements RouteProvider {
     }
 
     const r = json.routes[0];
-    const coordinates = decodePolyline(r.geometry, 5);
+    const coordinates = typeof r.geometry === 'string' ? decodePolyline(r.geometry, 5) : [];
+    // 2 点なければ線にならない。ここで打ち切って呼び出し側に判断させる
+    if (coordinates.length < 2) {
+      throw new RoutingError('経路の形状を受け取れませんでした', json);
+    }
+
     const maneuvers: Maneuver[] = [];
     const steps: RouteStep[] = [];
 
     let cursor = 0;
-    for (const leg of r.legs) {
-      for (const step of leg.steps) {
-        const type = mapType(step.maneuver.type, step.maneuver.modifier);
-        const stepCoords = decodePolyline(step.geometry, 5);
+    // 応答の欠けは「配列があるはずの場所が undefined」で来る。
+    // for-of をそのまま当てると TypeError になり、内部メッセージが利用者に出てしまう
+    for (const leg of r.legs ?? []) {
+      for (const step of leg?.steps ?? []) {
+        const type = mapType(step.maneuver?.type ?? '', step.maneuver?.modifier);
+        const stepCoords = typeof step.geometry === 'string' ? decodePolyline(step.geometry, 5) : [];
         const beginIndex = cursor;
         cursor = Math.min(cursor + Math.max(0, stepCoords.length - 1), coordinates.length - 1);
+        // maneuver.location が無ければ、その位置の形状点で代用する
+        const at = step.maneuver?.location;
+        const point = at ?? coordinates[beginIndex];
+        const distance = Math.round(finite(step.distance));
+        const duration = Math.round(finite(step.duration));
 
         maneuvers.push({
           type,
           instruction: step.name
             ? `${JA_INSTRUCTIONS[type] ?? ''}（${step.name}）`
             : (JA_INSTRUCTIONS[type] ?? ''),
-          location: { lng: step.maneuver.location[0], lat: step.maneuver.location[1] },
-          bearingBefore: step.maneuver.bearing_before,
-          bearingAfter: step.maneuver.bearing_after,
-          distanceToNext: Math.round(step.distance),
-          durationToNext: Math.round(step.duration),
+          location: { lng: point[0], lat: point[1] },
+          bearingBefore: step.maneuver?.bearing_before,
+          bearingAfter: step.maneuver?.bearing_after,
+          distanceToNext: distance,
+          durationToNext: duration,
           streetName: step.name || undefined,
           shapeIndex: beginIndex,
         });
 
         steps.push({
           index: steps.length,
-          distance: Math.round(step.distance),
-          duration: Math.round(step.duration),
+          distance,
+          duration,
           streetName: step.name || undefined,
           beginIndex,
           endIndex: cursor,
@@ -158,10 +174,10 @@ export class OsrmProvider implements RouteProvider {
     return {
       id: `osrm-${Date.now().toString(36)}`,
       mode: request.mode,
-      geometry: r.geometry,
+      geometry: r.geometry ?? '',
       coordinates,
-      distance: Math.round(r.distance),
-      duration: Math.round(r.duration),
+      distance: Math.round(finite(r.distance)),
+      duration: Math.round(finite(r.duration)),
       steps,
       maneuvers,
       bbox: bboxOf(coordinates),
@@ -169,4 +185,9 @@ export class OsrmProvider implements RouteProvider {
       engine: this.name,
     };
   }
+}
+
+/** 数値でない値は 0 として扱う（NaN を下流に流さない） */
+function finite(value: number | undefined): number {
+  return Number.isFinite(value) ? (value as number) : 0;
 }

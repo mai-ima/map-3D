@@ -23,6 +23,17 @@ export interface EnvironmentState {
 
 const JST_OFFSET_HOURS = 9;
 
+/**
+ * 現在時刻に追従するときの更新間隔 (ms)。
+ *
+ * Cesium の時計を animate させる（multiplier=1）と、時刻が変わるたびに
+ * 再描画が要求される。requestRenderMode を有効にしていても毎フレーム描き直しになり、
+ * 静止中に描かないという省電力の仕組みが丸ごと効かなくなる。
+ * 太陽は 1 分で 0.25 度しか動かないので、こちらから 1 分ごとに時刻を入れ直せば
+ * 見た目は変わらないまま、描画は 1 分に 1 回で済む。
+ */
+const REAL_TIME_INTERVAL_MS = 60_000;
+
 /** JST の指定時刻を JulianDate に変換する */
 export function jstToJulianDate(date: Date, hour: number): Cesium.JulianDate {
   const utc = new Date(
@@ -125,6 +136,8 @@ export class EnvironmentController {
   /** 夜になって初めて作る星空。作った後は使い回す */
   private starField: Cesium.SkyBox | null = null;
   private state: EnvironmentState;
+  /** 現在時刻に追従しているときだけ動く */
+  private realTimeTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly viewer: Cesium.Viewer,
@@ -215,26 +228,49 @@ export class EnvironmentController {
     this.state.hour = hour;
     this.state.date = date;
     this.state.followRealTime = false;
+    this.stopRealTimeTimer();
     this.applyTime();
   }
 
   setFollowRealTime(follow: boolean): void {
     this.state.followRealTime = follow;
+    this.stopRealTimeTimer();
     if (follow) {
-      const now = new Date();
-      // JST の現在時刻
-      const jstNow = new Date(now.getTime() + (JST_OFFSET_HOURS * 60 + now.getTimezoneOffset()) * 60000);
-      this.state.date = jstNow;
-      this.state.hour = jstNow.getHours() + jstNow.getMinutes() / 60;
+      this.syncToRealTime();
+      // 時刻が進んでも夜の補正や星空は入れ直さないと切り替わらない。
+      // Cesium の時計だけ動かしていたときは、日没をまたいでも
+      // 星が出ず、環境光も昼のままだった
+      this.realTimeTimer = setInterval(() => {
+        if (!this.state.followRealTime) return;
+        this.syncToRealTime();
+        this.applyTime();
+      }, REAL_TIME_INTERVAL_MS);
     }
     this.applyTime();
+  }
+
+  /** 端末の時計から JST の日付と時刻を読み直す */
+  private syncToRealTime(): void {
+    const now = new Date();
+    // 端末の時間帯に関係なく JST にそろえる
+    const jstNow = new Date(now.getTime() + (JST_OFFSET_HOURS * 60 + now.getTimezoneOffset()) * 60000);
+    this.state.date = jstNow;
+    this.state.hour = jstNow.getHours() + jstNow.getMinutes() / 60;
+  }
+
+  private stopRealTimeTimer(): void {
+    if (this.realTimeTimer !== null) {
+      clearInterval(this.realTimeTimer);
+      this.realTimeTimer = null;
+    }
   }
 
   private applyTime(): void {
     const julian = jstToJulianDate(this.state.date, this.state.hour);
     this.viewer.clock.currentTime = julian;
-    this.viewer.clock.multiplier = this.state.followRealTime ? 1 : 0;
-    this.viewer.clock.shouldAnimate = this.state.followRealTime;
+    // 追従中も時計自体は止めておく（進めると毎フレーム再描画になる。上の定数の説明を参照）
+    this.viewer.clock.multiplier = 0;
+    this.viewer.clock.shouldAnimate = false;
 
     // 夜間は建物の見え方が沈むため、大気と環境光を補正する
     const night = this.state.hour < 5.5 || this.state.hour > 18.5;
@@ -364,8 +400,12 @@ export class EnvironmentController {
   }
 
   destroy(): void {
+    this.stopRealTimeTimer();
     if (this.weatherStage) {
-      this.viewer.scene.postProcessStages.remove(this.weatherStage);
+      // 破棄済みの Viewer に触ると例外になる。画面を離れる順序は保証できない
+      if (!this.viewer.isDestroyed()) {
+        this.viewer.scene.postProcessStages.remove(this.weatherStage);
+      }
       this.weatherStage = null;
     }
   }

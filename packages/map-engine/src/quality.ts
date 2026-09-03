@@ -321,7 +321,9 @@ export function computeResolutionScale(
   devicePixelRatio: number,
 ): number {
   const scale = Math.min(devicePixelRatio || 1, settings.resolutionScale);
-  const area = Math.max(1, cssWidth * cssHeight);
+  const pixels = cssWidth * cssHeight;
+  // 画面サイズが取れないまま呼ばれても、倍率が NaN にならないようにする
+  const area = Number.isFinite(pixels) ? Math.max(1, pixels) : 1;
   const maxScale = Math.sqrt(settings.maxDrawPixels / area);
   // 4K など画素数の多いディスプレイでは等倍でもフレームバッファが数百 MB になる。
   // MSAA と HDR の中間バッファも同じ倍率で効くため、等倍より下も許す。
@@ -381,7 +383,10 @@ export class PerformanceWatchdog {
     if (!this.enabled || this.triggered) return;
     if (this.lastTime > 0) {
       const dt = now - this.lastTime;
-      if (dt > 0) this.samples.push(1000 / dt);
+      // 1 秒以上空いたものは「描画が遅い」ではなく「描いていなかった」。
+      // タブを裏に回す、案内を止めて再開する、といった中断がそのまま
+      // 0 fps の標本として混ざると、実際は快適でも品質を下げてしまう
+      if (dt > 0 && dt <= 1000) this.samples.push(1000 / dt);
     }
     this.lastTime = now;
 
@@ -509,6 +514,9 @@ export function adaptiveScreenSpaceError(base: number, heightMeters: number): nu
   //   20,000m   … ×5.0
   //   60,000m   … ×6.6
   const FULL_DETAIL_M = 300;
+  // 高度が数値で来ない場面がある（カメラ姿勢が壊れた直後など）。
+  // NaN のまま計算すると SSE が NaN になり、タイルツリーの評価が丸ごと止まる
+  if (!Number.isFinite(heightMeters)) return Math.min(96, Math.round(base));
   if (heightMeters <= FULL_DETAIL_M) return Math.min(96, Math.round(base));
 
   const octaves = Math.log2(heightMeters / FULL_DETAIL_M);

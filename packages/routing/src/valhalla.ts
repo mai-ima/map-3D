@@ -11,7 +11,7 @@
  */
 
 import type { LatLng, Maneuver, ManeuverType, Route, RouteRequest, RouteStep, TravelMode } from '@ijm/shared';
-import { bboxOf, bearingDegrees, decodePolyline } from '@ijm/shared';
+import { bboxOf, bearingDegrees, decodePolyline, encodePolyline } from '@ijm/shared';
 import { RoutingError, UnsupportedModeError, type RouteProvider } from './types';
 
 export interface ValhallaOptions {
@@ -77,6 +77,11 @@ const MANEUVER_TYPES: Record<number, ManeuverType> = {
   43: 'continue',
 };
 
+/**
+ * 応答の型。相手はネットワーク越しの JSON なので、
+ * 仕様上は必ずある項目も「無いことがある」として省略可で書く。
+ * 必須で書くと、解析側で存在を確かめる分岐が型エラーとして消されてしまう。
+ */
 interface ValhallaManeuver {
   type: number;
   instruction?: string;
@@ -86,8 +91,8 @@ interface ValhallaManeuver {
   verbal_transition_alert_instruction?: string;
   street_names?: string[];
   begin_street_names?: string[];
-  time: number;
-  length: number;
+  time?: number;
+  length?: number;
   begin_shape_index: number;
   end_shape_index: number;
   bearing_before?: number;
@@ -96,15 +101,15 @@ interface ValhallaManeuver {
 }
 
 interface ValhallaLeg {
-  maneuvers: ValhallaManeuver[];
-  shape: string;
-  summary: { time: number; length: number };
+  maneuvers?: ValhallaManeuver[];
+  shape?: string;
+  summary?: { time?: number; length?: number };
 }
 
 interface ValhallaResponse {
   trip?: {
-    legs: ValhallaLeg[];
-    summary: { time: number; length: number };
+    legs?: ValhallaLeg[];
+    summary?: { time?: number; length?: number };
     status?: number;
     status_message?: string;
     units?: string;
@@ -190,19 +195,32 @@ export class ValhallaProvider implements RouteProvider {
     const maneuvers: Maneuver[] = [];
     const steps: RouteStep[] = [];
 
-    for (const leg of trip.legs) {
+    // 応答の欠けは HTTP エラーではなく「配列があるはずの場所が undefined」で来る。
+    // for-of や forEach をそのまま当てると TypeError になり、
+    // 利用者には英語の内部メッセージがそのまま出てしまう。
+    const legs = Array.isArray(trip.legs) ? trip.legs : [];
+
+    for (const leg of legs) {
       const offset = coordinates.length;
-      const legCoords = decodePolyline(leg.shape, 6);
+      const legCoords = typeof leg?.shape === 'string' ? decodePolyline(leg.shape, 6) : [];
       // 連続するレグの重複点を除去
       coordinates.push(...(offset > 0 ? legCoords.slice(1) : legCoords));
       const indexOffset = offset > 0 ? offset - 1 : 0;
+      const legManeuvers = Array.isArray(leg?.maneuvers) ? leg.maneuvers : [];
 
-      leg.maneuvers.forEach((m, i) => {
-        const shapeIndex = Math.min(m.begin_shape_index + indexOffset, coordinates.length - 1);
-        const point = coordinates[shapeIndex] ?? coordinates[coordinates.length - 1];
+      legManeuvers.forEach((m, i) => {
+        // 座標が 1 点も取れていないと参照先が無い。案内だけ先に積んでも意味がないので飛ばす
+        if (coordinates.length === 0) return;
+        // 範囲外や負の添字がそのまま残ると、案内までの距離が 0 と扱われて
+        // 「出発した瞬間に通過済み」になる（maneuver-planner が cumulative[index] を引く）
+        const shapeIndex = clampIndex(m.begin_shape_index + indexOffset, coordinates.length);
+        const point = coordinates[shapeIndex];
         const location: LatLng = { lng: point[0], lat: point[1] };
         const streetName = m.street_names?.[0] ?? m.begin_street_names?.[0];
-        const next = leg.maneuvers[i + 1];
+        const next = legManeuvers[i + 1];
+        // length/time が欠けると NaN になり、残距離も到着時刻も表示できなくなる
+        const distance = Math.round(finite(m.length) * 1000);
+        const duration = Math.round(finite(m.time));
 
         maneuvers.push({
           type: MANEUVER_TYPES[m.type] ?? 'continue',
@@ -213,8 +231,8 @@ export class ValhallaProvider implements RouteProvider {
           location,
           bearingBefore: m.bearing_before ?? bearingFromShape(coordinates, shapeIndex, -1),
           bearingAfter: m.bearing_after ?? bearingFromShape(coordinates, shapeIndex, 1),
-          distanceToNext: Math.round(m.length * 1000),
-          durationToNext: Math.round(m.time),
+          distanceToNext: distance,
+          durationToNext: duration,
           streetName,
           nextStreetName: next?.street_names?.[0],
           shapeIndex,
@@ -222,22 +240,30 @@ export class ValhallaProvider implements RouteProvider {
 
         steps.push({
           index: steps.length,
-          distance: Math.round(m.length * 1000),
-          duration: Math.round(m.time),
+          distance,
+          duration,
           streetName,
           beginIndex: shapeIndex,
-          endIndex: Math.min(m.end_shape_index + indexOffset, coordinates.length - 1),
+          endIndex: clampIndex(m.end_shape_index + indexOffset, coordinates.length),
         });
       });
     }
 
+    // 2 点なければ線にならない。フォールバック側に回せるよう、ここで打ち切る
+    if (coordinates.length < 2) {
+      throw new RoutingError('経路の形状を受け取れませんでした', json);
+    }
+
+    // レグごとの polyline は「直前の点からの差分」で書かれているので、
+    // 文字列をつないでも 2 本目以降が元の位置に戻らない。つなげた座標から再度符号化する
+    const summary = trip.summary ?? { time: NaN, length: NaN };
     return {
       id: `valhalla-${Date.now().toString(36)}`,
       mode: request.mode,
-      geometry: trip.legs.map((l) => l.shape).join(''),
+      geometry: encodePolyline(coordinates, 6),
       coordinates,
-      distance: Math.round(trip.summary.length * 1000),
-      duration: Math.round(trip.summary.time),
+      distance: Math.round(finite(summary.length) * 1000),
+      duration: Math.round(finite(summary.time)),
       steps,
       maneuvers,
       bbox: bboxOf(coordinates),
@@ -245,6 +271,17 @@ export class ValhallaProvider implements RouteProvider {
       engine: this.name,
     };
   }
+}
+
+/** 数値でない値は 0 として扱う（NaN を下流に流さない） */
+function finite(value: number | undefined): number {
+  return Number.isFinite(value) ? (value as number) : 0;
+}
+
+/** 添字を [0, length-1] に収める。数値でなければ先頭 */
+function clampIndex(index: number, length: number): number {
+  if (!Number.isFinite(index)) return 0;
+  return Math.max(0, Math.min(Math.trunc(index), length - 1));
 }
 
 /** shape 上の前後の点から方位を求める（エンジンが bearing を返さない場合の補完） */

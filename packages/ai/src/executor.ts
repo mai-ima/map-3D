@@ -46,9 +46,21 @@ function str(value: unknown): string | undefined {
 }
 
 function num(value: unknown): number | undefined {
+  // Number(null) は 0、Number('') も 0 になる。値が無いことと 0 は区別する
+  if (value === null || value === undefined || value === '') return undefined;
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : undefined;
 }
+
+/** LLM が返した数値を範囲に収める。値が無ければ既定値 */
+function clampNum(value: unknown, min: number, max: number, fallback: number): number {
+  const n = num(value);
+  if (n === undefined) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+/** 対応している移動手段。LLM は学習内容から未対応の値を書いてくることがある */
+const TRAVEL_MODES: TravelMode[] = ['walk', 'drive', 'bicycle', 'transit', 'multimodal'];
 
 /** 場所名を座標に解決する。解決できたものだけを knownPoints に記録する。 */
 async function resolvePlace(
@@ -121,8 +133,10 @@ export async function executeTool(
         if (!center) {
           return { ok: false, content: '', error: '基準となる場所を特定できませんでした' };
         }
-        const radius = Math.min(num(call.arguments.radius) ?? 500, 3000);
-        const limit = Math.min(num(call.arguments.limit) ?? 10, 30);
+        // 上限だけ掛けると負の値がそのまま通り、
+        // Overpass には成立しない検索が飛び、limit が負だと結果が丸ごと消える
+        const radius = clampNum(call.arguments.radius, 10, 3000, 500);
+        const limit = Math.round(clampNum(call.arguments.limit, 1, 30, 10));
 
         const pois = await searchNearbyPois({
           center: center.point,
@@ -157,7 +171,11 @@ export async function executeTool(
         if (!from) return { ok: false, content: '', error: `出発地「${fromName}」が見つかりません` };
         if (!to) return { ok: false, content: '', error: `目的地「${toName}」が見つかりません` };
 
-        const mode = (str(call.arguments.mode) ?? 'walk') as TravelMode;
+        const requested = str(call.arguments.mode);
+        if (requested && !TRAVEL_MODES.includes(requested as TravelMode)) {
+          return { ok: false, content: '', error: `未対応の移動手段です: ${requested}` };
+        }
+        const mode = (requested ?? 'walk') as TravelMode;
         const route = await routeWithFallback({ from: from.point, to: to.point, mode });
         ctx.attribution.add('osm');
         ctx.attribution.add(route.engine === 'osrm' ? 'osrm' : 'valhalla');
@@ -210,13 +228,16 @@ export async function executeTool(
         if (!isKnownPoint(ctx, place.point)) {
           return { ok: false, content: '', error: '座標を検証できませんでした' };
         }
+        // 座標と同じく、カメラの姿勢も検証してから渡す。
+        // 高度 0 は地面の中、俯角 -400 度は上下反転になり、どちらも画面が壊れる。
+        // 俯角は真下（-90）から水平（0）までに収める
         ctx.uiCommands.push({
           type: 'setCamera',
           payload: {
             position: place.point,
-            height: num(call.arguments.height),
-            heading: num(call.arguments.heading),
-            pitch: num(call.arguments.pitch),
+            height: clampNum(call.arguments.height, 30, 20000, 500),
+            heading: clampNum(call.arguments.heading, -360, 360, 0),
+            pitch: clampNum(call.arguments.pitch, -90, 0, -40),
           },
         });
         return { ok: true, content: JSON.stringify({ movedTo: place.name }) };
