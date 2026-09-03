@@ -25,7 +25,9 @@
     "survey:lod": "node scripts/preprocessing/survey-lod.mjs",
     "survey:city": "node scripts/preprocessing/survey-city.mjs",
     "survey:roads": "tsx scripts/preprocessing/survey-roads.mts",
-    "survey:road-timing": "tsx scripts/preprocessing/survey-road-timing.mts"
+    "survey:road-timing": "tsx scripts/preprocessing/survey-road-timing.mts",
+    "measure:startup": "tsx scripts/measure/startup-requests.mts",
+    "measure:smoke": "tsx scripts/measure/smoke.mts"
   },
   "dependencies": {
     "cesium": "1.144.0",
