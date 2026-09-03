@@ -19,6 +19,7 @@ import {
   benchShapes,
   lampShapes,
   trafficSignalShapes,
+  treeBlobsForDistance,
   treeFormOf,
   treeShapes,
 } from '../street-furniture-geometry';
@@ -189,4 +190,23 @@ test('歩行者用灯器は求めたときだけ付ける', () => {
   const without = trafficSignalShapes(AT, { ground: GROUND }).length;
   const withPed = trafficSignalShapes(AT, { ground: GROUND, pedestrian: true }).length;
   assert.equal(withPed, without + 1);
+});
+
+test('詳細度は距離で決まり、2 の冪から外れない', () => {
+  // 半端な比率で間引くと、詳細度が戻ったときにかたまりが横滑りして見える。
+  // この判断は描画エンジンの都合ではないので、寸法と同じ層に置いてある
+  assert.equal(treeBlobsForDistance(0), 5);
+  assert.equal(treeBlobsForDistance(149), 5);
+  assert.equal(treeBlobsForDistance(150), 3);
+  assert.equal(treeBlobsForDistance(399), 3);
+  assert.equal(treeBlobsForDistance(400), 1);
+  assert.equal(treeBlobsForDistance(10_000), 1);
+  // 距離が読めないときは近いものとして扱う（急に木が痩せるより良い）
+  assert.equal(treeBlobsForDistance(Number.NaN), 5);
+
+  // 段が減っても幹と樹冠は残る
+  for (const distance of [0, 200, 1000]) {
+    const shapes = treeShapes(AT, { ground: GROUND, blobs: treeBlobsForDistance(distance) });
+    assert.ok(shapes.length >= 2, `${distance}m で木が消えている`);
+  }
 });

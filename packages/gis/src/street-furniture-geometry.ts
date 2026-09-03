@@ -99,6 +99,22 @@ function numberTag(value: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * カメラからの距離で、樹冠のかたまりを何個作るかを決める。
+ *
+ * 1 個だと棒付きキャンディにしか見えない。一方、木 1 本あたりの形が増えると
+ * 数千本では効いてくるので、近いときだけ細かくする。
+ * 幹 0.3m の枝ぶりは 400m 離れると輪郭にしか出ないため、そこから先は 1 個。
+ *
+ * 段の切り方が 2 の冪から外れないようにしてある（5 → 3 → 1）。
+ * 半端な比率で間引くと、詳細度が戻ったときにかたまりが横滑りして見える。
+ */
+export function treeBlobsForDistance(distanceM: number): number {
+  if (!Number.isFinite(distanceM) || distanceM < 150) return 5;
+  if (distanceM < 400) return 3;
+  return 1;
+}
+
 export interface TreeOptions {
   /** OSM のタグ。height / diameter_crown / leaf_type / genus を見る */
   tags?: Record<string, string>;

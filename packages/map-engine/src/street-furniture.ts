@@ -18,7 +18,7 @@
 
 import * as Cesium from 'cesium';
 import type { BBox, SceneShape } from '@ijm/shared';
-import { benchShapes, lampShapes, treeShapes } from '@ijm/gis';
+import { benchShapes, lampShapes, treeBlobsForDistance, treeShapes } from '@ijm/gis';
 import { liveScene, waitForPrimitives } from './primitive-swap';
 import { batchShapes } from './scene-renderer';
 
@@ -30,19 +30,6 @@ export interface FurniturePoint {
   height?: number;
   /** OSM のタグ。樹種・樹高・樹冠幅を読む */
   tags?: Record<string, string>;
-}
-
-/**
- * 樹冠のかたまりを何個作るか。
- *
- * 1 個だと棒付きキャンディにしか見えない。一方、木 1 本あたりの形が増えると
- * 数千本では効いてくるので、近いときだけ細かくする。
- * 幹 0.3m の枝ぶりは 400m 離れると輪郭にしか出ないため、そこから先は 1 個。
- */
-function blobsForDistance(distanceM: number): number {
-  if (distanceM < 150) return 5;
-  if (distanceM < 400) return 3;
-  return 1;
 }
 
 export class StreetFurnitureLayer {
@@ -115,7 +102,7 @@ export class StreetFurnitureLayer {
 
     // 形と寸法は GIS 側で決める（Cesium に依存しない純粋な変換）
     const shapes: SceneShape[] = [];
-    const blobs = blobsForDistance(this.distanceM);
+    const blobs = treeBlobsForDistance(this.distanceM);
     limited.forEach((point, i) => {
       const ground = cartographics[i]?.height ?? 0;
       const tags = point.tags ?? (point.height ? { height: String(point.height) } : {});

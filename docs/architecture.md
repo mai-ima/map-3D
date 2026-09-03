@@ -140,6 +140,42 @@ map-engine (Cesium はここだけ) ,  ai ,  ui
 `navigation` は **Cesium に依存しない**（純粋な数学と状態機械）。
 Cesium への適用は `map-engine` 側のアダプタが行う。これによりナビロジックを単体テストできる。
 
+### Swift（SceneKit / RealityKit）へ移すときの対応
+
+**「何を描くか」を決める処理を、描画エンジンから切り離してある。**
+Cesium を import しているのは `packages/map-engine` だけで、
+`shared` と `gis` は純粋な計算しか持たない。
+Swift へ移すときは `map-engine` を置き換えれば、判断はそのまま持っていける。
+
+境界は `packages/shared/src/scene.ts` の `SceneShape`
+（押し出し・直方体・地表の帯・回転体・回転楕円体）。
+Swift の struct / enum にそのまま対応する形にしてある。
+
+いま `shared` / `gis` にある「決め方」:
+
+| ファイル | 何を決めているか |
+|---|---|
+| `shared/scene.ts` | 形の記述（`SceneShape`）と頂点数の見積もり |
+| `shared/sun.ts` | 太陽高度・方位・日の出入り、空の状態、日照の強さ |
+| `shared/weather.ts` | 天候ごとの視程・日射・影の有無、霧の濃さ |
+| `shared/building-colours.ts` | 用途ごとの建物の色、高さによる明度 |
+| `shared/building-model.ts` | 建物モデルの見え方の選択と、データ指定への反映 |
+| `shared/cities.ts` / `plateau.ts` | 都市レジストリ、PLATEAU の URL 組み立て |
+| `gis/road-geometry.ts` | 車線数・幅・区画線・交差点・停止線・信号の向き |
+| `gis/structure-geometry.ts` | 高架橋・盛土・取付部・階段の寸法 |
+| `gis/street-furniture-geometry.ts` | 街路樹・街灯・ベンチ・信号の寸法と詳細度 |
+
+`map-engine` に残しているのは、それを描くための Cesium 固有の処理だけ。
+たとえば `building-style.ts` は色を決めず、`shared/building-colours.ts` の表を
+3D Tiles のスタイル式に翻訳するだけにしてある。
+Swift では同じ表から `buildingColour()` を 1 棟ずつ呼ぶ。
+**スタイル式と関数が同じ色を出すことはテストで固定してある**
+（`packages/map-engine/src/__tests__/building-style.test.ts`）。
+片方だけ直すと Web と Swift で街の色が変わってしまうため。
+
+`quality.ts`（端末ティアと screenSpaceError）は 3D Tiles 固有の概念なので
+移さない。Swift 側では対応する仕組みを別に用意する。
+
 ---
 
 ## 4. 必要な外部データ
@@ -304,20 +340,37 @@ UI 実装: 画面右下に常時「データ出典」ボタン、タップで全
 ### `GET /api/building?lat=&lng=` / `?osmId=`
 → OSM の建物タグ + PLATEAU 属性（取得できる範囲）
 
-### `GET /api/tileset?city=tokyo&layer=near&bbox=minLng,minLat,maxLng,maxLat`
+### `GET /api/tileset/{都市}/{レイヤ}/{建物モデル}/{bbox}/tileset.json`
+
+例: `/api/tileset/tokyo/near/textured/139.7395,35.6588,139.7948,35.7037/tileset.json`
 
 PLATEAU の tileset.json を、指定範囲に交差する市区町村だけに絞って配信する。
-`layer` は `near`（LOD2 ベース）/ `far`（LOD1 遠景）/ `detail`（LOD3・LOD4）/
+`レイヤ` は `near`（LOD2 ベース）/ `far`（LOD1 遠景）/ `detail`（LOD3・LOD4）/
 都市定義の `overlays` に登録した ID（`bridge` / `furniture` / `vegetation`）。
+`建物モデル` は `textured`（実写テクスチャ）/ `untextured`（用途で塗り分け）/
+`block`（LOD1 の箱）/ `auto`（都市の既定）。
 未整備で中身が残らない場合は 404 を返し、呼び出し側は「重ねない」と判断する。
 
-レスポンスヘッダで結果を確認できる。
+**条件をクエリではなくパスに書く理由。**
+Cesium は tileset.json を読み込んだ URL のクエリを、その中の子 tileset.json や
+タイル本体（b3dm）にもそのまま引き継ぐ。bbox はカメラが動くたびに変わるので、
+クエリで渡すと同じタイルが毎回ちがう URL になり、ブラウザにも CDN にも
+キャッシュが効かない（詳しくは `docs/pitfalls.md`）。
+
+クエリ形式（`/api/tileset?city=...&layer=...&model=...&bbox=...`）も残してあるが、
+これは調査スクリプトと手元での確認のためのもので、Cesium からは読ませない。
+
+結果はレスポンスヘッダと tileset.json の `extras` で確認できる。
 
 ```
 X-Tileset-Children: 8/62                  絞り込み後 / 元の市区町村数
 X-Tileset-Dataset:  13-bldg-lod3-latest   実際に採用されたデータセット
 X-Tileset-Lod:      lod3
+X-Tileset-Model:    untextured            実際に配信した建物モデルの種別
 ```
+
+`extras.ijmBuildingModel` にも同じ値が入る。ヘッダは Cesium からは読めないため、
+描画側（塗り分けるかどうかの判断）はこちらを見る。
 
 ### `GET /api/health`
 

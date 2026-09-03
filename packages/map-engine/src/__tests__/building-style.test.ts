@@ -17,8 +17,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as Cesium from 'cesium';
-import { untexturedBuildingStyle } from '../building-style';
-import { farTilesetStyle } from '../buildings';
+import { farBuildingStyle, untexturedBuildingStyle } from '../building-style';
+import { buildingColour, buildingHeightColour } from '@ijm/shared';
 
 /**
  * PLATEAU のバッチテーブルを模した地物。
@@ -113,7 +113,7 @@ test('建物は不透明のまま', () => {
 });
 
 test('遠景 LOD1 は高さで濃淡が付く', () => {
-  const style = farTilesetStyle();
+  const style = farBuildingStyle();
   const at = (height: number) =>
     luminance(colorOf(style, { 'bldg:measuredHeight': height }));
 
@@ -143,4 +143,48 @@ test('多い用途ほど早く判定される', () => {
 
   // 用途 1 つにつき「高さあり」「高さなし」の 2 条件 + 未知の用途 2 条件
   assert.equal(conditions.length, 16 * 2 + 2);
+});
+
+/**
+ * 色そのものは `@ijm/shared` の building-colours.ts が持っている。
+ * Swift へ移すときは `buildingColour()` を 1 棟ずつ呼ぶので、
+ * **スタイル式と関数が同じ色を出すこと**をここで固定する。
+ * 片方だけ直すと、Web と Swift で街の色が変わってしまう。
+ */
+test('スタイル式と色の関数が同じ色を出す', () => {
+  const style = untexturedBuildingStyle();
+  for (const usage of ['住宅', '共同住宅', '商業施設', '工場', undefined]) {
+    for (const height of [0, 12, 45, 60, 180]) {
+      const props: Record<string, unknown> = { 'bldg:measuredHeight': height };
+      if (usage) props['bldg:usage'] = usage;
+      const fromStyle = colorOf(style, props);
+      const fromTable = buildingColour(usage, height);
+      for (const [channel, expected] of [
+        ['red', fromTable.r],
+        ['green', fromTable.g],
+        ['blue', fromTable.b],
+      ] as const) {
+        assert.ok(
+          Math.abs(fromStyle[channel] - expected) < 0.005,
+          `${usage ?? '用途なし'} ${height}m の ${channel} が食い違う: ` +
+            `${fromStyle[channel].toFixed(4)} と ${expected.toFixed(4)}`,
+        );
+      }
+    }
+  }
+});
+
+test('遠景も、スタイル式と色の関数が一致する', () => {
+  const style = farBuildingStyle();
+  for (const height of [0, 10, 40, 80, 150, 300]) {
+    const fromStyle = colorOf(style, { 'bldg:measuredHeight': height });
+    const fromTable = buildingHeightColour(height);
+    assert.ok(Math.abs(fromStyle.red - fromTable.r) < 0.005, `${height}m`);
+    assert.ok(Math.abs(fromStyle.green - fromTable.g) < 0.005, `${height}m`);
+    assert.ok(Math.abs(fromStyle.blue - fromTable.b) < 0.005, `${height}m`);
+  }
+  // 高さが読めないときも同じ色になる
+  const unknown = colorOf(style, {});
+  const table = buildingHeightColour(undefined);
+  assert.ok(Math.abs(unknown.red - table.r) < 0.005);
 });

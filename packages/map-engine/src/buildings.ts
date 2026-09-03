@@ -17,7 +17,7 @@ import {
   needsUsageColouring,
   resolveBuildingMode,
 } from '@ijm/shared';
-import { untexturedBuildingStyle } from './building-style';
+import { farBuildingStyle, untexturedBuildingStyle } from './building-style';
 import type { QualitySettings } from './quality';
 import { liveScene } from './primitive-swap';
 
@@ -86,34 +86,6 @@ export interface LoadedCityTilesets {
  * 呼び出し側は「重ねられなかった」ことを普通の結果として扱える。
  */
 export type OptionalLayerId = 'detail' | 'bridge' | 'furniture' | 'vegetation';
-
-/**
- * 遠景 LOD1 用の中立色。
- *
- * 近景・中景の LOD2 には **一切スタイルを当てない**。PLATEAU の実写テクスチャが
- * そのまま出るのが「事実どおりの色」だからである。
- * 一方 LOD1 はテクスチャを持たない（＝色の情報が存在しない）ため、
- * 「実在しない色を創作しない」という方針に従い、彩度をほぼ持たない
- * コンクリート系の中立色のみを使い、高さでわずかな明度差を付けるにとどめる。
- */
-export function farTilesetStyle(): Cesium.Cesium3DTileStyle {
-  // 属性名にコロンが入っているので ${feature['...']} の形でしか参照できない。
-  // アンダースコアで書くと常に未定義になり、全棟が同じ色になってしまう。
-  // また defined() はスタイル式に存在しない（あるのは isNaN / isFinite）。
-  // 以前は両方を踏んでいて、遠景タイルセットは一度も表示されていなかった
-  const height = "${feature['bldg:measuredHeight']}";
-  return new Cesium.Cesium3DTileStyle({
-    color: {
-      conditions: [
-        [`isNaN(${height})`, 'color("#cfcbc4")'],
-        [`${height} >= 150`, 'color("#c4c0ba")'],
-        [`${height} >= 80`, 'color("#c9c5bf")'],
-        [`${height} >= 40`, 'color("#cecac4")'],
-        ['true', 'color("#d3cfc9")'],
-      ],
-    },
-  });
-}
 
 /**
  * 遠景 LOD1 を重ねる意味があるか。
@@ -401,7 +373,7 @@ export class BuildingLayerManager {
         far.destroy();
         return;
       }
-      this.applyStyle(far, farTilesetStyle);
+      this.applyStyle(far, farBuildingStyle);
       far.shadows = Cesium.ShadowMode.DISABLED;
       // 近景が描いている範囲は遠景から切り抜く。
       // 重ねると同じ建物が LOD2 の屋根形状と LOD1 の箱で二重に描かれる

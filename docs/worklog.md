@@ -250,6 +250,15 @@ fuzz と実データの検証は、GIS・描画・ナビ・API・経路解析・
       `elevated-structures.ts` は 877 → 220 行になり、
       残っているのは地形の標高取得と描画だけ。
 - [x] `packages/gis` と `packages/shared` から Cesium 依存が完全に消えた
+- [x] map-engine に残っていた「決め方」を shared / gis へ移した
+      - `shared/weather.ts` … 天候ごとの視程・日射・影、霧の濃さ
+      - `shared/building-colours.ts` … 用途ごとの色、高さによる明度
+      - `gis/street-furniture-geometry.ts` … 距離に応じた樹冠の詳細度
+      `map-engine/building-style.ts` は色を決めず、表を 3D Tiles の
+      スタイル式に翻訳するだけになった。
+      **スタイル式と色の関数が同じ色を出すことをテストで固定してある**
+      （片方だけ直すと Web と Swift で街の色が変わるため）
+- [x] `docs/architecture.md` に「Swift へ移すときの対応」の表を追加
 
 ### いま Cesium に依存しているのは packages/map-engine だけ
 

@@ -6,11 +6,21 @@
  */
 
 import * as Cesium from 'cesium';
-import type { IconName, LatLng, SolarPosition } from '@ijm/shared';
-import { daylightStrength, skyPhaseOf, solarPosition } from '@ijm/shared';
+import type { IconName, LatLng, SolarPosition, WeatherKind } from '@ijm/shared';
+import {
+  WEATHER_KINDS,
+  WEATHER_LOOK,
+  daylightStrength,
+  fogDensityFor,
+  skyPhaseOf,
+  solarPosition,
+} from '@ijm/shared';
 import type { QualitySettings } from './quality';
 
-export type WeatherKind = 'clear' | 'cloudy' | 'rain' | 'snow' | 'fog';
+// 天候ごとの見え方（視程・日射・影）は `@ijm/shared` の weather.ts にある。
+// 「どう見えるべきか」は描画エンジンの都合ではないので、Cesium を
+// import しない層に置いて Swift へも持っていけるようにしてある。
+export type { WeatherKind };
 
 export interface EnvironmentState {
   /** 日本標準時での時刻 (0-23.99) */
@@ -69,13 +79,17 @@ export const TIME_PRESETS = [
   { hour: 22, label: '22:00', description: '夜' },
 ] as const;
 
-export const WEATHER_PRESETS: { kind: WeatherKind; label: string; iconName: IconName }[] = [
-  { kind: 'clear', label: '晴れ', iconName: 'sun' },
-  { kind: 'cloudy', label: '曇り', iconName: 'cloud' },
-  { kind: 'rain', label: '雨', iconName: 'rain' },
-  { kind: 'snow', label: '雪', iconName: 'snow' },
-  { kind: 'fog', label: '霧', iconName: 'fog' },
-];
+/** 天候の表示名とアイコン。種類そのものは shared 側が持つ */
+const WEATHER_LABELS: Record<WeatherKind, { label: string; iconName: IconName }> = {
+  clear: { label: '晴れ', iconName: 'sun' },
+  cloudy: { label: '曇り', iconName: 'cloud' },
+  rain: { label: '雨', iconName: 'rain' },
+  snow: { label: '雪', iconName: 'snow' },
+  fog: { label: '霧', iconName: 'fog' },
+};
+
+export const WEATHER_PRESETS: { kind: WeatherKind; label: string; iconName: IconName }[] =
+  WEATHER_KINDS.map((kind) => ({ kind, ...WEATHER_LABELS[kind] }));
 
 const RAIN_SHADER = /* glsl */ `
 uniform sampler2D colorTexture;
@@ -141,70 +155,6 @@ void main() {
 
 /** 星空テクスチャの置き場所（Cesium の静的アセット） */
 const STAR_TEXTURE_BASE = '/cesium/Assets/Textures/SkyBox';
-
-/**
- * 天候ごとの見え方。
- *
- * 以前は霧の濃さと空の彩度を少し変えるだけで、「天候システムが意味ない」
- * と言われるとおり、選んでも街の見え方がほとんど変わらなかった。
- *
- * 天候で実際に変わるのは 3 つ:
- *
- *   1. 視程（どこまで見通せるか）
- *   2. 日射（雲がどれだけ光を遮るか）
- *   3. 影ができるかどうか
- *
- * 視程は気象庁の「視程階級」に対応させる:
- *
- *   快晴・晴れ   20km 以上
- *   曇り         10〜20km
- *   雨           4〜10km（並の雨）
- *   雪           1〜4km（並の雪）
- *   霧           1km 未満（これが霧の定義そのもの）
- *
- * 日射の割合は、全天日射量に対する雲量の影響の実測値による
- * （気象庁の日照率と全天日射量の関係。曇天で快晴の 3〜5 割、
- *  雨天で 2 割前後）。
- */
-const WEATHER: Record<
-  WeatherKind,
-  {
-    /** 視程 (m)。Cesium の霧の濃さをここから決める */
-    visibilityM: number;
-    /** 直射日光の割合（快晴を 1 とする） */
-    sunlight: number;
-    /** 空の彩度と明るさの補正 */
-    skySaturation: number;
-    skyBrightness: number;
-  }
-> = {
-  clear: { visibilityM: 30_000, sunlight: 1, skySaturation: 0, skyBrightness: 0 },
-  cloudy: { visibilityM: 14_000, sunlight: 0.45, skySaturation: -0.5, skyBrightness: -0.18 },
-  rain: { visibilityM: 6_000, sunlight: 0.22, skySaturation: -0.6, skyBrightness: -0.3 },
-  snow: { visibilityM: 2_500, sunlight: 0.3, skySaturation: -0.45, skyBrightness: 0.05 },
-  fog: { visibilityM: 700, sunlight: 0.35, skySaturation: -0.7, skyBrightness: 0.02 },
-};
-
-/** 直射日光があるか（影ができるか）。曇り以降は影ができない */
-const DIRECT_SUN: Record<WeatherKind, boolean> = {
-  clear: true,
-  cloudy: false,
-  rain: false,
-  snow: false,
-  fog: false,
-};
-
-/**
- * 視程から Cesium の霧の濃さを求める。
- *
- * Cesium の fog.density は「その距離で霧に沈む」という素直な単位ではないが、
- * 実測すると density × 視程 がおよそ 6 で一定になる
- * （density 0.0002 で 30km、0.002 で 3km あたりが霧に沈む）。
- * 視程を先に決めて、そこから density を逆算する。
- */
-function fogDensityFor(visibilityM: number): number {
-  return Math.min(0.02, Math.max(0.00005, 6 / Math.max(100, visibilityM)));
-}
 
 export class EnvironmentController {
   private weatherStage: Cesium.PostProcessStage | null = null;
@@ -433,7 +383,7 @@ export class EnvironmentController {
    * 曇り・雨・雪・霧の日には、そもそも影ができない。
    */
   private applyShadows(sunny: boolean): void {
-    const wanted = this.quality.shadows && sunny && DIRECT_SUN[this.state.weather];
+    const wanted = this.quality.shadows && sunny && WEATHER_LOOK[this.state.weather].directSun;
     if (this.viewer.shadows === wanted) return;
     this.viewer.shadows = wanted;
     if (this.viewer.shadowMap) this.viewer.shadowMap.enabled = wanted;
@@ -441,7 +391,7 @@ export class EnvironmentController {
 
   /** 雲による日射の減衰。快晴を 1 とする */
   private sunlightFactor(): number {
-    return WEATHER[this.state.weather].sunlight;
+    return WEATHER_LOOK[this.state.weather].sunlight;
   }
 
   /**
@@ -482,7 +432,7 @@ export class EnvironmentController {
   private applyWeather(): void {
     const scene = this.viewer.scene;
     const sky = scene.skyAtmosphere;
-    const spec = WEATHER[this.state.weather];
+    const spec = WEATHER_LOOK[this.state.weather];
 
     if (this.weatherStage) {
       scene.postProcessStages.remove(this.weatherStage);
