@@ -18,6 +18,7 @@
  */
 
 import type { BBox, GroundRibbon, LatLng, LatLngAlt, SceneShape } from '@ijm/shared';
+import { distanceMeters } from '@ijm/shared';
 import { primaryDeadline } from './config';
 import { fetchOsmMap } from './osm-api';
 import { fetchRoadNetwork, type OverpassElement, deadlineIn } from './overpass';
@@ -259,6 +260,14 @@ export interface RoadPoint {
    * 値は OSM の way の形から取るので、創作ではない。
    */
   headingDeg?: number;
+  /**
+   * その点が付いている道の幅 (m)。
+   *
+   * OSM の `highway=traffic_signals` は車道の中心線上のノードに付くので、
+   * そのまま柱を立てると道の真ん中に生える。実物は路肩に立っているので、
+   * 幅の半分だけ寄せるのに使う。
+   */
+  roadWidth?: number;
 }
 
 export interface RoadScene {
@@ -389,15 +398,19 @@ export function orientPoints(points: RoadPoint[], roads: RoadPiece[]): RoadPoint
   if (roads.length === 0) return points;
   return points.map((point) => {
     if (point.kind !== 'traffic_signal') return point;
-    const heading = headingOfNearestSegment(point.position, roads);
-    return heading === null ? point : { ...point, headingDeg: heading };
+    const near = nearestCarriageway(point.position, roads);
+    if (!near) return point;
+    return { ...point, headingDeg: near.headingDeg, roadWidth: near.width };
   });
 }
 
-/** その地点にいちばん近い道路区間の方位（真北 0・東回りの度）。無ければ null */
-function headingOfNearestSegment(point: LatLng, roads: RoadPiece[]): number | null {
+/** その地点にいちばん近い車道の区間。向きと幅を返す。無ければ null */
+function nearestCarriageway(
+  point: LatLng,
+  roads: RoadPiece[],
+): { headingDeg: number; width: number } | null {
   let best = Number.POSITIVE_INFINITY;
-  let heading: number | null = null;
+  let found: { headingDeg: number; width: number } | null = null;
   for (const road of roads) {
     // 歩道や横断歩道ではなく、車道の向きに合わせる
     if (road.lanes === 0) continue;
@@ -408,12 +421,15 @@ function headingOfNearestSegment(point: LatLng, roads: RoadPiece[]): number | nu
       if (d >= best) continue;
       best = d;
       const cos = Math.cos((a.lat * Math.PI) / 180) || 1;
-      heading = (Math.atan2((b.lng - a.lng) * cos, b.lat - a.lat) * 180) / Math.PI;
+      found = {
+        headingDeg: (Math.atan2((b.lng - a.lng) * cos, b.lat - a.lat) * 180) / Math.PI,
+        width: road.width,
+      };
     }
   }
   // 20m 以上離れているなら、その道に付いている信号とは言えない
-  if (heading === null || best > 20) return null;
-  return heading;
+  if (!found || best > 20) return null;
+  return found;
 }
 
 // ---- 細切れの道をつなぐ -----------------------------------------------
@@ -594,13 +610,273 @@ export function detailForHeight(heightMeters: number): RoadDetail {
   return { laneMarkings: heightMeters <= LANE_MARKING_MAX_HEIGHT_M };
 }
 
+// ---- 交差点 ------------------------------------------------------------
+
+/**
+ * 交差点。
+ *
+ * OSM は交差する道どうしにノードを共有させているので、
+ * 「何本の道の端がその点に集まっているか」で交差点を見分けられる。
+ * 位置を作っているわけではなく、共有ノードを数えているだけ。
+ */
+export interface Intersection {
+  point: LatLng;
+  /**
+   * 交差点の広がり (m)。
+   *
+   * 交わっている道のうち最も広いものの半分に、停止線の手前ぶんを足す。
+   * 実物の区画線は交差点の中まで引かれておらず、
+   * 手前の停止線で切れている（区画線 203 停止線）。
+   */
+  radius: number;
+  /** 信号のある交差点か */
+  signalised: boolean;
+}
+
+/** 座標をキーにした交差点の索引 */
+export type IntersectionIndex = Map<string, Intersection>;
+
+/**
+ * 座標のキー。
+ *
+ * OSM で同じノードを共有する way は、まったく同じ座標を持つ。
+ * 小数 7 桁（およそ 1cm）まで見れば取り違えない。
+ */
+function nodeKey(p: LatLng): string {
+  return `${p.lat.toFixed(7)},${p.lng.toFixed(7)}`;
+}
+
+/**
+ * 交差点の手前で区画線を切るための余裕 (m)。
+ *
+ * 停止線は横断歩道の手前に引かれる。横断歩道の幅は 3〜4m
+ * （道路標識・区画線及び道路標示に関する命令 別表第 4 の 201 横断歩道）。
+ */
+const STOP_LINE_SETBACK_M = 2.0;
+
+/**
+ * 道路のつながりから交差点を割り出す。
+ *
+ * 「次数」で見分ける。ある点に集まっている道路区間の端の数を数え、
+ * 3 以上なら交差点とする。way が途中で分割されているだけの点は 2 になる。
+ *
+ * これをやらないと、区画線が交差点の中を突っ切って互いに交わり、
+ * 上から見ると白線が格子状に重なって見える（実物はそうなっていない）。
+ */
+export function buildIntersections(
+  roads: RoadPiece[],
+  points: RoadPoint[] = [],
+): IntersectionIndex {
+  const degree = new Map<string, number>();
+  const widest = new Map<string, number>();
+  const at = new Map<string, LatLng>();
+
+  for (const road of roads) {
+    // 歩道や横断歩道は車道の交差点を作らない
+    if (road.lanes === 0 || road.underground || road.elevated) continue;
+    road.path.forEach((p, i) => {
+      const key = nodeKey(p);
+      // 端は 1、途中の点は 2 本ぶんの区間が集まっている
+      const add = i === 0 || i === road.path.length - 1 ? 1 : 2;
+      degree.set(key, (degree.get(key) ?? 0) + add);
+      widest.set(key, Math.max(widest.get(key) ?? 0, road.width));
+      if (!at.has(key)) at.set(key, p);
+    });
+  }
+
+  // 信号のある点。信号は交差点の中心ではなく停止線の位置に打たれることが
+  // 多いので、少し離れていても同じ交差点とみなす
+  const signals = points.filter((p) => p.kind === 'traffic_signal');
+
+  const out: IntersectionIndex = new Map();
+  for (const [key, count] of degree) {
+    if (count < 3) continue;
+    const point = at.get(key);
+    if (!point) continue;
+    const width = widest.get(key) ?? 6;
+    const signalised = signals.some((s) => distanceMeters(s.position, point) < 25);
+    out.set(key, { point, radius: width / 2 + STOP_LINE_SETBACK_M, signalised });
+  }
+  return out;
+}
+
+/**
+ * 経路を交差点で分断する。
+ *
+ * 交差点は道の端にも途中にもある。途中の交差点で切らないと、
+ * その道の区画線だけが交差点を突っ切ることになる。
+ *
+ * 舗装は切らない（アスファルトは交差点の中まで続いている）。
+ * 切るのは区画線だけ。
+ *
+ * @returns 区画線を引いてよい区間の並び。引けるところが無ければ空
+ */
+export function splitAtIntersections(
+  path: LatLng[],
+  intersections: IntersectionIndex,
+): LatLng[][] {
+  if (path.length < 2) return [];
+  if (intersections.size === 0) return [path];
+
+  // まず、経路上のどこに交差点があるかを累積距離で拾う
+  const cumulative = [0];
+  for (let i = 1; i < path.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + distanceMeters(path[i - 1], path[i]));
+  }
+  const total = cumulative[cumulative.length - 1];
+  if (!(total > 0)) return [];
+
+  /** 引かない区間 [開始, 終了]（累積距離） */
+  const gaps: [number, number][] = [];
+  path.forEach((p, i) => {
+    const node = intersections.get(nodeKey(p));
+    if (!node) return;
+    gaps.push([cumulative[i] - node.radius, cumulative[i] + node.radius]);
+  });
+  if (gaps.length === 0) return [path];
+
+  gaps.sort((a, b) => a[0] - b[0]);
+  const out: LatLng[][] = [];
+  let from = 0;
+  for (const [gapStart, gapEnd] of gaps) {
+    if (gapStart > from) {
+      const piece = sliceByDistance(path, cumulative, from, Math.min(gapStart, total));
+      if (piece.length >= 2) out.push(piece);
+    }
+    from = Math.max(from, gapEnd);
+  }
+  if (from < total) {
+    const piece = sliceByDistance(path, cumulative, from, total);
+    if (piece.length >= 2) out.push(piece);
+  }
+  return out;
+}
+
+/** 累積距離 [from, to] の区間を切り出す */
+function sliceByDistance(
+  path: LatLng[],
+  cumulative: number[],
+  from: number,
+  to: number,
+): LatLng[] {
+  if (!(to > from)) return [];
+  const out: LatLng[] = [pointAtDistance(path, cumulative, from)];
+  for (let i = 0; i < path.length; i += 1) {
+    if (cumulative[i] > from && cumulative[i] < to) out.push(path[i]);
+  }
+  out.push(pointAtDistance(path, cumulative, to));
+  return out;
+}
+
+/** 累積距離 d の位置の座標 */
+function pointAtDistance(path: LatLng[], cumulative: number[], d: number): LatLng {
+  if (d <= 0) return path[0];
+  const last = cumulative.length - 1;
+  if (d >= cumulative[last]) return path[last];
+  for (let i = 1; i <= last; i += 1) {
+    if (d <= cumulative[i]) {
+      const span = cumulative[i] - cumulative[i - 1];
+      const r = span > 0 ? (d - cumulative[i - 1]) / span : 0;
+      return {
+        lat: path[i - 1].lat + (path[i].lat - path[i - 1].lat) * r,
+        lng: path[i - 1].lng + (path[i].lng - path[i - 1].lng) * r,
+      };
+    }
+  }
+  return path[last];
+}
+
+/**
+ * 停止線。
+ *
+ * 出典: 道路標識、区画線及び道路標示に関する命令 別表第 4（203 停止線）。
+ *   幅 0.3〜0.45m、車道を横断して引く。
+ *
+ * 信号のある交差点の、進入してくる車線ぶんだけに引く。
+ * 日本は左側通行なので、進入側は進行方向に向かって左半分。
+ */
+export function stopLineShapes(
+  road: RoadPiece,
+  intersections: IntersectionIndex,
+): SceneShape[] {
+  if (road.lanes === 0 || road.underground || road.elevated) return [];
+  if (!(road.width > 0) || road.path.length < 2) return [];
+
+  const cumulative = [0];
+  for (let i = 1; i < road.path.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + distanceMeters(road.path[i - 1], road.path[i]));
+  }
+  const total = cumulative[cumulative.length - 1];
+  if (!(total > 0)) return [];
+
+  const out: SceneShape[] = [];
+  road.path.forEach((p, i) => {
+    const node = intersections.get(nodeKey(p));
+    if (!node?.signalised) return;
+
+    // 交差点へ向かってくる側それぞれに 1 本ずつ。
+    // 道の途中の交差点なら手前と奥の 2 本、端なら 1 本
+    for (const sign of [-1, 1] as const) {
+      const at = cumulative[i] + sign * node.radius;
+      if (at <= 0 || at >= total) continue;
+      const centreLine = pointAtDistance(road.path, cumulative, at);
+      // 交差点へ向かう向き
+      const ahead = pointAtDistance(road.path, cumulative, at - sign * 1);
+      const heading = headingBetween(ahead, centreLine);
+
+      // 進入車線ぶんの幅。一方通行なら全幅、対面通行なら左半分
+      const span = road.oneway ? road.width : road.width / 2;
+      const centre = road.oneway ? centreLine : offsetFrom(centreLine, span / 2, heading - 90);
+
+      out.push({
+        kind: 'ribbon',
+        id: `${road.id}#stop${i}${sign > 0 ? 'f' : 'b'}`,
+        path: [
+          offsetFrom(centre, span / 2, heading + 90),
+          offsetFrom(centre, span / 2, heading - 90),
+        ],
+        width: 0.45,
+        color: LINE.centreColor,
+        order: ORDER.centre,
+      });
+    }
+  });
+  return out;
+}
+
+/** 真北 0・東回りの方位角 (度) */
+function headingBetween(a: LatLng, b: LatLng): number {
+  const cos = Math.cos((a.lat * Math.PI) / 180) || 1;
+  return (Math.atan2((b.lng - a.lng) * cos, b.lat - a.lat) * 180) / Math.PI;
+}
+
+/** 方位 headingDeg の向きへ offsetM 進んだ地点 */
+function offsetFrom(point: LatLng, offsetM: number, headingDeg: number): LatLng {
+  const rad = (headingDeg * Math.PI) / 180;
+  const cos = Math.cos((point.lat * Math.PI) / 180) || 1;
+  return {
+    lat: point.lat + (Math.cos(rad) * offsetM) / 111_320,
+    lng: point.lng + (Math.sin(rad) * offsetM) / (111_320 * cos),
+  };
+}
+
 /**
  * 車道 1 本ぶんの地表の形。
  *
  * 舗装の帯を敷き、その上に区画線を重ねる。
  * 車線が 2 以上あるときだけ中央線を引く（1 車線の道に中央線は無い）。
  */
-export function roadShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL): SceneShape[] {
+export function roadShapes(
+  road: RoadPiece,
+  detail: RoadDetail = FULL_DETAIL,
+  /**
+   * 交差点の索引。渡すと、区画線を交差点の手前で切る。
+   *
+   * 実物の区画線は交差点の中まで引かれていない。切らずに引くと、
+   * 交差する道の白線どうしが中央で重なり、上から見ると格子状になる。
+   */
+  intersections: IntersectionIndex = new Map(),
+): SceneShape[] {
   if (road.underground || road.elevated) return [];
   // 幅の無い舗装は描けない。0 や負の値が来たら何も出さない
   if (!(road.width > 0)) return [];
@@ -610,6 +886,7 @@ export function roadShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL): S
   const pavement: GroundRibbon = {
     kind: 'ribbon',
     id: road.id,
+    // 舗装は切らない。アスファルトは交差点の中まで続いている
     path: road.path,
     width: road.width,
     color: spec.color,
@@ -621,20 +898,26 @@ export function roadShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL): S
   // 上空から見ているときも、区画線は見えないので組み立てない
   if (spec.lanes === 0 || !detail.laneMarkings) return out;
 
+  // 区画線はここから先、交差点にかからない区間ごとに引く
+  const segments = splitAtIntersections(road.path, intersections);
+  if (segments.length === 0) return out;
+
   // 外側線（車道外側線）。車道の両端から 0.5m 内側。
   // 引くのは幹線の道だけ。住宅街の道や区画内の通路には引かれていない。
   // 以前はすべての車道に引いていたが、それは実際と違ううえ、
   // 浜松 1km 四方の実測（2026-09）で全頂点の 39% を占めていた
   if (HAS_EDGE_LINE.has(road.cls)) {
     const edgeOffset = road.width / 2 - 0.5;
-    for (const side of [-1, 1]) {
-      out.push({
-        kind: 'ribbon',
-        path: offsetPath(road.path, edgeOffset * side),
-        width: LINE.edgeWidth,
-        color: LINE.edgeColor,
-        order: ORDER.edge,
-      });
+    for (const segment of segments) {
+      for (const side of [-1, 1]) {
+        out.push({
+          kind: 'ribbon',
+          path: offsetPath(segment, edgeOffset * side),
+          width: LINE.edgeWidth,
+          color: LINE.edgeColor,
+          order: ORDER.edge,
+        });
+      }
     }
   }
 
@@ -642,32 +925,39 @@ export function roadShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL): S
   // 道路構造令でセンターラインが引かれるのはこの幅から。
   // 生活道路（幅 4〜5m）に中央線が引かれることは実際には無い
   if (road.lanes >= 2 && !road.oneway && road.width >= 5.5) {
-    out.push({
-      kind: 'ribbon',
-      path: road.path,
-      width: LINE.width,
-      color: LINE.centreColor,
-      order: ORDER.centre,
-    });
+    for (const segment of segments) {
+      out.push({
+        kind: 'ribbon',
+        path: segment,
+        width: LINE.width,
+        color: LINE.centreColor,
+        order: ORDER.centre,
+      });
+    }
   }
 
   // 車線境界線。中央線と外側線の間を車線数で割る
   const half = road.oneway ? road.lanes : road.lanes / 2;
   if (half >= 2) {
     const laneWidth = (road.width - 1.0) / road.lanes;
-    for (let i = 1; i < half; i += 1) {
-      for (const side of road.oneway ? [1] : [-1, 1]) {
-        out.push({
-          kind: 'ribbon',
-          path: offsetPath(road.path, laneWidth * i * side),
-          width: LINE.width,
-          color: LINE.laneColor,
-          dash: LINE.laneDash,
-          order: ORDER.lane,
-        });
+    for (const segment of segments) {
+      for (let i = 1; i < half; i += 1) {
+        for (const side of road.oneway ? [1] : [-1, 1]) {
+          out.push({
+            kind: 'ribbon',
+            path: offsetPath(segment, laneWidth * i * side),
+            width: LINE.width,
+            color: LINE.laneColor,
+            dash: LINE.laneDash,
+            order: ORDER.lane,
+          });
+        }
       }
     }
   }
+
+  // 信号のある交差点には停止線を引く
+  out.push(...stopLineShapes(road, intersections));
 
   return out;
 }
@@ -769,9 +1059,12 @@ export function signalShapes(
 ): SceneShape[] {
   if (point.kind !== 'traffic_signal') return [];
   const raw = groundHeight(point.position);
+  // 柱は路肩に立てる。車道の半分 + 路肩 0.6m
+  const kerbOffsetM = point.roadWidth ? point.roadWidth / 2 + 0.6 : 0;
   return trafficSignalShapes(point.position, {
     ground: Number.isFinite(raw) ? raw : 0,
     headingDeg: point.headingDeg,
+    kerbOffsetM,
   });
 }
 

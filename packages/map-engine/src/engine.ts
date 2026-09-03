@@ -27,6 +27,7 @@ import {
   DEFAULT_IMAGERY_ID,
   GSI_IMAGERY,
   categoryIcon,
+  buildIntersections,
   crossingShapes,
   detailForHeight,
   getImagery,
@@ -598,12 +599,16 @@ export class MapEngine {
     const fullKey = `${key}@${detail.laneMarkings ? 'full' : 'plain'}`;
     if (this.roads.hasLoaded(fullKey)) return;
 
+    // 交差点を先に割り出す。区画線を交差点の手前で切るのに要る。
+    // 切らないと、交差する道の白線どうしが中央で重なって格子状に見える
+    const intersections = buildIntersections(scene.roads, scene.points);
+
     const shapes: SceneShape[] = [];
     for (const road of scene.roads) {
       shapes.push(
         ...(road.cls === 'crossing'
           ? crossingShapes(road, detail)
-          : roadShapes(road, detail)),
+          : roadShapes(road, detail, intersections)),
       );
     }
 

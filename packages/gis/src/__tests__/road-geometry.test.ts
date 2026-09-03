@@ -28,6 +28,12 @@ import {
   speedLimitOf,
   stitchRoads,
   type RoadPiece,
+  buildIntersections,
+  stopLineShapes,
+  FULL_DETAIL,
+  type RoadPoint,
+
+  splitAtIntersections,
 } from '../road-geometry';
 import { classify } from '../structures';
 
@@ -191,6 +197,7 @@ test('信号は柱・アーム・灯器で組み、道路の向きに合わせ�
       kind: 'traffic_signal',
       position: { lat: 34.7, lng: 137.73 },
       headingDeg: 90, // 東西の道
+      roadWidth: 9,
     },
     () => 5,
   );
@@ -214,6 +221,21 @@ test('信号は柱・アーム・灯器で組み、道路の向きに合わせ�
   assert.ok(away > 2, `灯器が柱の真上にある: ${away.toFixed(1)}m`);
   // 東西の道なら、アームは南北へ張り出す
   assert.ok(Math.abs(head.centre.lat - pole.base.lat) > Math.abs(head.centre.lng - pole.base.lng));
+
+  // 柱は車道の中心ではなく路肩に立つ。
+  // OSM の highway=traffic_signals は車道の中心線上のノードに付くので、
+  // そのまま立てると道の真ん中に柱が生える
+  const fromNode = Math.hypot(
+    (pole.base.lat - 34.7) * 111_320,
+    (pole.base.lng - 137.73) * 111_320 * Math.cos((34.7 * Math.PI) / 180),
+  );
+  assert.ok(fromNode > 9 / 2, `柱が車道の中にある: 中心線から ${fromNode.toFixed(1)}m`);
+  // 灯器は車道の上（中心線の近く）に戻ってくる
+  const headFromNode = Math.hypot(
+    (head.centre.lat - 34.7) * 111_320,
+    (head.centre.lng - 137.73) * 111_320 * Math.cos((34.7 * Math.PI) / 180),
+  );
+  assert.ok(headFromNode < 9 / 2, `灯器が車道の外にある: ${headFromNode.toFixed(1)}m`);
 });
 
 test('横断歩道や停止線は信号として組み立てない', () => {
@@ -581,4 +603,162 @@ test('地表に描かない判定は、高架を建てる判定と揃ってい�
     // 高架として建てられるかと、地表に描かないかが一致していること
     assert.equal(classify(tags, lengthM) !== null, piece.elevated, `${why}: 判定が食い違う`);
   }
+});
+
+// ---- 交差点 ------------------------------------------------------------
+//
+// 「車道の線や交差点の再現度が低すぎる」という指摘への対応。
+//
+// 実物の区画線は交差点の中まで引かれておらず、手前の停止線で切れている。
+// 切らずに引くと、交差する道の白線どうしが交差点の中央で重なり、
+// 上から見ると白線が格子状に走って見える。
+//
+// 出典: 道路標識、区画線及び道路標示に関する命令 別表第 4（203 停止線、
+// 幅 0.3〜0.45m）。停止線は横断歩道（幅 3〜4m）の手前に引かれる。
+
+/** 真東西に走る道と、それに南から突き当たる道 */
+function crossRoads() {
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+  const east = (m: number) => ({ lat: 34.7, lng: 137.73 + m / (111_320 * cos) });
+  const centre = east(0);
+  const mainRoad: RoadPiece = {
+    id: 'main',
+    cls: 'primary',
+    // 西 → 交差点 → 東
+    path: [east(-60), centre, east(60)],
+    width: 9.5,
+    lanes: 4,
+    oneway: false,
+    elevated: false,
+    underground: false,
+  };
+  const side: RoadPiece = {
+    id: 'side',
+    cls: 'residential',
+    // 南から突き当たる
+    path: [{ lat: 34.7 - 60 / 111_320, lng: 137.73 }, centre],
+    width: 5.5,
+    lanes: 2,
+    oneway: false,
+    elevated: false,
+    underground: false,
+  };
+  return { mainRoad, side, centre };
+}
+
+test('道が 3 本ぶん集まる点を交差点とみなす', () => {
+  const { mainRoad, side, centre } = crossRoads();
+  const found = buildIntersections([mainRoad, side]);
+  assert.equal(found.size, 1, '交差点が 1 か所でない');
+  const node = [...found.values()][0];
+  assert.ok(Math.abs(node.point.lat - centre.lat) < 1e-9);
+  // 広いほうの道（9.5m）の半分 + 停止線の手前ぶん
+  assert.ok(node.radius > 9.5 / 2, `広がりが狭い: ${node.radius}m`);
+  assert.equal(node.signalised, false);
+});
+
+test('way が途中で分かれているだけの点は交差点にしない', () => {
+  // 同じ道が 2 本の way に分かれているだけなら、区画線を切ってはいけない
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+  const east = (m: number) => ({ lat: 34.7, lng: 137.73 + m / (111_320 * cos) });
+  const a: RoadPiece = {
+    id: 'a', cls: 'primary', path: [east(-60), east(0)],
+    width: 9.5, lanes: 4, oneway: false, elevated: false, underground: false,
+  };
+  const b: RoadPiece = { ...a, id: 'b', path: [east(0), east(60)] };
+  assert.equal(buildIntersections([a, b]).size, 0);
+});
+
+test('歩道は車道の交差点を作らない', () => {
+  const { mainRoad, centre } = crossRoads();
+  const footway: RoadPiece = {
+    id: 'foot', cls: 'footway',
+    path: [{ lat: 34.7 - 60 / 111_320, lng: 137.73 }, centre],
+    width: 2.2, lanes: 0, oneway: false, elevated: false, underground: false,
+  };
+  assert.equal(buildIntersections([mainRoad, footway]).size, 0);
+});
+
+test('区画線は交差点の手前で切れる（舗装は切らない）', () => {
+  const { mainRoad, side } = crossRoads();
+  const found = buildIntersections([mainRoad, side]);
+  const shapes = roadShapes(mainRoad, FULL_DETAIL, found);
+
+  const pavement = shapes.find((s) => s.id === 'main');
+  assert.ok(pavement && pavement.kind === 'ribbon');
+  if (pavement?.kind !== 'ribbon') return;
+  // 舗装は交差点の中まで続く（アスファルトは切れていない）
+  assert.equal(pavement.path.length, mainRoad.path.length);
+
+  // 中央線は交差点の手前で終わる
+  const centreLine = shapes.find((s) => s.kind === 'ribbon' && s.order === 3 && !s.id);
+  assert.ok(centreLine && centreLine.kind === 'ribbon', '中央線が無い');
+  if (centreLine?.kind !== 'ribbon') return;
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+  const node = { lat: 34.7, lng: 137.73 };
+  const nearest = Math.min(
+    ...centreLine.path.map((p) =>
+      Math.hypot((p.lat - node.lat) * 111_320, (p.lng - node.lng) * 111_320 * cos),
+    ),
+  );
+  assert.ok(nearest > 4, `中央線が交差点に入り込んでいる: ${nearest.toFixed(1)}m`);
+});
+
+test('交差点を渡さなければ、区画線は端まで引く', () => {
+  // 交差点が分からないときに勝手に切ると、道の途中で線が消える
+  const { mainRoad } = crossRoads();
+  const shapes = roadShapes(mainRoad, FULL_DETAIL);
+  const centreLine = shapes.find((s) => s.kind === 'ribbon' && s.order === 3 && !s.id);
+  assert.ok(centreLine?.kind === 'ribbon' && centreLine.path.length === mainRoad.path.length);
+});
+
+test('道の途中の交差点でも区画線を分断する', () => {
+  // 交差点は道の端だけでなく途中にもある。途中で切らないと、
+  // その道の白線だけが交差点を突っ切ることになる
+  const { mainRoad, side } = crossRoads();
+  const found = buildIntersections([mainRoad, side]);
+  const pieces = splitAtIntersections(mainRoad.path, found);
+  assert.equal(pieces.length, 2, '交差点の前後に分かれていない');
+  // どちらの区間も交差点から離れている
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+  for (const piece of pieces) {
+    const nearest = Math.min(
+      ...piece.map((p) =>
+        Math.hypot((p.lat - 34.7) * 111_320, (p.lng - 137.73) * 111_320 * cos),
+      ),
+    );
+    assert.ok(nearest > 4, `交差点に入り込んでいる: ${nearest.toFixed(1)}m`);
+  }
+});
+
+test('信号のある交差点には停止線を引く', () => {
+  const { mainRoad, side, centre } = crossRoads();
+  const signal: RoadPoint = { id: 's', kind: 'traffic_signal', position: centre };
+  const found = buildIntersections([mainRoad, side], [signal]);
+  assert.equal([...found.values()][0].signalised, true);
+
+  // 突き当たる側は 1 本（交差点はこの道の端）
+  const sideStops = stopLineShapes(side, found);
+  assert.equal(sideStops.length, 1, '突き当たりに停止線が無い');
+  // 通り抜ける道は、交差点の手前と奥で 2 本
+  const stops = stopLineShapes(mainRoad, found);
+  assert.equal(stops.length, 2, '通り抜ける道の停止線が 2 本でない');
+  const line = sideStops[0];
+  assert.ok(line.kind === 'ribbon');
+  if (line.kind !== 'ribbon') return;
+  // 幅 0.45m（区画線 203 停止線）
+  assert.ok(Math.abs(line.width - 0.45) < 0.01);
+  // 道を横切る向きに、進入車線ぶん（対面通行なので半分）
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+  const span = Math.hypot(
+    (line.path[0].lat - line.path[1].lat) * 111_320,
+    (line.path[0].lng - line.path[1].lng) * 111_320 * cos,
+  );
+  assert.ok(Math.abs(span - 5.5 / 2) < 0.2, `停止線の長さが ${span.toFixed(2)}m`);
+});
+
+test('信号の無い交差点には停止線を引かない', () => {
+  const { mainRoad, side } = crossRoads();
+  const found = buildIntersections([mainRoad, side]);
+  assert.equal(stopLineShapes(side, found).length, 0);
 });

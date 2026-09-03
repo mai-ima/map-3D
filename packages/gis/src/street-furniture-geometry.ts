@@ -358,6 +358,17 @@ export interface SignalOptions {
    * 信号が制御している道路の向きから決める。分からなければ省略。
    */
   headingDeg?: number;
+  /**
+   * 柱を車道の中心線からどれだけ路肩側へ寄せるか (m)。
+   *
+   * OSM の `highway=traffic_signals` は**車道の中心線上のノード**に付く。
+   * そのまま柱を立てると、車道の真ん中に柱が生えることになる。
+   * 実物は路肩（歩道の縁）に立っていて、そこからアームで車道の上へ
+   * 灯器を張り出している。道路の半分の幅 + 路肩ぶんを渡す。
+   *
+   * 日本は左側通行なので、進行方向に向かって左の路肩へ寄せる。
+   */
+  kerbOffsetM?: number;
   /** 歩行者用灯器も付けるか（交差点の角にあるもの） */
   pedestrian?: boolean;
 }
@@ -373,15 +384,20 @@ export function trafficSignalShapes(point: LatLng, options: SignalOptions): Scen
   const ground = options.ground;
   // 灯器は道路の向きに正対する（進んでくる車から見える向き）
   const facing = options.headingDeg ?? 0;
-  // アームは道路を横切る向きへ張り出す
+  // 柱は左の路肩に立てる（日本は左側通行）。
+  // OSM のノードは車道の中心線上にあるので、寄せないと道の真ん中に柱が立つ
+  const kerbOffset = Math.max(0, options.kerbOffsetM ?? 0);
+  const base = kerbOffset > 0 ? offsetPoint(point, kerbOffset, facing - 90) : point;
+  // アームは路肩から車道の上へ張り出す
   const armHeading = facing + 90;
-  const tip = offsetPoint(point, SIGNAL.armLength, armHeading);
+  const armLength = Math.max(1.5, Math.min(SIGNAL.armLength, kerbOffset + 1.2));
+  const tip = offsetPoint(base, armLength, armHeading);
 
   const out: SceneShape[] = [
     {
       kind: 'revolved',
       id: `${id}#pole`,
-      base: { ...point, alt: ground },
+      base: { ...base, alt: ground },
       height: SIGNAL.poleHeight,
       bottomRadius: 0.0826, // φ165.2mm
       topRadius: 0.0699, // φ139.8mm
@@ -391,11 +407,11 @@ export function trafficSignalShapes(point: LatLng, options: SignalOptions): Scen
       kind: 'box',
       id: `${id}#arm`,
       centre: {
-        ...offsetPoint(point, SIGNAL.armLength / 2, armHeading),
+        ...offsetPoint(base, armLength / 2, armHeading),
         alt: ground + SIGNAL.headHeight + SIGNAL.headSize.h / 2 + 0.12,
       },
       headingDeg: armHeading,
-      size: { x: 0.09, y: SIGNAL.armLength, z: 0.09 },
+      size: { x: 0.09, y: armLength, z: 0.09 },
       color: '#5a5f63',
     },
     {
@@ -425,7 +441,7 @@ export function trafficSignalShapes(point: LatLng, options: SignalOptions): Scen
     out.push({
       kind: 'box',
       id: `${id}#ped`,
-      centre: { ...point, alt: ground + SIGNAL.pedestrianHeight },
+      centre: { ...base, alt: ground + SIGNAL.pedestrianHeight },
       headingDeg: facing,
       size: { x: 0.16, y: 0.3, z: 0.55 },
       color: '#33383b',

@@ -157,7 +157,7 @@ test('ベンチは座面と背もたれで組む', () => {
 
 test('信号は車道の上へ灯器を張り出す', () => {
   // 柱だけだと遠目には棒が立っているだけで、信号と分からない
-  const shapes = trafficSignalShapes(AT, { ground: GROUND, headingDeg: 0 });
+  const shapes = trafficSignalShapes(AT, { ground: GROUND, headingDeg: 0, kerbOffsetM: 5.1 });
   const pole = shapes.find((s): s is RevolvedShape => s.kind === 'revolved');
   const head = shapes.find((s) => s.id?.endsWith('#head'));
   assert.ok(pole && head?.kind === 'box');
@@ -167,9 +167,22 @@ test('信号は車道の上へ灯器を張り出す', () => {
   const bottom = (head.centre.alt ?? 0) - head.size.z / 2 - GROUND;
   assert.ok(bottom >= 5.0 - 0.01, `灯器の下端が ${bottom.toFixed(2)}m`);
   // 柱から離れている（アームの先）
-  assert.ok(metres(AT, head.centre) > 2);
+  assert.ok(metres(pole.base, head.centre) > 2);
   // 南北の道なら、アームは東西へ張り出す
   assert.ok(Math.abs(head.centre.lng - AT.lng) > Math.abs(head.centre.lat - AT.lat));
+
+  // 柱は路肩に立ち、灯器は車道の上へ戻る。
+  // OSM のノードは車道の中心線上にあるので、寄せないと道の真ん中に柱が生える
+  assert.ok(metres(AT, pole.base) > 5, `柱が車道の中にある: ${metres(AT, pole.base).toFixed(1)}m`);
+  assert.ok(metres(AT, head.centre) < 5, `灯器が車道の外にある: ${metres(AT, head.centre).toFixed(1)}m`);
+});
+
+test('路肩の寄せを指定しなければ、柱はノードの位置に立つ', () => {
+  // 道の幅が分からないときに勝手に動かすと、実在しない位置になる
+  const shapes = trafficSignalShapes(AT, { ground: GROUND, headingDeg: 0 });
+  const pole = shapes.find((s): s is RevolvedShape => s.kind === 'revolved');
+  assert.ok(pole);
+  assert.ok(metres(AT, pole.base) < 0.01);
 });
 
 test('歩行者用灯器は求めたときだけ付ける', () => {
