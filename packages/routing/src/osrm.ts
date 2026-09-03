@@ -5,7 +5,16 @@
  *  - 形状は polyline (precision 5) を既定とする
  */
 
-import type { Maneuver, ManeuverType, Route, RouteRequest, RouteStep, TravelMode } from '@ijm/shared';
+import type {
+  Lane,
+  LaneIndication,
+  Maneuver,
+  ManeuverType,
+  Route,
+  RouteRequest,
+  RouteStep,
+  TravelMode,
+} from '@ijm/shared';
 import { bboxOf, decodePolyline } from '@ijm/shared';
 import { RoutingError, UnsupportedModeError, type RouteProvider } from './types';
 
@@ -19,11 +28,20 @@ export interface OsrmOptions {
  * 応答の型。ネットワーク越しの JSON なので、
  * 仕様上は必ずある項目も省略可として書く（無いことを解析側で確かめられるように）。
  */
+/**
+ * 交差点。step の走行中に通るものが順に並ぶ。
+ * 先頭がその step のマニューバ地点（OSRM の仕様）。
+ */
+interface OsrmIntersection {
+  lanes?: { valid?: boolean; indications?: string[] }[];
+}
+
 interface OsrmStep {
   distance?: number;
   duration?: number;
   name?: string;
   geometry?: string;
+  intersections?: OsrmIntersection[];
   maneuver?: {
     type?: string;
     modifier?: string;
@@ -31,6 +49,58 @@ interface OsrmStep {
     bearing_before?: number;
     bearing_after?: number;
   };
+}
+
+/**
+ * 車線の矢印。OSRM は OSM の `turn:lanes` を解釈して、
+ * 空白区切りの語で返してくる（実データで確認: left / straight /
+ * slight right / right）。
+ *
+ * 仕様上ありうる値をすべて並べてある。
+ * 知らない語は 'none'（矢印なし）にする。**推測して矢印を作らない。**
+ * 実在しない矢印を出すと、運転中にその車線へ寄ってしまう。
+ */
+const LANE_INDICATIONS: Record<string, LaneIndication> = {
+  left: 'left',
+  'slight left': 'slight_left',
+  'sharp left': 'sharp_left',
+  straight: 'through',
+  right: 'right',
+  'slight right': 'slight_right',
+  'sharp right': 'sharp_right',
+  uturn: 'uturn',
+  merge_to_left: 'merge_left',
+  merge_to_right: 'merge_right',
+  none: 'none',
+};
+
+/**
+ * 車線案内を読み取る。
+ *
+ * OSRM は step の走行中に通るすべての交差点を `intersections` に並べ、
+ * **先頭がその step のマニューバ地点**になる。案内パネルが出すのは
+ * 「次に何をするか」なので、そのマニューバ地点の車線だけを使う。
+ *
+ * 途中の交差点にも車線情報が付くことがあるが（実データでは
+ * 1 つの step に 29 個の交差点が並び、そのうち 1 つが車線を持っていた）、
+ * それは通過点の話なので、次の分岐の案内としては使わない。
+ *
+ * OSM に `turn:lanes` が無い交差点では OSRM も返さない。
+ * そのときは車線案内を出さない（車線数から矢印を作らない）。
+ */
+function readLanes(step: OsrmStep): Lane[] | undefined {
+  const lanes = step.intersections?.[0]?.lanes;
+  if (!Array.isArray(lanes) || lanes.length === 0) return undefined;
+
+  const out: Lane[] = [];
+  for (const lane of lanes) {
+    const indications = Array.isArray(lane?.indications)
+      ? lane.indications.map((i) => LANE_INDICATIONS[i] ?? 'none')
+      : [];
+    out.push({ indications, valid: lane?.valid === true });
+  }
+  // どの車線も通れないという応答は解釈できない。出さないほうが安全
+  return out.some((l) => l.valid) ? out : undefined;
 }
 
 interface OsrmResponse {
@@ -107,6 +177,7 @@ export class OsrmProvider implements RouteProvider {
       `${request.to.lng},${request.to.lat}`,
     ].join(';');
 
+    // 車線案内は intersections に入っている。steps=true で付いてくる
     const url = `${endpoint}/${coords}?overview=full&geometries=polyline&steps=true&annotations=false`;
 
     let res: Response;
@@ -158,6 +229,7 @@ export class OsrmProvider implements RouteProvider {
           durationToNext: duration,
           streetName: step.name || undefined,
           shapeIndex: beginIndex,
+          lanes: readLanes(step),
         });
 
         steps.push({

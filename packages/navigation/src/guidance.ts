@@ -5,6 +5,7 @@
  */
 
 import type { Maneuver } from '@ijm/shared';
+import { laneAdvice } from './lane-guidance';
 import { formatDistance, maneuverLabel } from './maneuver-planner';
 import type { ManeuverOutlook, RouteProgress } from './types';
 
@@ -16,6 +17,15 @@ export interface Announcement {
 
 /** 案内を出す残距離のしきい値 (m) */
 const TRIGGER_DISTANCES = [700, 300, 120, 40] as const;
+
+/**
+ * 車線案内を読み上げる距離 (m)。
+ *
+ * 遠すぎると別の交差点の話だと思われ、近すぎると車線変更が間に合わない。
+ * 300m あれば、法定速度 60km/h でおよそ 18 秒あり、1 車線ぶん寄れる。
+ * 一度だけ言う（毎回言うとうるさい）。
+ */
+const LANE_TRIGGER_M = 300;
 
 export class GuidanceGenerator {
   private spoken = new Set<string>();
@@ -70,7 +80,19 @@ export class GuidanceGenerator {
       // 実際の道路名や交差点名が入っているので、こちらで組み立てた文より正確。
       const text = this.textFor(next, outlook.distanceToNext, trigger, label);
       if (!text) return null;
-      return { id, text, priority: trigger <= 120 ? 'high' : 'normal' };
+
+      /**
+       * 車線案内を 1 回だけ足す。
+       *
+       * OSM に `turn:lanes` があり、かつ通れる車線が限られているときだけ。
+       * 全車線が通れるなら言うことは無い（`laneAdvice` が null を返す）。
+       */
+      const lanes = trigger === LANE_TRIGGER_M ? laneAdvice(next.lanes) : null;
+      return {
+        id,
+        text: lanes ? `${text}${lanes}` : text,
+        priority: trigger <= 120 ? 'high' : 'normal',
+      };
     }
 
     return null;

@@ -334,3 +334,123 @@ describe('OSRM の応答解析', () => {
     await assert.rejects(() => osrm.route(REQUEST), RoutingError);
   });
 });
+
+/**
+ * 車線案内。
+ *
+ * 出典は OSM の `turn:lanes`。OSRM がそれを解釈して
+ * `intersections[].lanes` として返す。
+ *
+ * ここに書いてある形は、公開デモ（router.project-osrm.org）で
+ * 東京駅 → 新宿駅 を引いたときの実際の応答から取った（2026-09）。
+ *
+ *   {"valid": false, "indications": ["left"]}
+ *   {"valid": true,  "indications": ["straight", "left"]}
+ *
+ * 実データでは 15 の step のうち 3 つが車線情報を持ち、
+ * indications に現れた語は left / straight / slight right / right だった。
+ */
+describe('OSRM の車線案内', () => {
+  /** 実際の応答と同じ形の step を作る */
+  function withLanes(lanes: unknown) {
+    return osrmRoute({
+      legs: [
+        {
+          steps: [
+            {
+              distance: 300,
+              duration: 60,
+              name: '内堀通り',
+              geometry: encodePolyline(PATH.slice(0, 2), 5),
+              maneuver: { type: 'depart', location: PATH[0] },
+              intersections: [{ lanes }],
+            },
+            {
+              distance: 300,
+              duration: 60,
+              name: '',
+              geometry: encodePolyline(PATH.slice(1), 5),
+              maneuver: { type: 'turn', modifier: 'left', location: PATH[1] },
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  test('実際の応答の形から車線を読み取る', async () => {
+    reply(
+      withLanes([
+        { valid: false, indications: ['left'] },
+        { valid: true, indications: ['straight', 'left'] },
+        { valid: true, indications: ['straight'] },
+        { valid: false, indications: ['slight right'] },
+      ]),
+    );
+    const route = await osrm.route(REQUEST);
+    const lanes = route.maneuvers[0].lanes;
+    assert.ok(lanes, '車線を読み取れていない');
+    assert.equal(lanes.length, 4);
+    // 左から順に並ぶ
+    assert.deepEqual(lanes[0], { valid: false, indications: ['left'] });
+    assert.deepEqual(lanes[1], { valid: true, indications: ['through', 'left'] });
+    assert.deepEqual(lanes[3], { valid: false, indications: ['slight_right'] });
+  });
+
+  test('車線情報が無い交差点では車線案内を出さない', async () => {
+    // OSM に turn:lanes が無ければ OSRM も返さない。
+    // ここで車線数から矢印を作ると、実在しない案内で車線を寄らせることになる
+    reply(osrmRoute());
+    const route = await osrm.route(REQUEST);
+    assert.equal(route.maneuvers[0].lanes, undefined);
+  });
+
+  test('知らない矢印の語は「指定なし」にする', async () => {
+    // OSRM の版が上がって語が増えても、勝手な向きの矢印を出さない
+    reply(
+      withLanes([
+        { valid: true, indications: ['reverse_and_dance'] },
+        { valid: false, indications: ['straight'] },
+      ]),
+    );
+    const route = await osrm.route(REQUEST);
+    assert.deepEqual(route.maneuvers[0].lanes?.[0].indications, ['none']);
+  });
+
+  test('壊れた車線情報でも案内は成立する', async () => {
+    for (const broken of [null, [], 'lanes', [{}], [{ indications: 'left' }]]) {
+      reply(withLanes(broken));
+      const route = await osrm.route(REQUEST);
+      // 例外にならず、経路そのものは読める
+      assert.ok(route.coordinates.length >= 2);
+      // 通れる車線が 1 つも無い応答は解釈できないので出さない
+      assert.equal(route.maneuvers[0].lanes, undefined, JSON.stringify(broken));
+    }
+  });
+
+  test('マニューバ地点以外の交差点の車線は使わない', async () => {
+    // 実データでは 1 つの step に 29 個の交差点が並び、車線を持つのは
+    // 途中の 1 つだけということがあった。それは通過点の話なので、
+    // 次の分岐の案内としては使わない
+    reply(
+      osrmRoute({
+        legs: [
+          {
+            steps: [
+              {
+                distance: 300,
+                duration: 60,
+                name: '内堀通り',
+                geometry: encodePolyline(PATH.slice(0, 2), 5),
+                maneuver: { type: 'depart', location: PATH[0] },
+                intersections: [{}, {}, { lanes: [{ valid: true, indications: ['left'] }] }],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const route = await osrm.route(REQUEST);
+    assert.equal(route.maneuvers[0].lanes, undefined);
+  });
+});

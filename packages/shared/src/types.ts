@@ -41,6 +41,36 @@ export type ManeuverType =
   | 'stairs'
   | 'destination';
 
+/**
+ * 1 本の車線から進める方向。
+ *
+ * 出典は OSM の `turn:lanes`（例: `left|through|through;right`）。
+ * 経路エンジンがそれを解釈して、車線ごとの矢印として返してくる。
+ * **推測しない。** 経路エンジンが返さない交差点では車線案内を出さない。
+ * 実在しない矢印を出すと、運転中にその車線へ寄ってしまう。
+ */
+export type LaneIndication =
+  | 'left'
+  | 'slight_left'
+  | 'sharp_left'
+  | 'through'
+  | 'right'
+  | 'slight_right'
+  | 'sharp_right'
+  | 'uturn'
+  | 'merge_left'
+  | 'merge_right'
+  /** 矢印の指定が無い車線（`turn:lanes` に `none` と書かれている） */
+  | 'none';
+
+/** 交差点の 1 車線 */
+export interface Lane {
+  /** この車線から進める方向。1 本に複数の矢印が描かれることがある */
+  indications: LaneIndication[];
+  /** この分岐で通ってよい車線か */
+  valid: boolean;
+}
+
 export interface Maneuver {
   type: ManeuverType;
   /** 案内文（可能なら日本語） */
@@ -73,6 +103,13 @@ export interface Maneuver {
   shapeIndex: number;
   /** 交差点の複雑さ（分岐数などから算出。カメラ演出の判断に使う） */
   intersectionComplexity?: number;
+  /**
+   * 車線案内。左の車線から順に並ぶ。
+   *
+   * 経路エンジンが返したときだけ入る。OSM に `turn:lanes` が無い交差点では
+   * 省略される（**車線数から推測して作ってはいけない**）。
+   */
+  lanes?: Lane[];
 }
 
 export interface RouteStep {

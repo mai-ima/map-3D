@@ -7,8 +7,10 @@ import {
   formatEta,
   maneuverIcon,
   maneuverLabel,
+  shouldShowLanes,
 } from '@ijm/navigation';
 import { Icon } from '@ijm/ui';
+import LaneGuide from './LaneGuide';
 
 export interface NextTurnPanelProps {
   tick: NavigationTickResult | null;
@@ -198,6 +200,15 @@ export default function NextTurnPanel({
             )}
           </span>
         </div>
+
+        {/*
+          車線案内。OSM に `turn:lanes` があり、経路エンジンが返した交差点でだけ出す。
+          手前 500m から出す（遠すぎると別の交差点の案内だと思われる）。
+          データが無いときは何も描かない。車線数から矢印は作らない
+        */}
+        {!arrived && shouldShowLanes(next?.lanes, outlook.distanceToNext) && next?.lanes && (
+          <LaneGuide lanes={next.lanes} />
+        )}
 
         {outlook.afterNext && !arrived && (
           <div className="mt-2 flex items-center gap-2 text-[12px] text-mist-500">
