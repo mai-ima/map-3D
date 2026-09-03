@@ -985,10 +985,14 @@ export class MapEngine {
     // 交差計算を伴わない positionCartographic を使う。
     const carto = this.viewer.camera.positionCartographic;
     if (!carto) return;
-    void this.buildings.refreshForCamera({
+    const at = {
       lat: Cesium.Math.toDegrees(carto.latitude),
       lng: Cesium.Math.toDegrees(carto.longitude),
-    });
+    };
+    // 太陽高度は緯度経度で変わる。日本の南北で日の入りは 1 時間近く違うので、
+    // 都市をまたいで移動したら空の状態を計算し直す（中では 0.5 度動くまで何もしない）
+    this.environment.setViewpoint(at);
+    void this.buildings.refreshForCamera(at);
   }
 
   /**

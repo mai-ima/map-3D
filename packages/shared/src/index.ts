@@ -8,3 +8,4 @@ export * from './cities';
 export * from './attribution';
 export * from './icons';
 export * from './scene';
+export * from './sun';

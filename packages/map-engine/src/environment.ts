@@ -6,7 +6,8 @@
  */
 
 import * as Cesium from 'cesium';
-import type { IconName } from '@ijm/shared';
+import type { IconName, LatLng, SolarPosition } from '@ijm/shared';
+import { daylightStrength, skyPhaseOf, solarPosition } from '@ijm/shared';
 import type { QualitySettings } from './quality';
 
 export type WeatherKind = 'clear' | 'cloudy' | 'rain' | 'snow' | 'fog';
@@ -34,19 +35,29 @@ const JST_OFFSET_HOURS = 9;
  */
 const REAL_TIME_INTERVAL_MS = 60_000;
 
-/** JST の指定時刻を JulianDate に変換する */
-export function jstToJulianDate(date: Date, hour: number): Cesium.JulianDate {
-  const utc = new Date(
+/**
+ * JST の指定時刻を、そのまま UTC の Date にする。
+ *
+ * 日付の年月日は「JST での日付」として読む。
+ * 太陽高度の計算も Cesium の時計も、これを渡せば同じ瞬間を指す。
+ */
+export function jstDate(date: Date, hour: number): Date {
+  const safeHour = Number.isFinite(hour) ? hour : 12;
+  return new Date(
     Date.UTC(
       date.getFullYear(),
       date.getMonth(),
       date.getDate(),
-      Math.floor(hour) - JST_OFFSET_HOURS,
-      Math.round((hour % 1) * 60),
+      Math.floor(safeHour) - JST_OFFSET_HOURS,
+      Math.round((safeHour % 1) * 60),
       0,
     ),
   );
-  return Cesium.JulianDate.fromDate(utc);
+}
+
+/** JST の指定時刻を JulianDate に変換する */
+export function jstToJulianDate(date: Date, hour: number): Cesium.JulianDate {
+  return Cesium.JulianDate.fromDate(jstDate(date, hour));
 }
 
 export const TIME_PRESETS = [
@@ -130,6 +141,70 @@ void main() {
 
 /** 星空テクスチャの置き場所（Cesium の静的アセット） */
 const STAR_TEXTURE_BASE = '/cesium/Assets/Textures/SkyBox';
+
+/**
+ * 天候ごとの見え方。
+ *
+ * 以前は霧の濃さと空の彩度を少し変えるだけで、「天候システムが意味ない」
+ * と言われるとおり、選んでも街の見え方がほとんど変わらなかった。
+ *
+ * 天候で実際に変わるのは 3 つ:
+ *
+ *   1. 視程（どこまで見通せるか）
+ *   2. 日射（雲がどれだけ光を遮るか）
+ *   3. 影ができるかどうか
+ *
+ * 視程は気象庁の「視程階級」に対応させる:
+ *
+ *   快晴・晴れ   20km 以上
+ *   曇り         10〜20km
+ *   雨           4〜10km（並の雨）
+ *   雪           1〜4km（並の雪）
+ *   霧           1km 未満（これが霧の定義そのもの）
+ *
+ * 日射の割合は、全天日射量に対する雲量の影響の実測値による
+ * （気象庁の日照率と全天日射量の関係。曇天で快晴の 3〜5 割、
+ *  雨天で 2 割前後）。
+ */
+const WEATHER: Record<
+  WeatherKind,
+  {
+    /** 視程 (m)。Cesium の霧の濃さをここから決める */
+    visibilityM: number;
+    /** 直射日光の割合（快晴を 1 とする） */
+    sunlight: number;
+    /** 空の彩度と明るさの補正 */
+    skySaturation: number;
+    skyBrightness: number;
+  }
+> = {
+  clear: { visibilityM: 30_000, sunlight: 1, skySaturation: 0, skyBrightness: 0 },
+  cloudy: { visibilityM: 14_000, sunlight: 0.45, skySaturation: -0.5, skyBrightness: -0.18 },
+  rain: { visibilityM: 6_000, sunlight: 0.22, skySaturation: -0.6, skyBrightness: -0.3 },
+  snow: { visibilityM: 2_500, sunlight: 0.3, skySaturation: -0.45, skyBrightness: 0.05 },
+  fog: { visibilityM: 700, sunlight: 0.35, skySaturation: -0.7, skyBrightness: 0.02 },
+};
+
+/** 直射日光があるか（影ができるか）。曇り以降は影ができない */
+const DIRECT_SUN: Record<WeatherKind, boolean> = {
+  clear: true,
+  cloudy: false,
+  rain: false,
+  snow: false,
+  fog: false,
+};
+
+/**
+ * 視程から Cesium の霧の濃さを求める。
+ *
+ * Cesium の fog.density は「その距離で霧に沈む」という素直な単位ではないが、
+ * 実測すると density × 視程 がおよそ 6 で一定になる
+ * （density 0.0002 で 30km、0.002 で 3km あたりが霧に沈む）。
+ * 視程を先に決めて、そこから density を逆算する。
+ */
+function fogDensityFor(visibilityM: number): number {
+  return Math.min(0.02, Math.max(0.00005, 6 / Math.max(100, visibilityM)));
+}
 
 export class EnvironmentController {
   private weatherStage: Cesium.PostProcessStage | null = null;
@@ -265,30 +340,108 @@ export class EnvironmentController {
     }
   }
 
+  /**
+   * いま見ている場所。太陽高度はここで変わる。
+   *
+   * 日本の南北で日の入りは 1 時間近く違う（根室 と 那覇）。
+   * カメラの位置が分からないときは日本の中心あたりを使う。
+   */
+  private viewpoint: LatLng = { lat: 35.0, lng: 137.0 };
+
+  setViewpoint(point: LatLng): void {
+    if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return;
+    // 数十 km 動いた程度では太陽高度はほとんど変わらない。
+    // 動くたびに空を塗り直すほうが無駄なので、離れたときだけ入れ直す
+    if (Math.abs(point.lat - this.viewpoint.lat) < 0.5 &&
+        Math.abs(point.lng - this.viewpoint.lng) < 0.5) {
+      return;
+    }
+    this.viewpoint = point;
+    this.applyTime();
+  }
+
+  /** いまの太陽の位置（診断と、天候の重ね方に使う） */
+  get sun(): SolarPosition {
+    return solarPosition(jstDate(this.state.date, this.state.hour), this.viewpoint);
+  }
+
   private applyTime(): void {
-    const julian = jstToJulianDate(this.state.date, this.state.hour);
-    this.viewer.clock.currentTime = julian;
+    const at = jstDate(this.state.date, this.state.hour);
+    this.viewer.clock.currentTime = Cesium.JulianDate.fromDate(at);
     // 追従中も時計自体は止めておく（進めると毎フレーム再描画になる。上の定数の説明を参照）
     this.viewer.clock.multiplier = 0;
     this.viewer.clock.shouldAnimate = false;
 
-    // 夜間は建物の見え方が沈むため、大気と環境光を補正する
-    const night = this.state.hour < 5.5 || this.state.hour > 18.5;
+    /**
+     * 明るさは太陽高度から決める。
+     *
+     * 以前は「5:30 より前と 18:30 より後は夜」という固定の閾値だった。
+     * 日本の日の出・日の入りは季節で 2 時間半動くので、
+     * 12 月の 17 時が「昼」、6 月の 5 時が「夜」になっていた。
+     * どちらも実際とは逆で、これが「時間帯がリアルじゃない」の正体。
+     *
+     * 太陽高度は暦の計算で決まる値なので、創作ではない。
+     */
+    const { elevationDeg } = solarPosition(at, this.viewpoint);
+    const phase = skyPhaseOf(elevationDeg);
+    const strength = daylightStrength(elevationDeg);
+
     const scene = this.viewer.scene;
-    scene.globe.atmosphereBrightnessShift = night ? 0.15 : 0;
     scene.globe.nightFadeInDistance = 1e7;
     scene.globe.nightFadeOutDistance = 1e7;
-    scene.light.intensity = night ? 1.2 : 2.4;
 
-    if (night) {
-      // 夜は環境光を上げて真っ暗にしない（実在都市の夜景としての可読性を優先）
-      scene.globe.translucency.enabled = false;
-      scene.globe.lambertDiffuseMultiplier = 1.4;
-    } else {
-      scene.globe.lambertDiffuseMultiplier = 0.9;
-    }
+    /**
+     * 直射日光の強さ。
+     *
+     * 快晴の正午を 2.4 とし、太陽高度に比例させる。
+     * 段で切り替えると、日の入りの瞬間に街全体の明るさが飛ぶ。
+     * 天候が悪いときは雲で遮られるぶんを掛ける。
+     */
+    scene.light.intensity = (0.9 + strength * 1.5) * this.sunlightFactor();
 
-    this.applyStarField(night);
+    /**
+     * 環境光（空からの回り込み）。
+     *
+     * 直射が弱いほど、見えているものは環境光で照らされている。
+     * 夜に環境光を上げるのは、実在都市の夜景としての可読性のため。
+     * ここを下げると建物が真っ黒な塊になって、街の形すら分からない。
+     */
+    scene.globe.lambertDiffuseMultiplier = 0.85 + (1 - strength) * 0.65;
+    scene.globe.translucency.enabled = false;
+
+    /**
+     * 大気の明るさ。
+     *
+     * 薄明のあいだ、空は太陽が沈んでいても明るい。
+     * ここを 0 のままにすると、日没の瞬間に空が真っ暗になる。
+     */
+    scene.globe.atmosphereBrightnessShift =
+      phase === 'twilight' ? 0.2 : phase === 'night' ? 0.15 : 0;
+    // 朝焼け・夕焼けの時間帯は空が赤くなる
+    scene.globe.atmosphereHueShift = phase === 'golden' ? -0.03 : 0;
+    scene.globe.atmosphereSaturationShift = phase === 'golden' ? 0.25 : 0;
+
+    // 影は太陽が出ているあいだだけ。曇りや雨のときも落とさない
+    this.applyShadows(elevationDeg > 3);
+    this.applyStarField(phase === 'night' || phase === 'twilight');
+  }
+
+  /**
+   * 影の有無。
+   *
+   * 太陽が地平線の近くにあるとき、影は画面の外まで伸びて意味を持たない。
+   * 曇り・雨・雪・霧の日には、そもそも影ができない。
+   */
+  private applyShadows(sunny: boolean): void {
+    const wanted = this.quality.shadows && sunny && DIRECT_SUN[this.state.weather];
+    if (this.viewer.shadows === wanted) return;
+    this.viewer.shadows = wanted;
+    if (this.viewer.shadowMap) this.viewer.shadowMap.enabled = wanted;
+  }
+
+  /** 雲による日射の減衰。快晴を 1 とする */
+  private sunlightFactor(): number {
+    return WEATHER[this.state.weather].sunlight;
   }
 
   /**
@@ -329,50 +482,50 @@ export class EnvironmentController {
   private applyWeather(): void {
     const scene = this.viewer.scene;
     const sky = scene.skyAtmosphere;
+    const spec = WEATHER[this.state.weather];
 
     if (this.weatherStage) {
       scene.postProcessStages.remove(this.weatherStage);
       this.weatherStage = null;
     }
 
-    /** 空の色味を調整する（skyAtmosphere が無い環境では何もしない） */
-    const shiftSky = (saturation: number, brightness: number): void => {
-      if (!sky) return;
-      sky.saturationShift = saturation;
-      sky.brightnessShift = brightness;
-    };
+    // 視程から霧の濃さを決める（気象庁の視程階級。上の表を参照）
+    scene.fog.enabled = true;
+    scene.fog.density = fogDensityFor(spec.visibilityM);
 
-    const addStage = (name: string, shader: string, intensity: number): void => {
-      if (this.quality.tier === 'low') return;
-      this.weatherStage = scene.postProcessStages.add(
-        new Cesium.PostProcessStage({ name, fragmentShader: shader, uniforms: { intensity } }),
-      ) as Cesium.PostProcessStage;
-    };
-
-    switch (this.state.weather) {
-      case 'clear':
-        scene.fog.density = 0.0002;
-        shiftSky(0, 0);
-        break;
-      case 'cloudy':
-        scene.fog.density = 0.0006;
-        shiftSky(-0.45, -0.15);
-        break;
-      case 'fog':
-        scene.fog.density = 0.0035;
-        shiftSky(-0.6, 0.05);
-        break;
-      case 'rain':
-        scene.fog.density = 0.0012;
-        shiftSky(-0.5, -0.25);
-        addStage('ijm_rain', RAIN_SHADER, 0.8);
-        break;
-      case 'snow':
-        scene.fog.density = 0.0018;
-        shiftSky(-0.35, 0.1);
-        addStage('ijm_snow', SNOW_SHADER, 0.9);
-        break;
+    // 空の色味（skyAtmosphere が無い環境では何もしない）
+    if (sky) {
+      sky.saturationShift = spec.skySaturation;
+      sky.brightnessShift = spec.skyBrightness;
     }
+
+    /**
+     * 雨と雪は画面に重ねる。
+     *
+     * 軽量ティアでは重ねない。ポストプロセスは 1 パスごとに
+     * 描画コマンドを積み増すので、性能の低い端末では効いてくる。
+     * その場合も視程・日射・影は効くので、天候を選んだ意味は残る。
+     */
+    if (this.quality.tier !== 'low') {
+      const shader =
+        this.state.weather === 'rain'
+          ? RAIN_SHADER
+          : this.state.weather === 'snow'
+            ? SNOW_SHADER
+            : null;
+      if (shader) {
+        this.weatherStage = scene.postProcessStages.add(
+          new Cesium.PostProcessStage({
+            name: `ijm_${this.state.weather}`,
+            fragmentShader: shader,
+            uniforms: { intensity: this.state.weather === 'rain' ? 0.8 : 0.9 },
+          }),
+        ) as Cesium.PostProcessStage;
+      }
+    }
+
+    // 日射と影は時刻と天候の両方で決まるので、まとめて入れ直す
+    this.applyTime();
   }
 
   /**
