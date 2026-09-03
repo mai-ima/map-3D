@@ -7,8 +7,16 @@
  */
 
 import * as Cesium from 'cesium';
-import type { BBox, City, LatLng } from '@ijm/shared';
-import { bboxAround, bboxIntersects, isDirectTileset } from '@ijm/shared';
+import type { BBox, BuildingModelMode, City, LatLng } from '@ijm/shared';
+import {
+  bboxAround,
+  bboxIntersects,
+  isBuildingModelMode,
+  isDirectTileset,
+  needsFarLayer,
+  needsUsageColouring,
+  resolveBuildingMode,
+} from '@ijm/shared';
 import { untexturedBuildingStyle } from './building-style';
 import type { QualitySettings } from './quality';
 import { liveScene } from './primitive-swap';
@@ -21,13 +29,37 @@ import { liveScene } from './primitive-swap';
  * 開いた直後に数千リクエストと大量のメモリ確保が起きるため、
  * BFF (/api/tileset) で必要な範囲の子だけに絞ってから読み込む。
  */
-function tilesetUrl(city: City, layer: string, bbox: BBox): string {
+export function tilesetUrl(
+  city: City,
+  layer: string,
+  bbox: BBox,
+  model: BuildingModelMode,
+): string {
   const params = new URLSearchParams({
     city: city.id,
     layer,
     bbox: bbox.map((n) => n.toFixed(4)).join(','),
+    model,
   });
   return `/api/tileset?${params.toString()}`;
+}
+
+/**
+ * BFF が実際に配信したモデルの種別を読む。
+ *
+ * 要求どおりとは限らない。テクスチャ無し版は整備範囲が狭く
+ * （2026-09 の東京都で 45 市区町村 / 62 市区町村）、
+ * 未整備の区ではテクスチャ付きが返る。
+ * 要求した値のまま用途色を塗ると、実写テクスチャの上に色が乗って
+ * 「事実どおりの色」でなくなるので、返ってきたほうを見る。
+ */
+export function servedModel(
+  tileset: Cesium.Cesium3DTileset,
+  requested: BuildingModelMode,
+): BuildingModelMode {
+  const extras = (tileset as Cesium.Cesium3DTileset & { extras?: Record<string, unknown> }).extras;
+  const served = extras?.ijmBuildingModel;
+  return isBuildingModelMode(served) ? served : requested;
 }
 
 export interface LoadedCityTilesets {
@@ -164,6 +196,14 @@ export class BuildingLayerManager {
   private optionalLayers = new Map<OptionalLayerId, Cesium.Cesium3DTileset>();
   /** 透過中の feature と元の色 */
   private dimmed = new Map<Cesium.Cesium3DTileFeature, Cesium.Color>();
+  /**
+   * 建物モデルの見え方。
+   *
+   * 都市ごとの既定ではなく、利用者が選べる設定として持つ。
+   * 都市を切り替えたときは、その都市で選べるものへ寄せ直す
+   * （`resolveBuildingMode`）。
+   */
+  private modelMode: BuildingModelMode = 'textured';
 
   constructor(
     private readonly viewer: Cesium.Viewer,
@@ -268,18 +308,20 @@ export class BuildingLayerManager {
 
     this.unload();
 
+    // 選んでいた見え方を、この都市で選べるものへ寄せる。
+    // 都市によって配信されているデータセットが違う（浜松はテクスチャ無しのみ）
+    this.modelMode = resolveBuildingMode(city, this.modelMode);
+
     // 起動直後はカメラ周辺だけを読む。カメラが離れたら refreshForCamera が読み直す
     this.activeBBox = this.clampToCity(city, bboxAround(city.center, this.quality.nearRadiusM));
     const near = await Cesium.Cesium3DTileset.fromUrl(
-      tilesetUrl(city, 'near', this.activeBBox),
+      tilesetUrl(city, 'near', this.activeBBox, this.modelMode),
       this.tilesetOptions(false),
     );
     near.shadows = this.quality.shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
-    // 実写テクスチャがある都市には一切スタイルを当てない（それが事実の色そのもの）。
-    // テクスチャが無い都市だけ、用途属性と実測高さで塗り分ける。
-    if (city.texturedBuildings === false) {
-      this.applyStyle(near, untexturedBuildingStyle);
-    }
+    // 実写テクスチャが出ているときは一切スタイルを当てない（それが事実の色そのもの）。
+    // テクスチャが無いときだけ、用途属性と実測高さで塗り分ける。
+    this.applyModelStyle(near);
     this.watchLoadProgress(near);
     // 近景にはスタイルを当てない = PLATEAU の実写テクスチャの色をそのまま出す
     this.applyRealisticLighting(near);
@@ -298,11 +340,41 @@ export class BuildingLayerManager {
     // 遠景は近景の表示が始まってから読む。
     // 同時に読むと開いた直後のリクエストとメモリ確保が集中し、
     // 端末によってはタブごと落ちる。近くから順に見えてくる方が体感も良い。
-    if (city.far && this.quality.useFarTileset && needsFarTileset(city)) {
+    if (this.wantsFarTileset(city)) {
       void this.loadFarTileset(city);
     }
 
     return this.loaded;
+  }
+
+  /**
+   * 遠景 LOD1 を重ねるか。
+   *
+   * 箱型を選んでいるときは近景そのものが LOD1 なので、遠景を重ねると
+   * まったく同じ箱が二重に描かれ、深度が競合してちらつく。
+   */
+  private wantsFarTileset(city: City): boolean {
+    return Boolean(
+      city.far &&
+        this.quality.useFarTileset &&
+        needsFarTileset(city) &&
+        needsFarLayer(this.modelMode),
+    );
+  }
+
+  /**
+   * いま出ているモデルに合った配色を当てる。
+   *
+   * 実際に配信されたものを見て決める。要求した見え方とは限らない
+   * （テクスチャ無し版が未整備の区ではテクスチャ付きが返る）。
+   */
+  private applyModelStyle(tileset: Cesium.Cesium3DTileset): void {
+    if (!needsUsageColouring(servedModel(tileset, this.modelMode))) {
+      // すでに当たっているスタイルは外す（選び直しで戻れなくなる）
+      tileset.style = undefined;
+      return;
+    }
+    this.applyStyle(tileset, untexturedBuildingStyle);
   }
 
   /** 遠景 LOD1 を後追いで読み込む（失敗しても近景だけで成立する） */
@@ -315,7 +387,7 @@ export class BuildingLayerManager {
 
       const bbox = this.clampToCity(city, bboxAround(city.center, FAR_RADIUS_M));
       const far = await Cesium.Cesium3DTileset.fromUrl(
-        tilesetUrl(city, 'far', bbox),
+        tilesetUrl(city, 'far', bbox, this.modelMode),
         this.tilesetOptions(true),
       );
       // 読み込み中に都市が切り替わっていたら捨てる
@@ -460,7 +532,7 @@ export class BuildingLayerManager {
     this.refreshing = true;
     try {
       const tileset = await Cesium.Cesium3DTileset.fromUrl(
-        tilesetUrl(city, 'near', next),
+        tilesetUrl(city, 'near', next, this.modelMode),
         this.tilesetOptions(false),
       );
       if (!this.loaded || this.loaded.city.id !== city.id) {
@@ -471,9 +543,7 @@ export class BuildingLayerManager {
       tileset.shadows = this.quality.shadows
         ? Cesium.ShadowMode.ENABLED
         : Cesium.ShadowMode.DISABLED;
-      if (city.texturedBuildings === false) {
-        this.applyStyle(tileset, untexturedBuildingStyle);
-      }
+      this.applyModelStyle(tileset);
       this.applyRealisticLighting(tileset);
       const scene = liveScene(this.viewer);
       if (!scene) {
@@ -560,7 +630,7 @@ export class BuildingLayerManager {
 
     try {
       const tileset = await Cesium.Cesium3DTileset.fromUrl(
-        tilesetUrl(city, id, bbox),
+        tilesetUrl(city, id, bbox, this.modelMode),
         this.tilesetOptions(false),
       );
       if (!this.loaded || this.loaded.city.id !== city.id) {
@@ -594,6 +664,95 @@ export class BuildingLayerManager {
 
   isLayerEnabled(id: OptionalLayerId): boolean {
     return this.optionalLayers.has(id);
+  }
+
+  /** いま選ばれている建物モデルの見え方 */
+  get buildingModel(): BuildingModelMode {
+    return this.modelMode;
+  }
+
+  /**
+   * 建物モデルの見え方を切り替える。
+   *
+   * 配信されているデータセットそのものが変わるので、近景を読み直す。
+   * 新しいほうが出そろってから差し替えるので、街から建物が消える瞬間はない
+   * （`refreshForCamera` と同じ待ち合わせを使う）。
+   *
+   * @returns 実際に切り替わったか。選べない見え方や、読み直しに失敗したときは false
+   */
+  async setBuildingModel(mode: BuildingModelMode): Promise<boolean> {
+    if (!this.loaded || this.refreshing) return false;
+    const city = this.loaded.city;
+    const wanted = resolveBuildingMode(city, mode);
+    if (wanted === this.modelMode) return false;
+
+    const bbox = this.activeBBox ?? this.clampToCity(city, city.bbox);
+    const previousMode = this.modelMode;
+    this.modelMode = wanted;
+
+    this.refreshing = true;
+    try {
+      const tileset = await Cesium.Cesium3DTileset.fromUrl(
+        tilesetUrl(city, 'near', bbox, wanted),
+        this.tilesetOptions(false),
+      );
+      if (!this.loaded || this.loaded.city.id !== city.id) {
+        tileset.destroy();
+        return false;
+      }
+      tileset.shadows = this.quality.shadows
+        ? Cesium.ShadowMode.ENABLED
+        : Cesium.ShadowMode.DISABLED;
+      this.applyModelStyle(tileset);
+      this.applyRealisticLighting(tileset);
+      const scene = liveScene(this.viewer);
+      if (!scene) {
+        tileset.destroy();
+        return false;
+      }
+      scene.primitives.add(tileset);
+
+      const previous = this.loaded.near;
+      this.loaded = { ...this.loaded, near: tileset };
+      this.restoreAll();
+      this.watchLoadProgress(tileset);
+
+      // 新しいモデルが出そろうまで古いほうを残す。
+      // 先に消すと、読み込みが終わるまでの数秒間だけ街が空になる
+      await this.waitForFirstTiles(tileset);
+      const after = liveScene(this.viewer);
+      if (!after) return false;
+      if (this.loaded?.near !== tileset) {
+        after.primitives.remove(tileset);
+        return false;
+      }
+      after.primitives.remove(previous);
+      return true;
+    } catch {
+      // 読み直せなかったら、選択も元に戻す（見た目と設定の食い違いを残さない）
+      this.modelMode = previousMode;
+      return false;
+    } finally {
+      this.refreshing = false;
+      this.syncFarTilesetToModel(city);
+    }
+  }
+
+  /**
+   * 見え方の切り替えに合わせて遠景を出し入れする。
+   *
+   * 箱型では近景が LOD1 なので遠景は要らない（同じ箱の二重描画になる）。
+   * 箱型から戻したときは、遠景が欠けたままにならないよう読み直す。
+   */
+  private syncFarTilesetToModel(city: City): void {
+    if (!this.loaded) return;
+    if (!needsFarLayer(this.modelMode)) {
+      this.dropFarTileset();
+      return;
+    }
+    if (!this.loaded.far && this.wantsFarTileset(city)) {
+      void this.loadFarTileset(city);
+    }
   }
 
   /** 近景タイルセットの精細度だけを差し替える（カメラ高度に応じた制御用） */
@@ -643,9 +802,10 @@ export class BuildingLayerManager {
    * 消えたように見え続けてしまう。
    */
   async restoreFarTileset(): Promise<void> {
-    if (!this.loaded || this.loaded.far || !this.quality.useFarTileset) return;
+    if (!this.loaded || this.loaded.far) return;
     const city = this.loaded.city;
-    if (!city.far) return;
+    // 箱型では近景そのものが LOD1 なので、遠景を戻すと二重描画になる
+    if (!this.wantsFarTileset(city)) return;
     await this.loadFarTileset(city);
   }
 

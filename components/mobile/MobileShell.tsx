@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  BuildingModelMode,
   City,
   DataSource,
   District,
@@ -11,7 +12,7 @@ import type {
   SearchResult,
   TravelMode,
 } from '@ijm/shared';
-import { CITIES } from '@ijm/shared';
+import { BUILDING_MODEL_MODES, CITIES, availableBuildingModes } from '@ijm/shared';
 import { formatDistance, formatDuration } from '@ijm/navigation';
 import { Icon } from '@ijm/ui';
 import { searchPlaces } from '@/lib/api';
@@ -47,6 +48,8 @@ export interface MobileShellProps {
   qualityLabel: string;
   qualityChoice: string;
   optionalLayers: string[];
+  buildingModel: BuildingModelMode;
+  buildingModelBusy: boolean;
   poiCategories: string[];
   furnitureEnabled: boolean;
   structuresEnabled: boolean;
@@ -73,6 +76,7 @@ export interface MobileShellProps {
   onImageryChange: (id: string) => void;
   onQualityChange: (choice: string) => void;
   onToggleLayer: (id: string) => void;
+  onBuildingModelChange: (mode: BuildingModelMode) => void;
   onTogglePoi: (category: string) => void;
   onToggleFurniture: () => void;
   onToggleStructures: () => void;
@@ -453,6 +457,28 @@ export default function MobileShell(props: MobileShellProps) {
                   {props.roadsLoading ? '道路を読み込み中…' : '車道・信号・線路'}
                 </Chip>
               </ChipRow>
+            </SheetSection>
+
+            <SheetSection title="建物モデル">
+              <ChipRow>
+                {BUILDING_MODEL_MODES.filter((m) =>
+                  availableBuildingModes(props.city).includes(m.id),
+                ).map((m) => (
+                  <Chip
+                    key={m.id}
+                    active={props.buildingModel === m.id}
+                    onClick={() => props.onBuildingModelChange(m.id)}
+                  >
+                    {m.label}
+                  </Chip>
+                ))}
+              </ChipRow>
+              <p className="px-1 pt-1.5 text-[11px] leading-relaxed text-mist-500">
+                {props.buildingModelBusy
+                  ? '建物を読み直しています…'
+                  : (BUILDING_MODEL_MODES.find((m) => m.id === props.buildingModel)?.description ??
+                    '')}
+              </p>
             </SheetSection>
 
             <SheetSection title="PLATEAU の追加レイヤ">

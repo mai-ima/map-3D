@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import type { City, District, IconName } from '@ijm/shared';
-import { CITIES } from '@ijm/shared';
+import type { BuildingModelMode, City, District, IconName } from '@ijm/shared';
+import { BUILDING_MODEL_MODES, CITIES, availableBuildingModes } from '@ijm/shared';
 import { Icon } from '@ijm/ui';
 
 export interface EnvironmentBarProps {
@@ -35,6 +35,10 @@ export interface EnvironmentBarProps {
   /** PLATEAU の追加レイヤ（LOD3 詳細・橋梁・都市設備・植生） */
   optionalLayers: string[];
   onToggleLayer: (id: string) => void;
+  /** 建物モデルの見え方（実写テクスチャ / 用途で塗り分け / 箱型） */
+  buildingModel: BuildingModelMode;
+  buildingModelBusy: boolean;
+  onBuildingModelChange: (mode: BuildingModelMode) => void;
 }
 
 /**
@@ -236,6 +240,28 @@ export default function EnvironmentBar(props: EnvironmentBarProps) {
             </Chip>
             <p className="mt-1.5 text-[11px] leading-relaxed text-mist-500">
               PLATEAU に橋梁モデルが無い地域でも、OSM の橋・高架から桁と橋脚を組み立てて表示します。
+            </p>
+          </Section>
+
+          <Section title="建物モデル">
+            <div className="flex flex-wrap gap-1.5">
+              {BUILDING_MODEL_MODES.filter((m) =>
+                availableBuildingModes(props.city).includes(m.id),
+              ).map((m) => (
+                <Chip
+                  key={m.id}
+                  active={props.buildingModel === m.id}
+                  onClick={() => props.onBuildingModelChange(m.id)}
+                >
+                  {m.label}
+                </Chip>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-mist-500">
+              {props.buildingModelBusy
+                ? '建物を読み直しています…'
+                : (BUILDING_MODEL_MODES.find((m) => m.id === props.buildingModel)?.description ??
+                  '')}
             </p>
           </Section>
 

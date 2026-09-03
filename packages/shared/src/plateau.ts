@@ -131,7 +131,10 @@ export function lodFallbackChain(spec: PlateauTilesetSpec, minLevel = 1): Platea
 
   for (let l = level - 1; l >= floor; l -= 1) {
     const lod = spec.lod.startsWith('max') ? (`maxlod${l}` as PlateauLod) : exact[l - 1];
-    chain.push({ ...spec, lod });
+    // LOD1 はもともとテクスチャを持たないので、notexture 版は配信されていない
+    // （`13-bldg-maxlod1-notexture-latest` は存在しない）。付けたまま落とすと
+    // 必ず取得に失敗し、無駄な往復が 1 回増える
+    chain.push(l === 1 ? { ...spec, lod, notexture: undefined } : { ...spec, lod });
   }
   return chain;
 }

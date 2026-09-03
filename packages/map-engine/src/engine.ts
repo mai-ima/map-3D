@@ -8,6 +8,7 @@
 import * as Cesium from 'cesium';
 import type {
   BBox,
+  BuildingModelMode,
   City,
   District,
   ElevatedStructure,
@@ -555,6 +556,24 @@ export class MapEngine {
 
   isOptionalLayerEnabled(id: OptionalLayerId): boolean {
     return this.buildings.isLayerEnabled(id);
+  }
+
+  /** いま出ている建物モデルの見え方 */
+  get buildingModel(): BuildingModelMode {
+    return this.buildings.buildingModel;
+  }
+
+  /**
+   * 建物モデルの見え方を切り替える（実写テクスチャ / 用途で塗り分け / 箱型）。
+   *
+   * 配信されているデータセットそのものが変わるので、近景を読み直す。
+   * @returns 実際に切り替わったか
+   */
+  async setBuildingModel(mode: BuildingModelMode): Promise<boolean> {
+    if (this.destroyed) return false;
+    const changed = await this.buildings.setBuildingModel(mode);
+    this.requestRender();
+    return changed;
   }
 
   /**

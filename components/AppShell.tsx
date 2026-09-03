@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BuildingInfo,
+  BuildingModelMode,
   City,
   DataSource,
   District,
@@ -12,7 +13,12 @@ import type {
   Route,
   TravelMode,
 } from '@ijm/shared';
-import { BASE_ATTRIBUTION_IDS, getDefaultCity, resolveAttributions } from '@ijm/shared';
+import {
+  BASE_ATTRIBUTION_IDS,
+  getDefaultCity,
+  resolveAttributions,
+  resolveBuildingMode,
+} from '@ijm/shared';
 import type { MapEngine, OptionalLayerId, QualityTier } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
@@ -94,6 +100,15 @@ export default function AppShell() {
   const [qualityLabel, setQualityLabel] = useState('自動判定中');
   const [qualityChoice, setQualityChoice] = useState('auto');
   const [optionalLayers, setOptionalLayers] = useState<string[]>([]);
+  /**
+   * 建物モデルの見え方。
+   *
+   * 都市ごとの決め打ちではなく利用者の選択にする。
+   * 東京は実写テクスチャ・用途で塗り分け・箱型の 3 通りから選べる。
+   */
+  const [buildingModel, setBuildingModel] = useState<BuildingModelMode>('textured');
+  /** 切り替え中は建物を読み直している（連打で二重に読ませない） */
+  const [buildingModelBusy, setBuildingModelBusy] = useState(false);
   // 高架・橋（OSM 由来の立体構造物）
   const [structuresEnabled, setStructuresEnabled] = useState(false);
   const [structuresLoading, setStructuresLoading] = useState(false);
@@ -110,6 +125,8 @@ export default function AppShell() {
   const poiLoadingRef = useRef(false);
   const furnitureEnabledRef = useRef(false);
   const furnitureLoadingRef = useRef(false);
+  /** 建物モデルを読み直している最中か。連打で二重に読ませないための門 */
+  const buildingModelBusyRef = useRef(false);
   /**
    * 読み込んだ道路。走行中の制限速度を引くために持っておく。
    * tick は毎秒走るので、再生成されない ref に置く。
@@ -234,6 +251,9 @@ export default function AppShell() {
       engineRef.current = engine;
       setEngineReady(true);
       setQualityLabel(engine.qualitySettings.label);
+      // 起動時の都市で実際に選ばれた見え方に合わせる
+      // （その都市に無い見え方は engine 側で寄せ直されている）
+      setBuildingModel(engine.buildingModel);
       engine.setTimeOfDay(12);
       // 起動時の都市が高架モデルを持たない場合も、街の骨格を見せる
       if (city.texturedBuildings === false) {
@@ -331,6 +351,30 @@ export default function AppShell() {
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
+
+  /**
+   * 建物モデルの見え方を切り替える。
+   *
+   * 配信されているデータセットそのものが変わるので、近景を読み直す。
+   * 新しいほうが出そろってから差し替わるため、街から建物が消える瞬間はない。
+   */
+  const changeBuildingModel = useCallback(async (mode: BuildingModelMode) => {
+    const engine = engineRef.current;
+    if (!engine || buildingModelBusyRef.current) return;
+    if (engine.buildingModel === mode) return;
+
+    buildingModelBusyRef.current = true;
+    setBuildingModelBusy(true);
+    try {
+      await engine.setBuildingModel(mode);
+    } finally {
+      // 実際に何が出ているかはエンジン側が持っている。
+      // 選べない見え方や読み直しの失敗があっても、表示と設定を食い違わせない
+      setBuildingModel(engine.buildingModel);
+      buildingModelBusyRef.current = false;
+      setBuildingModelBusy(false);
+    }
+  }, []);
 
   const handleQualityChange = useCallback((choice: string) => {
     const engine = engineRef.current;
@@ -447,11 +491,16 @@ export default function AppShell() {
         duration: 2.5,
       });
 
+      // 都市によって配信されているデータセットが違う（浜松はテクスチャ無しのみ）。
+      // 選べない見え方が残らないよう、先に寄せ直しておく
+      setBuildingModel((prev) => resolveBuildingMode(next, prev));
+
       try {
         await engine.loadCity(next);
       } catch (error) {
         notify(`${next.name} の 3D 都市データを読み込めませんでした: ${(error as Error).message}`);
       }
+      setBuildingModel(engine.buildingModel);
 
       // 高架は建物とは別のデータ源（OSM）なので、建物が読めなくても出せる。
       // PLATEAU に橋梁モデルが無い都市では、これが無いと街の骨格が抜け落ちる。
@@ -1010,6 +1059,9 @@ export default function AppShell() {
               onQualityChange={handleQualityChange}
               optionalLayers={optionalLayers}
               onToggleLayer={handleToggleLayer}
+              buildingModel={buildingModel}
+              buildingModelBusy={buildingModelBusy}
+              onBuildingModelChange={changeBuildingModel}
               followRealTime={followRealTime}
               poiCategories={poiCategories}
               furnitureEnabled={furnitureEnabled}
@@ -1049,6 +1101,8 @@ export default function AppShell() {
           qualityLabel={qualityLabel}
           qualityChoice={qualityChoice}
           optionalLayers={optionalLayers}
+          buildingModel={buildingModel}
+          buildingModelBusy={buildingModelBusy}
           poiCategories={poiCategories}
           furnitureEnabled={furnitureEnabled}
           followRealTime={followRealTime}
@@ -1070,6 +1124,7 @@ export default function AppShell() {
           onImageryChange={changeImagery}
           onQualityChange={handleQualityChange}
           onToggleLayer={handleToggleLayer}
+          onBuildingModelChange={changeBuildingModel}
           onTogglePoi={togglePoi}
           onToggleFurniture={toggleFurniture}
           structuresEnabled={structuresEnabled}

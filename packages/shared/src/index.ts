@@ -5,6 +5,7 @@ export * from './coords';
 export * from './polyline';
 export * from './plateau';
 export * from './cities';
+export * from './building-model';
 export * from './attribution';
 export * from './icons';
 export * from './scene';

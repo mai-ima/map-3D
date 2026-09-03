@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { BBox } from '@ijm/shared';
 import {
+  applyBuildingModel,
   bboxIntersects,
   parseBBoxParam,
   getCity,
@@ -8,6 +9,9 @@ import {
   lodFallbackChain,
   plateauDatasetId,
   plateauTilesetUrl,
+  resolveBuildingMode,
+  LOD_LEVEL,
+  type BuildingModelMode,
   type PlateauTilesetSpec,
 } from '@ijm/shared';
 
@@ -203,6 +207,18 @@ function resolveSpec(
   }
 }
 
+/**
+ * 実際に配信したデータから、建物モデルの種別を読み取る。
+ *
+ * URL 直指定の都市（浜松・姫路）は URL が実体そのものを指していて
+ * データ指定から読み取れないので、都市の設定から決まる値をそのまま返す。
+ */
+function servedModel(spec: PlateauTilesetSpec, requested: BuildingModelMode): BuildingModelMode {
+  if (spec.url) return requested;
+  if (LOD_LEVEL[spec.lod] <= 1) return 'block';
+  return spec.notexture ? 'untextured' : 'textured';
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const cityId = url.searchParams.get('city');
@@ -214,25 +230,60 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: '都市が見つかりません' }, { status: 404 });
   }
 
-  const spec = resolveSpec(city, layer);
-  if (!spec) {
+  const base = resolveSpec(city, layer);
+  if (!base) {
     return NextResponse.json(
       { error: `この都市には ${layer} レイヤがありません` },
       { status: 404 },
     );
   }
 
+  /**
+   * 建物モデルの見え方（実写テクスチャ / 用途で塗り分け / 箱型）。
+   *
+   * 効くのは建物のベース（near）だけ。
+   * 遠景はもともと LOD1 の箱で、詳細レイヤ（LOD3・LOD4）は
+   * テクスチャ無し版が配信されていない。
+   */
+  const model = resolveBuildingMode(city, url.searchParams.get('model'));
+  /**
+   * 試す順序。
+   *
+   * テクスチャ無し版の整備範囲はテクスチャ付きより狭い
+   * （2026-09 の東京都で 45 市区町村 / 62 市区町村）。
+   * 未整備の区で「データがありません」と返してしまうと、
+   * 選び方ひとつで街が丸ごと消える。整備されていなければ元の指定へ戻す。
+   */
+  const specs: PlateauTilesetSpec[] =
+    layer === 'near' ? [applyBuildingModel(base, model), base] : [base];
+
   // 明示指定が無ければ都市の bbox を使う
   // 読めない bbox は「絞り込まない」として都市全体を使う
   const bbox = parseBBoxParam(url.searchParams.get('bbox')) ?? city.bbox;
 
   try {
-    // 詳細レイヤはベース（LOD2）に重ねるものなので、LOD3 未満には落とさない。
-    // 落とすとベースと同じデータを二重に読み込むことになる。
-    const minLevel = layer === 'detail' ? 3 : 1;
+    /**
+     * どこまで LOD を落としてよいか。
+     *
+     * 詳細レイヤはベース（LOD2）に重ねるものなので、LOD3 未満には落とさない。
+     * 落とすとベースと同じデータを二重に読み込むことになる。
+     *
+     * 建物のベース（near）は **一切落とさない**。
+     * `maxlodN` は「利用可能な最大 LOD（N 以下）」を意味するので、
+     * LOD2 が未整備の地域でも配信側が LOD1 を入れてくれる。
+     * ここで落とすと、テクスチャ無し版が未整備の区で
+     * 「用途で塗り分け」を選んだだけで箱型（LOD1）になってしまう
+     * ＝選んでいないものが出る。実際にそうなっていた。
+     */
+    const minLevel =
+      layer === 'detail' ? 3 : layer === 'near' ? LOD_LEVEL[specs[0].lod] : 1;
     // 遠景は 1 枚が軽い LOD1 なので、広い範囲を担わせてよい
     const childLimit = layer === 'far' ? MAX_CHILDREN.far : MAX_CHILDREN.near;
-    const resolved = await resolveTileset(spec, bbox, minLevel, childLimit);
+    let resolved: Awaited<ReturnType<typeof resolveTileset>> = null;
+    for (const candidate of specs) {
+      resolved = await resolveTileset(candidate, bbox, minLevel, childLimit);
+      if (resolved) break;
+    }
     if (!resolved) {
       // この範囲に該当データが無い。呼び出し側は「重ねない」判断ができればよい
       return NextResponse.json(
@@ -241,8 +292,26 @@ export async function GET(request: Request) {
       );
     }
 
+    /**
+     * 実際に配信したモデルの種別。
+     *
+     * 要求どおりとは限らない（テクスチャ無し版が未整備で戻したときなど）。
+     * 呼び出し側はこれを見て塗り分けの有無を決める。
+     * 要求した値で塗ってしまうと、テクスチャの上に用途色が乗って
+     * 実写の色が変わってしまう（＝事実と違う色になる）。
+     *
+     * tileset.json の `extras` に入れる。3D Tiles の仕様で決まっている
+     * 拡張用の入れ物で、Cesium は `tileset.extras` として読み出せる。
+     * レスポンスヘッダでは Cesium 側から読めない。
+     */
+    const served = servedModel(resolved.spec, model);
+
     return NextResponse.json(
-      { ...resolved.tileset, root: resolved.root },
+      {
+        ...resolved.tileset,
+        root: resolved.root,
+        extras: { ...(resolved.tileset.extras as object | undefined), ijmBuildingModel: served },
+      },
       {
         headers: {
           'Cache-Control': 'public, max-age=600, s-maxage=86400, stale-while-revalidate=86400',
@@ -252,6 +321,7 @@ export async function GET(request: Request) {
             ? resolved.spec.url.split('/').slice(-2, -1)[0]
             : plateauDatasetId(resolved.spec),
           'X-Tileset-Lod': resolved.spec.lod,
+          'X-Tileset-Model': served,
         },
       },
     );
