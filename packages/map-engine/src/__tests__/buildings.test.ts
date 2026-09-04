@@ -8,8 +8,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { getCity } from '@ijm/shared';
-import { needsFarTileset, servedModel, tilesetUrl } from '../buildings';
+import { bboxAround, getCity } from '@ijm/shared';
+import { clampBBox, needsFarTileset, nextNearBBox, servedModel, tilesetUrl } from '../buildings';
 
 test('近景が市域全体をカバーする都市では遠景を読まない', () => {
   // 浜松の実測（2026-08）: near lod2 と far lod1 が
@@ -93,4 +93,75 @@ test('実際に配信されたものを見て塗り分けを決める', () => {
   // extras が無い・壊れているときは要求した値で通す（表示は止めない）
   assert.equal(servedModel(withExtras(undefined), 'untextured'), 'untextured');
   assert.equal(servedModel(withExtras('lod9'), 'block'), 'block');
+});
+
+/**
+ * 近景タイルセットの取り直しの判断。
+ *
+ * 「自分が近づくと（建物が）消えたりする」という指摘への対応。
+ * 原因は取り直しの判断そのものにあり、見た目では追えなかったので
+ * ここで数字として測る。
+ */
+
+test('まだ縁まで余裕があるうちは取り直さない', () => {
+  const tokyo = getCity('tokyo')!;
+  // 東京 bbox の内側で、活動範囲を半径 3km 相当に取る
+  const centre = { lat: 35.68, lng: 139.76 };
+  const active = bboxAround(centre, 3000);
+  // 同じ場所、そして 500m 動いた程度では取り直す理由がない
+  // （余裕は 3000 − 1000 = 2000m ある）
+  assert.equal(nextNearBBox(active, centre, 3000, tokyo.bbox), null);
+  assert.equal(nextNearBBox(active, { lat: 35.6845, lng: 139.76 }, 3000, tokyo.bbox), null);
+});
+
+test('読み込み済み範囲の縁に近づいたら取り直す', () => {
+  const tokyo = getCity('tokyo')!;
+  const centre = { lat: 35.68, lng: 139.76 };
+  const active = bboxAround(centre, 3000);
+  // 東へ 2.5km。カメラ ± 1km が読み込み済みの範囲からはみ出す
+  const moved = { lat: 35.68, lng: 139.76 + 2500 / (111_320 * Math.cos((35.68 * Math.PI) / 180)) };
+  const next = nextNearBBox(active, moved, 3000, tokyo.bbox);
+  assert.ok(next, '縁に近づいたら取り直す');
+  assert.ok(next[2] > active[2], '新しい範囲は移動した向きへ広がっている');
+});
+
+test('市域に収めた結果が同じ範囲になるなら取り直さない', () => {
+  /**
+   * これが以前は抜けていて、市域の縁で建物が消えては現れるを繰り返していた。
+   *
+   * 浜松市の bbox は東西 7.3km。高品質時の近景半径 4km（東西 8km）は
+   * どこにカメラを置いても市域からはみ出すので、要求する範囲は常に
+   * 市域そのものへ収められる。一方「カメラ ± 1km が読み込み済み範囲に
+   * 収まっているか」は、縁から 1km 以内では永久に満たされない。
+   *
+   * つまり 0.5 秒ごとに「同じ範囲のタイルセットを作り直す」が走っていた。
+   * 作り直すたびに古いタイルは解放されるので、そのあいだ建物が消える。
+   */
+  const hamamatsu = getCity('hamamatsu')!;
+  // 市域の西の縁から 500m のところにカメラを置き、そこで読み込んだ状態にする
+  const nearEdge = {
+    lat: hamamatsu.center.lat,
+    lng: hamamatsu.bbox[0] + 500 / (111_320 * Math.cos((hamamatsu.center.lat * Math.PI) / 180)),
+  };
+  const active = clampBBox(bboxAround(nearEdge, 4000), hamamatsu.bbox);
+
+  // 前提 1: 読み込んだ範囲は西側が市域に収められている
+  assert.equal(active[0], hamamatsu.bbox[0], '前提: 西側は市域で切られている');
+  // 前提 2: カメラは動いていないのに「カメラ ± 1km」は範囲からはみ出す。
+  // つまり「まだ余裕がある」という判定は、この場所では永久に成立しない
+  const inner = bboxAround(nearEdge, 1000);
+  assert.ok(inner[0] < active[0], '前提: 縁に寄っているのではみ出す');
+
+  // それでも、取り直したところで同じ範囲にしかならない。
+  // ここで取り直すと 0.5 秒ごとにタイルセットを作り直し続けることになる
+  assert.equal(nextNearBBox(active, nearEdge, 4000, hamamatsu.bbox), null);
+});
+
+test('都市の外へ出たら取り直さない', () => {
+  // 都市の切り替えは loadCity の担当。ここで読み直すと、
+  // 空のタイルセットへ入れ替わって街が消える
+  const hamamatsu = getCity('hamamatsu')!;
+  const active = clampBBox(bboxAround(hamamatsu.center, 3000), hamamatsu.bbox);
+  const faraway = { lat: 35.68, lng: 139.76 }; // 東京
+  assert.equal(nextNearBBox(active, faraway, 3000, hamamatsu.bbox), null);
 });

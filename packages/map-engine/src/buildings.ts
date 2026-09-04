@@ -161,6 +161,72 @@ const REFRESH_MARGIN_M = 1000;
  */
 const TILE_SWAP_TIMEOUT_MS = 8000;
 
+/** 範囲 `bbox` を、外枠 `outer` からはみ出さないように収める */
+export function clampBBox(bbox: BBox, outer: BBox): BBox {
+  return [
+    Math.max(bbox[0], outer[0]),
+    Math.max(bbox[1], outer[1]),
+    Math.min(bbox[2], outer[2]),
+    Math.min(bbox[3], outer[3]),
+  ];
+}
+
+/** 2 つの範囲が（浮動小数の誤差を除いて）同じか */
+function sameBBox(a: BBox, b: BBox): boolean {
+  return a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+}
+
+/**
+ * 近景タイルセットを取り直すべきか。取り直すなら新しい範囲、要らなければ null。
+ *
+ * **描画エンジンに触れない純粋な関数**にしてあるのは、ここが繰り返し
+ * 欠陥の出どころになっていて、実際に測って確かめる必要があるため。
+ *
+ * 判断は 3 段階:
+ *
+ *   1. カメラの周り `REFRESH_MARGIN_M` が、いま読んでいる範囲に収まっているなら
+ *      取り直さない。まだ縁まで余裕がある。
+ *   2. 新しい範囲が市域とまったく重ならないなら取り直さない
+ *      （都市をまたいだ移動は `loadCity` の担当）。
+ *   3. **新しい範囲がいまの範囲と同じなら取り直さない。**
+ *
+ * 3 が抜けていたために、市域の縁で建物が消えたり現れたりを繰り返していた。
+ *
+ * 仕組みはこう。要求する範囲は市域に収めている（`clampBBox`）。
+ * 一方 1 の判定は、収める前の「カメラ ± 1km」が、いま読んでいる範囲に
+ * 入っているかを見る。市域の縁から 1km 以内にカメラがあると、
+ * 収めたぶんだけ範囲が足りず、この条件は**二度と満たされない**。
+ *
+ * その結果、0.5 秒ごとの監視から呼ばれるたびに
+ * 「同じ URL のタイルセットを作り直し → 出そろうのを待つ → 古いほうを捨てる」
+ * が延々と走る。捨てられた側が持っていたタイルは丸ごと解放されるので、
+ * 新しいほうが読み終わるまで建物が消える。これが繰り返し起きていた。
+ *
+ * 浜松市の bbox は東西 7.3km しかなく、高品質時の近景半径 4km（東西 8km）は
+ * 必ず収められる。市域のどこにいても起こりうる状態だった。
+ */
+export function nextNearBBox(
+  active: BBox,
+  center: LatLng,
+  nearRadiusM: number,
+  cityBBox: BBox,
+): BBox | null {
+  const inner = bboxAround(center, REFRESH_MARGIN_M);
+  const stillInside =
+    inner[0] >= active[0] &&
+    inner[1] >= active[1] &&
+    inner[2] <= active[2] &&
+    inner[3] <= active[3];
+  if (stillInside) return null;
+
+  const next = clampBBox(bboxAround(center, nearRadiusM), cityBBox);
+  // 都市の外に出た場合は読み直さない（都市の切り替えは loadCity が担当する）
+  if (!bboxIntersects(next, cityBBox)) return null;
+  // 読み直しても同じ範囲になるなら、読み直す意味がない
+  if (sameBBox(active, next)) return null;
+  return next;
+}
+
 export class BuildingLayerManager {
   private loaded: LoadedCityTilesets | null = null;
   /** 近景タイルセットが現在カバーしている範囲 */
@@ -465,14 +531,7 @@ export class BuildingLayerManager {
 
   /** 範囲が都市の bbox をはみ出さないように収める */
   private clampToCity(city: City, bbox: BBox): BBox {
-    const [cMinLng, cMinLat, cMaxLng, cMaxLat] = city.bbox;
-    const [minLng, minLat, maxLng, maxLat] = bbox;
-    return [
-      Math.max(minLng, cMinLng),
-      Math.max(minLat, cMinLat),
-      Math.min(maxLng, cMaxLng),
-      Math.min(maxLat, cMaxLat),
-    ];
+    return clampBBox(bbox, city.bbox);
   }
 
   /**
@@ -484,16 +543,10 @@ export class BuildingLayerManager {
   async refreshForCamera(center: LatLng): Promise<boolean> {
     if (!this.loaded || !this.activeBBox || this.refreshing) return false;
 
-    const inner = bboxAround(center, REFRESH_MARGIN_M);
-    const [aMinLng, aMinLat, aMaxLng, aMaxLat] = this.activeBBox;
-    const stillInside =
-      inner[0] >= aMinLng && inner[1] >= aMinLat && inner[2] <= aMaxLng && inner[3] <= aMaxLat;
-    if (stillInside) return false;
-
+    const active = this.activeBBox;
     const city = this.loaded.city;
-    const next = this.clampToCity(city, bboxAround(center, this.quality.nearRadiusM));
-    // 都市の外に出た場合は読み直さない（都市の切り替えは loadCity が担当する）
-    if (!bboxIntersects(next, city.bbox)) return false;
+    const next = nextNearBBox(active, center, this.quality.nearRadiusM, city.bbox);
+    if (!next) return false;
 
     /**
      * いま出ているものが、移動先でも役に立つか。
@@ -505,7 +558,7 @@ export class BuildingLayerManager {
      * 移動先を 1 つも覆っていない。それを抱えて最大 8 秒待つと、
      * その間ずっと建物が出てこない。役に立たないなら待たずに入れ替える。
      */
-    const stillUseful = bboxIntersects(this.activeBBox, next);
+    const stillUseful = bboxIntersects(active, next);
 
     this.refreshing = true;
     try {

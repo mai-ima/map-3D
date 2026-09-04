@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as Cesium from 'cesium';
 import type { ElevatedStructure } from '@ijm/shared';
-import { ElevatedStructureLayer } from '../elevated-structures';
+import { ElevatedStructureLayer, elevatedDetailForHeight } from '../elevated-structures';
 
 const BASE = { lat: 34.7047, lng: 137.7342 };
 const M_PER_DEG_LAT = 111_320;
@@ -523,4 +523,29 @@ test('高架の軌道は床版の上に載る（頂点で測る）', async () =>
   for (const s of [...slabs, ...rails]) {
     assert.ok(Math.abs(s.offset) < 11 / 2, `軌道が床版の外に出ている: ${s.offset.toFixed(2)}m`);
   }
+});
+
+/**
+ * カメラ高度で変わる高架の細部。
+ *
+ * 「移動してもすぐ表示されない」という指摘の一部がここにあった。
+ * 高架の上の軌道（スラブとレール）は上空からは描かないようにしているが、
+ * その判断が描画の鍵に入っていなかったため、範囲が同じまま降りてきても
+ * 「もう同じものが出ている」と判断され、軌道が出てこなかった。
+ */
+test('上空からは高架の上に軌道を敷かない', () => {
+  // 軌道スラブの幅 2.34m は、視野角 60 度・幅 400 画素の画面では
+  // 1,500m 上空からおよそ 0.5 画素になる。そこから先は描いても見えない
+  assert.equal(elevatedDetailForHeight(0).tracks, true, '地上では敷く');
+  assert.equal(elevatedDetailForHeight(1499).tracks, true);
+  assert.equal(elevatedDetailForHeight(1500).tracks, false);
+  assert.equal(elevatedDetailForHeight(5000).tracks, false);
+});
+
+test('高度が読めないときは軌道を敷く', () => {
+  // カメラ姿勢が壊れた直後などに NaN や Infinity で来ることがある。
+  // どちらも「高度が分からない」であって「高い」ではない。
+  // 迷ったら敷くほうへ倒す（近景で軌道が欠けるほうが目立つ）
+  assert.equal(elevatedDetailForHeight(Number.NaN).tracks, true);
+  assert.equal(elevatedDetailForHeight(Number.POSITIVE_INFINITY).tracks, true);
 });

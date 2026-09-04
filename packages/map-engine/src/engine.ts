@@ -46,7 +46,7 @@ import {
   type NavigationTickResult,
 } from '@ijm/navigation';
 import { BuildingLayerManager, type OptionalLayerId } from './buildings';
-import { ElevatedStructureLayer } from './elevated-structures';
+import { ElevatedStructureLayer, elevatedDetailForHeight } from './elevated-structures';
 import { EnvironmentController, type WeatherKind } from './environment';
 import { HealthMonitor, type HealthEvent } from './health-monitor';
 import { RouteLayer } from './route-layer';
@@ -223,6 +223,23 @@ const GROUND_ATMOSPHERE_MIN_HEIGHT_M = 30_000;
  */
 const RAIL_SLEEPER_RADIUS_M = 120;
 
+/**
+ * カメラが「動いた」とみなす割合。
+ *
+ * Cesium の `camera.changed` は、**視点の移動距離をカメラの対地高度で
+ * 割った比**がこの値を超えたときに発火する（Cesium 1.144 の
+ * `Camera` の `_updateCameraChanged` で確認）。
+ * 距離そのものではなく高度に対する比なので、
+ *
+ *   高度 300m（街を歩く視点）… 75m 動くごと
+ *   高度 2,000m（街を見渡す）… 500m 動くごと
+ *
+ * のように、見えている範囲に応じて自然に間隔が変わる。
+ * 既定の 0.5 では高度 600m で 300m 動くまで発火せず、
+ * 道路（500m で取り直し）の判定に間に合わないことがある。
+ */
+const CAMERA_CHANGE_FRACTION = 0.25;
+
 /** その線路がカメラの近くを通っているか（経路上の最短距離で見る） */
 function nearRailToEye(rail: { path: LatLng[] }, eye: LatLng): boolean {
   for (const p of rail.path) {
@@ -252,11 +269,15 @@ export class MapEngine {
   private removeContextListeners: (() => void) | null = null;
   private removeMemoryMonitor: (() => void) | null = null;
   private removeErrorListeners: (() => void)[] = [];
+  /** カメラの移動を拾うリスナー（破棄時に外す） */
+  private removeCameraListeners: (() => void)[] = [];
   readonly health = new HealthMonitor();
   private lastMemoryCheck = 0;
   private lastAdaptiveSse = 0;
   /** 高架を読み込んだときのカメラ位置。ここから離れたら取り直す */
   private structuresCentre: LatLng | null = null;
+  /** 高架を組み立てたときのカメラ高度の帯（軌道を敷いたかどうか） */
+  private structuresDetailKey: string | null = null;
   /** 道路を読み込んだときのカメラ位置。ここから離れたら取り直す */
   private roadsCentre: LatLng | null = null;
   /** 周辺施設・街路樹を最後に取ったときのカメラ直下の座標 */
@@ -625,15 +646,37 @@ export class MapEngine {
     // 組み立ての完了後に取ると、その間に動いたぶんだけ中心がずれ、
     // 「もう範囲の外に出ているのに取り直さない」ということが起きる
     const centre = this.cameraGroundPosition();
-    await this.structures.render(structures, key);
+    // 高架の上に軌道を敷くかはカメラ高度で変わる。鍵に混ぜないと、
+    // 上空から降りてきても「もう同じものが出ている」と判断されて軌道が出ない
+    const detail = this.structureDetailKey();
+    await this.structures.render(structures, `${key}@${detail}`);
     this.structuresCentre = centre;
+    this.structuresDetailKey = detail;
     this.requestRender();
+  }
+
+  /** カメラ高度で変わる高架の細部を、鍵にできる文字列にする */
+  private structureDetailKey(): string {
+    const height = this.viewer.camera.positionCartographic?.height ?? 0;
+    return elevatedDetailForHeight(height).tracks ? 'tracks' : 'plain';
+  }
+
+  /**
+   * 高架の細部を組み直すべきか。
+   *
+   * 範囲は変わっていないので通信は要らない。
+   * 呼び出し側が持っている構造物をそのまま渡し直せばよい。
+   */
+  needsStructureDetailChange(): boolean {
+    if (this.destroyed || this.structuresCentre === null) return false;
+    return this.structureDetailKey() !== this.structuresDetailKey;
   }
 
   clearElevatedStructures(): void {
     if (this.destroyed) return;
     this.structures.clear();
     this.structuresCentre = null;
+    this.structuresDetailKey = null;
     this.requestRender();
   }
 
@@ -658,7 +701,22 @@ export class MapEngine {
     const fullKey =
       `${key}@${detail.laneMarkings ? 'full' : 'plain'}` +
       `+rail${railDetail.sleeperStep}-${railDetail.catenaryStep}`;
-    if (this.roads.hasLoaded(fullKey)) return;
+    if (this.roads.hasLoaded(fullKey)) {
+      /**
+       * すでに同じものが出ている。組み直しは要らないが、
+       * **控えている中心と詳細度は必ず更新する。**
+       *
+       * ここで何もせずに戻ると、`roadsCentre` が古い位置のまま残る。
+       * `needsRoadRefresh` は「控えた中心から 500m 離れたか」で見るので、
+       * 条件が満たされっぱなしになり、カメラが動くたびに
+       * `/api/roads` を叩き直しては同じ鍵に当たって戻る、を繰り返す。
+       * 通信が無駄になるだけでなく、そのぶん高架や施設の取得が後ろへずれる。
+       */
+      this.roadsCentre = this.cameraGroundPosition();
+      this.roadsDetailFull = detail.laneMarkings;
+      this.railDetail = railDetail;
+      return;
+    }
 
     // 交差点を先に割り出す。区画線を交差点の手前で切るのに要る。
     // 切らないと、交差する道の白線どうしが中央で重なって格子状に見える
@@ -1161,6 +1219,38 @@ export class MapEngine {
 
   // ---- カメラ ----------------------------------------------------------
 
+  /**
+   * カメラ操作と、カメラが動いたことを拾う。
+   *
+   * ここは 2 つの別々のことを扱う。混ぜてはいけない。
+   *
+   *   1. **利用者が触った**   … ナビ中なら自動追従を解いて自由視点にする。
+   *      これは入力そのものなので ScreenSpaceEventHandler で取る。
+   *   2. **カメラが動いた**   … 周辺のデータ（道路・高架・施設・街路樹）を
+   *      移動先で取り直す。動かした主体は問わない。
+   *
+   * 以前は 2 を 1 の入力（LEFT_DOWN・WHEEL・PINCH_START）で代用していた。
+   * どれも**操作の始まり**に発火するので、
+   *
+   *   - 指を置いた瞬間に判定 → まだ動いていないので「取り直し不要」
+   *   - 1km ドラッグして指を離す → **何も起きない**
+   *   - 次にもう一度触ったときに、ようやく前回ぶんの取り直しが走る
+   *
+   * となり、「移動してもすぐ表示されない」という形で出ていた。
+   * 検索結果や地区への `flyTo`（利用者は画面に触っていない）に至っては、
+   * 次に画面へ触るまで一度も取り直されなかった。
+   *
+   * Cesium のカメラは移動そのものを知らせる口を持っている:
+   *
+   *   `moveEnd` … 動きが止まってから発火する（`Scene.cameraEventWaitTime` 後）。
+   *               ドラッグの終わり・慣性の終わり・flyTo の着地を拾う。
+   *   `changed` … 動いている最中に、`percentageChanged` を超えるたび発火する。
+   *               長く動かし続けるときに、止まるのを待たずに取り直せる。
+   *
+   * `requestRenderMode` でも動く。`Scene.render` はフレームごとに呼ばれ、
+   * その先頭の `checkForCameraUpdates` が実際に描くかどうかと無関係に
+   * これらを発火させる（Cesium 1.144 の実装で確認済み）。
+   */
   private setupInteractionHandlers(): void {
     const handler = new Cesium.ScreenSpaceEventHandler(this.viewer.scene.canvas);
     const onInteract = (): void => {
@@ -1172,6 +1262,20 @@ export class MapEngine {
     handler.setInputAction(onInteract, Cesium.ScreenSpaceEventType.MIDDLE_DOWN);
     handler.setInputAction(onInteract, Cesium.ScreenSpaceEventType.WHEEL);
     handler.setInputAction(onInteract, Cesium.ScreenSpaceEventType.PINCH_START);
+    this.removeCameraListeners.push(() => {
+      if (!handler.isDestroyed()) handler.destroy();
+    });
+
+    // カメラが動いたこと自体を拾う。
+    // 自由視点への切り替え（利用者が触ったときだけ）はここでは行わない
+    const camera = this.viewer.camera;
+    camera.percentageChanged = CAMERA_CHANGE_FRACTION;
+    const onMoved = (): void => {
+      if (this.destroyed) return;
+      this.options.onCameraInteraction?.();
+    };
+    this.removeCameraListeners.push(camera.moveEnd.addEventListener(onMoved));
+    this.removeCameraListeners.push(camera.changed.addEventListener(onMoved));
   }
 
   /** 地形の標高（読み込み済みタイルからの近似値） */
@@ -1591,6 +1695,8 @@ export class MapEngine {
     this.removeContextListeners = null;
     this.removeMemoryMonitor?.();
     this.removeMemoryMonitor = null;
+    for (const remove of this.removeCameraListeners) remove();
+    this.removeCameraListeners = [];
     for (const remove of this.removeErrorListeners) remove();
     this.removeErrorListeners = [];
     this.structures.clear();

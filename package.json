@@ -27,7 +27,8 @@
     "survey:roads": "tsx scripts/preprocessing/survey-roads.mts",
     "survey:road-timing": "tsx scripts/preprocessing/survey-road-timing.mts",
     "measure:startup": "tsx scripts/measure/startup-requests.mts",
-    "measure:smoke": "tsx scripts/measure/smoke.mts"
+    "measure:smoke": "tsx scripts/measure/smoke.mts",
+    "measure:camera-follow": "tsx scripts/measure/camera-follow.mts"
   },
   "dependencies": {
     "cesium": "1.144.0",

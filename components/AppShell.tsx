@@ -8,6 +8,7 @@ import type {
   City,
   DataSource,
   District,
+  ElevatedStructure,
   LatLng,
   PublicConfig,
   Route,
@@ -134,11 +135,22 @@ export default function AppShell() {
   const [structuresLoading, setStructuresLoading] = useState(false);
   // カメラ操作のコールバックは毎フレーム走るので、再生成されない ref から読む
   const structuresEnabledRef = useRef(false);
+  /**
+   * いま取り寄せ中か。二重に走らせないための門。
+   *
+   * **`useState` を `useEffect` で写すのでは間に合わない。**
+   * 状態の反映は再描画のあとなので、同じフレームでカメラの移動が
+   * 2 回届くと、どちらも「取り寄せ中ではない」と見て両方が走る。
+   * 実測（2026-09-04、実機ブラウザ）で、まったく同じ範囲の
+   * `/api/structures` が 1.3 秒差で 2 本飛んでいた。
+   * ここは ref に直接書いて、その場で閉める。
+   */
   const structuresLoadingRef = useRef(false);
   // 車道・車線・横断歩道・信号・線路（OSM 由来）
   const [roadsEnabled, setRoadsEnabled] = useState(false);
   const [roadsLoading, setRoadsLoading] = useState(false);
   const roadsEnabledRef = useRef(false);
+  /** 道路も同じ。取り寄せ中かは ref に直接書く（上の理由と同じ） */
   const roadsLoadingRef = useRef(false);
   /** いま選ばれている周辺施設のカテゴリ。カメラ追従の判定に使う */
   const poiCategoriesRef = useRef<string[]>([]);
@@ -167,6 +179,13 @@ export default function AppShell() {
     bbox: [number, number, number, number];
     key: string;
   } | null>(null);
+  /**
+   * 最後に読み込んだ高架・橋と、その範囲。
+   *
+   * 上空から降りてきたときに、高架の上へ軌道を敷き直すために持っておく
+   * （範囲は変わっていないので取り直しは要らない）。
+   */
+  const structuresHeldRef = useRef<{ structures: ElevatedStructure[]; key: string } | null>(null);
   /** いま走っている道の制限速度 (km/h)。OSM に入っているときだけ */
   const [speedLimit, setSpeedLimit] = useState<number | null>(null);
   /**
@@ -336,14 +355,8 @@ export default function AppShell() {
     structuresEnabledRef.current = structuresEnabled;
   }, [structuresEnabled]);
   useEffect(() => {
-    structuresLoadingRef.current = structuresLoading;
-  }, [structuresLoading]);
-  useEffect(() => {
     roadsEnabledRef.current = roadsEnabled;
   }, [roadsEnabled]);
-  useEffect(() => {
-    roadsLoadingRef.current = roadsLoading;
-  }, [roadsLoading]);
   useEffect(() => {
     poiCategoriesRef.current = poiCategories;
   }, [poiCategories]);
@@ -698,15 +711,17 @@ export default function AppShell() {
       try {
         const res = await fetchStreetFurniture(bbox);
         if (engine.isDestroyed) return;
-        if (res.degraded || res.points.length === 0) {
+        // 取り寄せに失敗したときだけ戻る。
+        // 「この範囲に無い」で戻ると、以後まったく追従しなくなる
+        // （街路樹の無い場所で入れると、ある場所へ移動しても出てこなかった）
+        if (res.degraded) {
           if (!quiet) {
-            notify(
-              res.degraded
-                ? '街路樹のデータを取り寄せられませんでした。少し待ってお試しください。'
-                : 'この範囲には街路樹・街灯が OSM に登録されていません',
-            );
+            notify('街路樹のデータを取り寄せられませんでした。少し待ってお試しください。');
           }
           return;
+        }
+        if (res.points.length === 0 && !quiet) {
+          notify('この範囲には街路樹・街灯が OSM に登録されていません（移動すると読み込みます）');
         }
         await engine.loadStreetFurniture(res.points, bbox);
         if (engine.isDestroyed) return;
@@ -741,16 +756,34 @@ export default function AppShell() {
     const bbox = engine.getSurroundingBBox(1500, 500);
     if (!bbox) return;
 
+    structuresLoadingRef.current = true;
     setStructuresLoading(true);
     try {
       const res = await fetchStructures(bbox);
-      if (engine.isDestroyed || res.structures.length === 0) return;
+      if (engine.isDestroyed) return;
+      /**
+       * 取り寄せに失敗したときだけ、何も控えずに戻る。
+       *
+       * 「この範囲に高架が無い」ときは**空のまま反映する**のが正しい。
+       * 以前はここで `structures.length === 0` でも戻っていたため、
+       *
+       *   - `structuresEnabled` が false のままになり、
+       *     `handleCameraMoved` が二度と高架を見に行かなくなる
+       *   - 中心（`structuresCentre`）も控えられないので、
+       *     仮に見に行っても「移動していない」と判断される
+       *
+       * となり、**高架の無い場所で起動すると、高架のある場所へ移動しても
+       * 二度と出てこない**という状態になっていた。道路も同じ形の欠陥。
+       */
+      if (res.degraded) return;
       await engine.showElevatedStructures(res.structures, bbox.join(','));
       if (engine.isDestroyed) return;
+      structuresHeldRef.current = { structures: res.structures, key: bbox.join(',') };
       setStructuresEnabled(true);
     } catch {
       // 構造物が出なくても地図とナビは成立する
     } finally {
+      structuresLoadingRef.current = false;
       setStructuresLoading(false);
     }
   }, []);
@@ -771,11 +804,14 @@ export default function AppShell() {
     const bbox = engine.getSurroundingBBox(1000, 400);
     if (!bbox) return;
 
+    roadsLoadingRef.current = true;
     setRoadsLoading(true);
     try {
       const res = await fetchRoads(bbox);
       if (engine.isDestroyed) return;
-      if (res.roads.length === 0 && res.rails.length === 0) return;
+      // 取り寄せに失敗したときだけ戻る。「この範囲に道が無い」は
+      // 空のまま反映する（控えないと、以後まったく追従しなくなる）
+      if (res.degraded) return;
       const key = bbox.join(',');
       await engine.showRoadScene(res, bbox, key);
       if (engine.isDestroyed) return;
@@ -785,6 +821,7 @@ export default function AppShell() {
     } catch {
       // 道が出なくても地図とナビは成立する
     } finally {
+      roadsLoadingRef.current = false;
       setRoadsLoading(false);
     }
   }, []);
@@ -801,7 +838,14 @@ export default function AppShell() {
     const engine = engineRef.current;
     if (!engine) return;
     if (structuresEnabledRef.current && !structuresLoadingRef.current) {
-      if (engine.needsStructureRefresh()) void loadStructuresForView();
+      if (engine.needsStructureRefresh()) {
+        void loadStructuresForView();
+      } else if (engine.needsStructureDetailChange()) {
+        // 高度が変わっただけ。範囲は同じなので取り直さず、
+        // 手元のデータで組み直す（降りてきたら高架の上に軌道を敷く）
+        const held = structuresHeldRef.current;
+        if (held) void engine.showElevatedStructures(held.structures, held.key);
+      }
     }
     if (roadsEnabledRef.current && !roadsLoadingRef.current) {
       if (engine.needsRoadRefresh()) {
@@ -837,6 +881,7 @@ export default function AppShell() {
 
     if (structuresEnabled) {
       engine.clearElevatedStructures();
+      structuresHeldRef.current = null;
       setStructuresEnabled(false);
       return;
     }
@@ -848,26 +893,32 @@ export default function AppShell() {
       return;
     }
 
+    structuresLoadingRef.current = true;
     setStructuresLoading(true);
     try {
       const res = await fetchStructures(bbox);
-      if (res.structures.length === 0) {
-        // 「この範囲に無い」と「取り寄せられなかった」は別のこと。
-        // OSM の公開サーバが混んでいるときに前者と言うと、
-        // 高架のある場所でも「データがありません」と出てしまう
-        notify(
-          res.degraded
-            ? '地図データの取り寄せに時間がかかっています。少し待って、もう一度お試しください。'
-            : 'この範囲に高架・橋のデータがありません',
-        );
+      // 「この範囲に無い」と「取り寄せられなかった」は別のこと。
+      // OSM の公開サーバが混んでいるときに前者と言うと、
+      // 高架のある場所でも「データがありません」と出てしまう
+      if (res.degraded) {
+        notify('地図データの取り寄せに時間がかかっています。少し待って、もう一度お試しください。');
         return;
       }
-      await engine.showElevatedStructures(res.structures, bbox.join(','));
+      const key = bbox.join(',');
+      await engine.showElevatedStructures(res.structures, key);
+      structuresHeldRef.current = { structures: res.structures, key };
+      // この範囲に無くても「表示する」状態にはしておく。
+      // ここで戻ると、高架のある場所へ移動しても追従が始まらない
       setStructuresEnabled(true);
-      notify(`高架・橋を ${res.structures.length} 件表示しました`);
+      notify(
+        res.structures.length === 0
+          ? 'この範囲に高架・橋のデータがありません（移動すると読み込みます）'
+          : `高架・橋を ${res.structures.length} 件表示しました`,
+      );
     } catch (error) {
       notify((error as Error).message ?? '高架データを取得できませんでした');
     } finally {
+      structuresLoadingRef.current = false;
       setStructuresLoading(false);
     }
     // notify は再生成されない
@@ -893,22 +944,24 @@ export default function AppShell() {
       return;
     }
 
+    roadsLoadingRef.current = true;
     setRoadsLoading(true);
     try {
       const res = await fetchRoads(bbox);
-      if (res.roads.length === 0 && res.rails.length === 0) {
-        notify(
-          res.degraded
-            ? '地図データの取り寄せに時間がかかっています。少し待って、もう一度お試しください。'
-            : 'この範囲に道路データがありません',
-        );
+      if (res.degraded) {
+        notify('地図データの取り寄せに時間がかかっています。少し待って、もう一度お試しください。');
         return;
       }
       const key = bbox.join(',');
       await engine.showRoadScene(res, bbox, key);
       roadPiecesRef.current = res.roads;
       roadSceneRef.current = { scene: res, bbox, key };
+      // この範囲に無くても「表示する」状態にはしておく（追従を始めるため）
       setRoadsEnabled(true);
+      if (res.roads.length === 0 && res.rails.length === 0) {
+        notify('この範囲に道路データがありません（移動すると読み込みます）');
+        return;
+      }
       // 速度制限は OSM に入っている道だけ。何本に入っていたかを伝える
       const withSpeed = res.roads.filter((r) => r.speedLimit !== undefined).length;
       notify(
@@ -918,6 +971,7 @@ export default function AppShell() {
     } catch (error) {
       notify((error as Error).message ?? '道路データを取得できませんでした');
     } finally {
+      roadsLoadingRef.current = false;
       setRoadsLoading(false);
     }
     // notify は再生成されない

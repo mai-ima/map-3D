@@ -22,6 +22,7 @@ import {
   valueAt,
 } from '@ijm/gis';
 import { batchShapes, buildPrimitives } from './scene-renderer';
+import { liveScene, waitForPrimitives } from './primitive-swap';
 
 /**
  * 高架の上に軌道を敷く上限のカメラ高度 (m)。
@@ -30,7 +31,26 @@ import { batchShapes, buildPrimitives } from './scene-renderer';
  * 1,500m 上空からおよそ 0.5 画素になる。そこから先は描いても見えない。
  */
 const ELEVATED_TRACK_MAX_HEIGHT_M = 1500;
-import { liveScene, waitForPrimitives } from './primitive-swap';
+
+/**
+ * カメラ高度で変わる、高架の細部。
+ *
+ * 呼び出し側（engine）はこれを描画の鍵に混ぜる。
+ * 混ぜないと、範囲が同じままカメラだけが降りてきたときに
+ * `render` が「もう同じものが出ている」と判断して何もせず、
+ * **降りても高架の上に軌道が出てこない**。
+ */
+export interface ElevatedDetail {
+  /** 高架の上に軌道（スラブとレール）を敷くか */
+  tracks: boolean;
+}
+
+export function elevatedDetailForHeight(cameraHeightM: number): ElevatedDetail {
+  // NaN や Infinity は「高度が分からない」であって「高い」ではない。
+  // 地上にいるものとして扱い、敷くほうへ倒す（近景で欠けるほうが目立つ）
+  const h = Number.isFinite(cameraHeightM) ? cameraHeightM : 0;
+  return { tracks: h < ELEVATED_TRACK_MAX_HEIGHT_M };
+}
 
 /**
  * 地形の標高を取る間隔 (m)。
@@ -110,7 +130,7 @@ export class ElevatedStructureLayer {
       ground,
       distances,
       frameBudget: MAX_FRAME_SHAPES,
-      tracks: cameraHeight < ELEVATED_TRACK_MAX_HEIGHT_M,
+      tracks: elevatedDetailForHeight(cameraHeight).tracks,
     });
 
     // 標高の取得を待っている間に画面を離れているかもしれない
