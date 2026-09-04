@@ -167,7 +167,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<あなたのドメイン>/cesi
 
 | 症状 | 原因と対処 |
 | --- | --- |
-| `No Next.js version detected` / 「Next.jsのバージョンが検出されませんでした」 | Root Directory が `apps/web` などになっている。**空欄（リポジトリ直下）に戻す** |
+| `No Next.js version detected` / 「Next.jsのバージョンが検出されませんでした」 | Root Directory が `apps/web` や `apps/api` などになっている。**空欄（リポジトリ直下）に戻す**。下の「実際に起きたこと」を参照 |
 | `Module not found: Can't resolve '@ijm/shared'` | install がリポジトリ直下で走っていない。Install Command の上書きを外す |
 | 3D が真っ黒／`/cesium/...` が 404 | Build Command を `next build` に上書きしている。`npm run build` に戻す（prebuild が必要） |
 | 建物・地図タイルだけ出ない | PLATEAU 配信サービス側の一時的な障害。`npm run validate:cities` で疎通確認できる |
@@ -175,6 +175,36 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<あなたのドメイン>/cesi
 | POI が空で「取得できませんでした」 | 公開 Overpass の混雑。`OVERPASS_ENDPOINTS` で別インスタンスを指定 |
 | AI パネルが「未設定」 | `AI_PROVIDER` と API キーが未設定。設定後に再デプロイ |
 | 関数が `maxDuration` でデプロイ拒否 | プランの上限超過。`vercel.json` の値を下げる |
+
+### 実際に起きたこと（2026-08-29）
+
+リポジトリ側を何度直しても `No Next.js version detected` が消えなかった。
+原因は **Vercel の Root Directory が `apps/api` になっていた**ことだった
+（インポート時に `apps/api` を選んでいた。プロジェクト名も `map-3-d-api` だった）。
+
+**ビルドログの 1 行で分かる。**
+
+```
+Running "install" command: `npm install`...
+added 6 packages, and audited 7 packages in 3s      ← たった 6 個
+npm warn allow-scripts   esbuild@0.28.2
+Error: No Next.js version detected.
+```
+
+正常なら Next.js + React + Cesium で**数百パッケージ**入る。
+それが 6 個で、しかも `tsx` / `esbuild` / `typescript` / `@types/node` だけ
+＝ `apps/api/package.json` の依存内容と完全に一致していた。
+
+**教訓: リポジトリ側を疑う前に、ビルドログの先頭数行を見る。**
+
+```
+Cloning github.com/... (Branch: xxx, Commit: xxxxxxx)   ← 直したコミットか
+Running "install" command: `xxx`...                      ← 上書きされていないか
+added N packages                                         ← N が 2 桁なら別ディレクトリを見ている
+```
+
+手元で `npm ci && npm run build` が通るのにデプロイだけ失敗するなら、
+**原因はほぼ確実にダッシュボードの設定側**にある。
 
 ## 補足: なぜアプリをリポジトリ直下に置いているか
 
