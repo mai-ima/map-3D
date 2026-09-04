@@ -8,6 +8,7 @@ export * from './structure-geometry';
 export * from './road-geometry';
 export * from './street-furniture-geometry';
 export * from './poi-categories';
+export * from './arrival';
 export * from './gsi';
 export * from './plateau';
 export * from './osm-network';

@@ -1,5 +1,6 @@
 'use client';
 
+import type { ArrivalPoint } from '@ijm/gis';
 import type { NavigationTickResult } from '@ijm/navigation';
 import {
   formatDistance,
@@ -23,6 +24,11 @@ export interface NextTurnPanelProps {
    * 分からないときは null。種別からの推測はしない
    */
   speedLimit?: number | null;
+  /**
+   * 到着地点の案内（建物の出入口と駐車場）。
+   * OSM に入っているときだけ渡される。無ければ何も出さない
+   */
+  arrival?: { entrances: ArrivalPoint[]; parking: ArrivalPoint[] } | null;
   onToggleVoice?: () => void;
   onStop: () => void;
   onResumeFollow: () => void;
@@ -121,6 +127,7 @@ export default function NextTurnPanel({
   rerouting,
   voiceEnabled = true,
   speedLimit = null,
+  arrival = null,
   onToggleVoice,
   onStop,
   onResumeFollow,
@@ -264,6 +271,50 @@ export default function NextTurnPanel({
         */}
         {!arrived && shouldShowLanes(next?.lanes, outlook.distanceToNext) && next?.lanes && (
           <LaneGuide lanes={next.lanes} />
+        )}
+
+        {/*
+          到着地点の案内。「着いたけれど、どこから入るのか」を出す。
+          出典は OSM の entrance / amenity=parking で、無ければ何も描かない。
+          建物の形から入口を推定したりはしない
+        */}
+        {arrival && (arrival.entrances.length > 0 || arrival.parking.length > 0) && (
+          <div className="mt-2.5 border-t border-white/8 pt-2">
+            {arrival.entrances.length > 0 && (
+              <div className="flex items-start gap-2 text-[12px]">
+                <span className="mt-px shrink-0 text-signal-400">
+                  <Icon name="destination" size={14} title="入口" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="text-mist-500">入口</span>{' '}
+                  {arrival.entrances.slice(0, 3).map((e, i) => (
+                    <span key={e.id} className="text-mist-200">
+                      {i > 0 && <span className="text-mist-600"> / </span>}
+                      {e.name}
+                      <span className="tabular-nums text-mist-500"> {e.distanceM}m</span>
+                    </span>
+                  ))}
+                </span>
+              </div>
+            )}
+            {arrival.parking.length > 0 && (
+              <div className="mt-1 flex items-start gap-2 text-[12px]">
+                <span className="mt-px shrink-0 text-mist-400">
+                  <Icon name="parking" size={14} title="駐車場" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="text-mist-500">駐車場</span>{' '}
+                  {arrival.parking.slice(0, 2).map((p, i) => (
+                    <span key={p.id} className="text-mist-200">
+                      {i > 0 && <span className="text-mist-600"> / </span>}
+                      {p.name}
+                      <span className="tabular-nums text-mist-500"> {p.distanceM}m</span>
+                    </span>
+                  ))}
+                </span>
+              </div>
+            )}
+          </div>
         )}
 
         {outlook.afterNext && !arrived && (

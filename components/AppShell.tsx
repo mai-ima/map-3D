@@ -23,10 +23,17 @@ import type { MapEngine, OptionalLayerId, QualityTier } from '@ijm/map-engine';
 import type { NavigationTickResult } from '@ijm/navigation';
 import { advancePassedVia, remainingVia } from '@ijm/navigation';
 import type { ChatMessage, UICommand } from '@ijm/ai';
-import { nearestRoad, type RailPiece, type RoadPiece, type RoadPoint } from '@ijm/gis';
+import {
+  nearestRoad,
+  type ArrivalPoint,
+  type RailPiece,
+  type RoadPiece,
+  type RoadPoint,
+} from '@ijm/gis';
 import { Icon } from '@ijm/ui';
 import {
   askAI,
+  fetchArrivalGuide,
   fetchBuilding,
   fetchConfig,
   fetchPois,
@@ -64,6 +71,13 @@ const VOICE_STORAGE_KEY = 'ijm:voice';
  * 毎フレーム探し直す必要はない。
  */
 const SPEED_LIMIT_INTERVAL_MS = 700;
+/**
+ * 到着地点の案内（入口・駐車場）を取りに行く残距離 (m)。
+ *
+ * 着いてから取ると、案内が要るときに間に合わない。
+ * 400m あれば法定速度 60km/h でおよそ 24 秒あり、通信が間に合う。
+ */
+const ARRIVAL_LOOKUP_M = 400;
 
 export default function AppShell() {
   const engineRef = useRef<MapEngine | null>(null);
@@ -155,6 +169,18 @@ export default function AppShell() {
   } | null>(null);
   /** いま走っている道の制限速度 (km/h)。OSM に入っているときだけ */
   const [speedLimit, setSpeedLimit] = useState<number | null>(null);
+  /**
+   * 到着地点の案内（建物の出入口と駐車場）。
+   *
+   * カーナビで最後に困るのは「着いたけれど、どこから入るのか」。
+   * 目的地が近づいたら 1 回だけ取る。OSM に無ければ空のまま
+   */
+  const [arrival, setArrival] = useState<{
+    entrances: ArrivalPoint[];
+    parking: ArrivalPoint[];
+  } | null>(null);
+  /** 到着案内を取りに行ったかどうか。案内 1 回につき 1 度だけ */
+  const arrivalRequestedRef = useRef(false);
   // iPhone などのタッチ端末では、片手で操作できるボトムシート主体の画面に切り替える
   const isMobile = useIsMobile();
 
@@ -238,6 +264,26 @@ export default function AppShell() {
     // 自動リルート。
     // 一瞬の測位のぶれで再検索すると案内が落ち着かないので、
     // 「外れた状態が続いていること」を条件にする。
+    /**
+     * 目的地が近づいたら、入口と駐車場を取りに行く。
+     *
+     * 着いてから取ると、案内が要るときに間に合わない。
+     * 400m あれば、法定速度 60km/h でおよそ 24 秒あり、通信が間に合う。
+     * 1 回の案内につき 1 度だけ取る（毎フレーム取りに行かない）
+     */
+    if (
+      !arrivalRequestedRef.current &&
+      destinationRef.current &&
+      result.progress.remainingDistance <= ARRIVAL_LOOKUP_M
+    ) {
+      arrivalRequestedRef.current = true;
+      const to = destinationRef.current.position;
+      void fetchArrivalGuide(to)
+        .then((guide) => setArrival({ entrances: guide.entrances, parking: guide.parking }))
+        // 取れなくても案内そのものは成立する。黙って何も出さない
+        .catch(() => setArrival(null));
+    }
+
     /**
      * 経由地の通過を進める。
      *
@@ -450,6 +496,9 @@ export default function AppShell() {
     const engine = engineRef.current;
     if (!engine || !route) return;
     spokenRef.current = null;
+    // 前の案内で取った到着案内を持ち越さない
+    setArrival(null);
+    arrivalRequestedRef.current = false;
     engine.startNavigation(route, { useRealPosition: false });
     setNavigating(true);
   }, [route]);
@@ -505,6 +554,8 @@ export default function AppShell() {
     setRerouting(false);
     offRouteSinceRef.current = null;
     setTick(null);
+    setArrival(null);
+    arrivalRequestedRef.current = false;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
@@ -1072,6 +1123,7 @@ export default function AppShell() {
           rerouting={rerouting}
           voiceEnabled={voiceEnabled}
           speedLimit={speedLimit}
+          arrival={arrival}
           onToggleVoice={toggleVoice}
           onStop={stopNavigation}
           onResumeFollow={() => engineRef.current?.resumeFollow()}

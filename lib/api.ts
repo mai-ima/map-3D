@@ -13,7 +13,7 @@ import type {
   SearchResult,
   TravelMode,
 } from '@ijm/shared';
-import type { RailPiece, RoadPiece, RoadPoint } from '@ijm/gis';
+import type { ArrivalPoint, RailPiece, RoadPiece, RoadPoint } from '@ijm/gis';
 import type { AgentResult, ChatMessage, MapContext } from '@ijm/ai';
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -61,6 +61,22 @@ export function fetchRoute(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ from, to, mode, ...(via.length > 0 ? { via } : {}) }),
   });
+}
+
+/**
+ * 到着地点の案内（建物の出入口と駐車場）。
+ *
+ * 目的地に着いたときに「どこから入るか」を出すためのもの。
+ * OSM に入っていなければ空で返る（推定はしない）。
+ */
+export function fetchArrivalGuide(
+  destination: LatLng,
+): Promise<{ entrances: ArrivalPoint[]; parking: ArrivalPoint[]; degraded?: boolean }> {
+  const params = new URLSearchParams({
+    lat: String(destination.lat),
+    lng: String(destination.lng),
+  });
+  return getJson(`/api/arrival?${params.toString()}`);
 }
 
 export function fetchPois(

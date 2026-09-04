@@ -314,6 +314,47 @@ out body 3000;`;
   }
 }
 
+/**
+ * 到着地点の周りの入口と駐車場を取る。
+ *
+ * カーナビで最後に困るのは「着いたけれど、どこから入るのか」。
+ * 出典は OSM の `entrance=*` と `amenity=parking`。無いものは出さない。
+ *
+ * way の駐車場は敷地の形（面）で入っているので、`out center` で中心点をもらう。
+ * 入口は node なので `out body` でよい。
+ */
+export async function fetchArrivalPoints(
+  bbox: BBox,
+  deadline?: number,
+): Promise<OverpassElement[]> {
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const box = `${minLat},${minLng},${maxLat},${maxLng}`;
+  const query = `[out:json][timeout:30];
+(
+  node["entrance"](${box});
+  node["amenity"="parking"](${box});
+  way["amenity"="parking"](${box});
+);
+out tags center 500;`;
+
+  // 他の取得と同じく、Overpass が駄目なら OSM 本体へ切り替える
+  const until = deadline ?? deadlineIn();
+  try {
+    return (await runOverpassQuery(query, { deadline: primaryDeadline(until) })).elements;
+  } catch (error) {
+    const all = await fetchOsmMap(bbox, until).catch(() => [] as OverpassElement[]);
+    const points = all.filter((el) => isArrivalPoint(el.tags));
+    if (points.length === 0) throw error;
+    return points;
+  }
+}
+
+/** 到着案内に出す点か */
+function isArrivalPoint(tags: Record<string, string> | undefined): boolean {
+  if (!tags) return false;
+  return Boolean(tags.entrance) || tags.amenity === 'parking';
+}
+
 /** 3D の装飾として置く点か（位置は必ず OSM の実データ） */
 function isStreetFurniture(tags: Record<string, string> | undefined): boolean {
   if (!tags) return false;
