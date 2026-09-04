@@ -132,12 +132,43 @@ export interface SpheroidShape {
   castsShadow?: boolean;
 }
 
+/**
+ * 多角形を垂直に押し出した立体。
+ *
+ * 駅のホーム、広場、駐車場の床など、
+ * **OSM に「面」として入っているもの**を立体にするときに使う。
+ * 外形は実データそのままで、高さだけを基準値で補う。
+ *
+ * 押し出し体（`ExtrudedShape`）との違いは、
+ * 断面ではなく上から見た形を持つこと。
+ * ホームのように曲がった形でも、外形をそのまま出せる。
+ *
+ * Swift（SceneKit / RealityKit）では、多角形を三角形に分割して
+ * 押し出す。どちらの描画エンジンにも素直に対応する形にしてある。
+ */
+export interface PolygonShape {
+  kind: 'polygon';
+  id?: string;
+  /**
+   * 外形。時計回り・反時計回りのどちらでもよい。
+   * 最後の点と最初の点が同じでも、違っていてもよい（描画側で閉じる）。
+   */
+  outline: LatLng[];
+  /** 下端の高さ (m)。楕円体高 */
+  base: number;
+  /** 押し出す高さ (m) */
+  height: number;
+  color: string;
+  castsShadow?: boolean;
+}
+
 export type SceneShape =
   | ExtrudedShape
   | BoxShape
   | GroundRibbon
   | RevolvedShape
-  | SpheroidShape;
+  | SpheroidShape
+  | PolygonShape;
 
 /**
  * まとまりを持つ形の集合。
@@ -173,6 +204,9 @@ export function estimateVertexCount(shape: SceneShape): number {
     case 'spheroid':
       // 経度 10 × 緯度 8 の格子
       return 10 * 8 * 2;
+    case 'polygon':
+      // 側面（外形の点数 × 上下 2 段）+ 上面と下面
+      return shape.outline.length * 2 + shape.outline.length * 2;
   }
 }
 

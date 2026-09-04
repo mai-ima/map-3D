@@ -28,6 +28,7 @@ import type {
   ExtrudedShape,
   GroundRibbon,
   LatLng,
+  PolygonShape,
   RevolvedShape,
   SceneShape,
   SpheroidShape,
@@ -295,6 +296,51 @@ function spheroidInstance(shape: SpheroidShape): Cesium.GeometryInstance {
   });
 }
 
+/**
+ * 多角形を垂直に押し出した立体（駅のホームなど）。
+ *
+ * `PolygonGeometry` は `height`（下端）と `extrudedHeight`（上端）を
+ * 楕円体高で受け取る。頂点そのものの高さは使わないので、
+ * 外形は緯度経度だけで渡してよい。
+ *
+ * `perPositionHeight` は使わない。これを立てると各頂点の高さが
+ * そのまま採用され、地形の起伏を拾ってホームの上面が波打つ。
+ * ホームの床は水平なので、上面はひとつの高さで平らにする。
+ */
+function polygonInstance(shape: PolygonShape): Cesium.GeometryInstance | null {
+  const clean = dedupe(shape.outline);
+  // 閉じた輪（最後が最初と同じ）で来ることがある。
+  // Cesium は自分で閉じるので、重なった終点は落とす
+  const first = clean[0];
+  const last = clean[clean.length - 1];
+  if (
+    clean.length > 1 &&
+    first &&
+    last &&
+    Math.abs(first.lat - last.lat) < 1e-9 &&
+    Math.abs(first.lng - last.lng) < 1e-9
+  ) {
+    clean.pop();
+  }
+  if (clean.length < 3) return null;
+
+  const base = shape.base;
+  const top = base + Math.max(0.01, shape.height);
+
+  return new Cesium.GeometryInstance({
+    id: shape.id,
+    geometry: new Cesium.PolygonGeometry({
+      polygonHierarchy: new Cesium.PolygonHierarchy(positionsOf(clean)),
+      height: base,
+      extrudedHeight: top,
+      vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+    }),
+    attributes: {
+      color: Cesium.ColorGeometryInstanceAttribute.fromColor(colorOf(shape.color)),
+    },
+  });
+}
+
 /** 描き方ごとに振り分けた GeometryInstance */
 interface Batches {
   /** 地表に貼る面。order ごとに分ける（小さいほど奥） */
@@ -368,6 +414,13 @@ export function batchShapes(shapes: SceneShape[]): Batches {
       case 'spheroid': {
         const instance = spheroidInstance(shape);
         (shape.castsShadow === false ? batches.flatSolids : batches.solids).push(instance);
+        break;
+      }
+      case 'polygon': {
+        const instance = polygonInstance(shape);
+        if (instance) {
+          (shape.castsShadow === false ? batches.flatSolids : batches.solids).push(instance);
+        }
         break;
       }
     }
