@@ -502,6 +502,98 @@ function deckShapes(
   return out;
 }
 
+/**
+ * 高架の軌道中心の間隔 (m)。地表と同じ（在来線 3.8〜4.0 / 新幹線 4.3）。
+ */
+const TRACK_SPACING_M = 4.1;
+/** 軌道スラブの厚さ (m)。軌道スラブ A 形は 190mm */
+const SLAB_TRACK_THICKNESS_M = 0.19;
+/**
+ * 1 つの構造物に敷く線路の本数の上限。
+ * まとめた構造物は駅で広がることがあるが、幅から数えた本数をそのまま
+ * 信じると、広い床版に線路が並びすぎる
+ */
+const MAX_ELEVATED_TRACKS = 8;
+
+/**
+ * 高架の上の軌道。
+ *
+ * **これが無かったので、高架の線路は床版の上に何も無く、
+ * 「線路が床版に埋まっている」ように見えていた。**
+ * 浜松では線路 55 本がすべて高架なので、線路が 1 本も見えていなかった。
+ *
+ * 高架橋の軌道はスラブ軌道が標準（新幹線と都市部の高架）。
+ * バラスト軌道と違って道床が無く、コンクリートの軌道スラブに
+ * レールを直結する。保守が要らないので高架では必ずこちらになる。
+ *
+ * 出典: 鉄道構造物等設計標準（軌道構造）。
+ *   軌道スラブ A 形  4,930 × 2,340 × 190mm
+ *   軌間            在来線 1,067mm / 新幹線 1,435mm
+ *   レール          頭部幅 65mm・高さ 153mm（50kgN レール）
+ *
+ * 線路の本数は構造物の幅から決める（軌道中心の間隔 4.1m）。
+ * OSM の way 1 本が実際に何線かは幅にしか出ていない。
+ */
+function trackShapes(
+  s: ElevatedStructure,
+  deckTop: number[],
+  detail: { rails: boolean },
+): SceneShape[] {
+  if (!s.kind.startsWith('rail') || !detail.rails) return [];
+  // 取付部と階段には軌道を敷かない（そこは路面が上がっていく途中）
+  if (s.form === 'stair') return [];
+
+  const out: SceneShape[] = [];
+  // 幅から線路の本数を決める。防音壁のぶん 1.0m を引いてから割る
+  const usable = Math.max(0, s.width - 1.0);
+  const tracks = Math.max(1, Math.min(MAX_ELEVATED_TRACKS, Math.floor(usable / TRACK_SPACING_M)));
+  const span = (tracks - 1) * TRACK_SPACING_M;
+  // 新幹線かどうかは名前でしか分からない。標準軌にするのは名前に「新幹線」があるときだけ
+  const gauge = s.name?.includes('新幹線') ? 1.435 : 1.067;
+
+  for (let i = 0; i < tracks; i += 1) {
+    const offset = -span / 2 + i * TRACK_SPACING_M;
+
+    // 軌道スラブ。床版の上に載る（厚さ 0.19m）
+    const slab = offsetPath(s.path, offset, deckTop);
+    if (slab.length < 2) continue;
+    out.push(
+      extrusion(
+        slab,
+        section([
+          [-1.17, 0],
+          [1.17, 0],
+          [1.17, SLAB_TRACK_THICKNESS_M],
+          [-1.17, SLAB_TRACK_THICKNESS_M],
+        ]),
+        '#9a968f',
+        `${s.id}#slab${i}`,
+      ),
+    );
+
+    // レール 2 本。スラブの上面から 0.153m
+    const railTop = deckTop.map((h) => h + SLAB_TRACK_THICKNESS_M);
+    for (const side of [-gauge / 2, gauge / 2]) {
+      const line = offsetPath(s.path, offset + side, railTop);
+      if (line.length < 2) continue;
+      out.push(
+        extrusion(
+          line,
+          section([
+            [-0.0325, 0],
+            [0.0325, 0],
+            [0.0325, 0.153],
+            [-0.0325, 0.153],
+          ]),
+          '#8a8073',
+          `${s.id}#rail${i}${side > 0 ? 'R' : 'L'}`,
+        ),
+      );
+    }
+  }
+  return out;
+}
+
 /** 高欄・防音壁 */
 function parapetShapes(
   s: ElevatedStructure,
@@ -824,6 +916,14 @@ export interface StructureBuildOptions {
   distances: number[];
   /** 柱として作ってよい形の総数 */
   frameBudget?: number;
+  /**
+   * 高架の上に軌道（スラブ軌道とレール）を敷くか。
+   *
+   * 既定は敷く。無いと線路が床版に埋まって見える
+   * （浜松では線路 55 本すべてが高架なので、線路が 1 本も見えていなかった）。
+   * 上空から見るときだけ落とす。
+   */
+  tracks?: boolean;
 }
 
 /**
@@ -868,6 +968,8 @@ export function buildStructureShapes(
     const beamBottom = slabBottom.map((h) => h - s.girderDepth);
 
     out.deck.push(...deckShapes(s, beamBottom, slabBottom, material.deck));
+    // 高架の上の軌道。無いと線路が床版に埋まって見える
+    out.deck.push(...trackShapes(s, deckTop, { rails: options.tracks !== false }));
     out.parapet.push(...parapetShapes(s, deckTop, material.deck));
     if (s.form === 'stair') {
       // 階段は上端で高架の床版に直接つながる。そこに橋台を立てると

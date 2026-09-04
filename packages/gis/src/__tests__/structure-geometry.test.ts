@@ -139,8 +139,12 @@ test('高さは路面から下へ決まる', () => {
   // 断面の高さが版厚
   near(Math.max(...slab.section.map((p) => p.y)), 0.35, 0.001, '版厚');
 
-  // 縦梁の下面 = 床版の下面 - 梁高 = 梁下高
-  const girders = deck.filter(isExtrusion).slice(1);
+  // 縦梁の下面 = 床版の下面 - 梁高 = 梁下高。
+  // 軌道（#slab / #rail）は床版の上に載るので、ここでは除く
+  const girders = deck
+    .filter(isExtrusion)
+    .filter((g) => !g.id?.includes('#slab') && !g.id?.includes('#rail'))
+    .slice(1);
   assert.ok(girders.length >= 2, '縦梁は左右 1 本ずつ以上');
   for (const g of girders) {
     near(g.path[0].alt!, 9.35 - 0.35 - 1.0, 0.001, '縦梁の下面（梁下高）');
@@ -619,4 +623,96 @@ test('離れたら壁の区間を粗くする', () => {
 test('地面すれすれの区間には壁を作らない', () => {
   const built = onFlatGround(ramp(80, 0, 0.2));
   assert.equal(built.frame.length, 0);
+});
+
+/**
+ * 高架の上の軌道。
+ *
+ * **これが無かったので、高架の線路は床版の上に何も無く、
+ * 「線路が床版に埋まっている」ように見えていた。**
+ * 浜松では線路 55 本がすべて高架なので、線路が 1 本も見えていなかった
+ * （実測 2026-09-04: 浜松駅周辺 1km 四方の線路 55 本 = 地表 0 / 高架 55 / 地下 0）。
+ *
+ * 高架橋の軌道はスラブ軌道が標準（新幹線と都市部の高架）。
+ * バラスト軌道と違って道床が無く、コンクリートの軌道スラブに
+ * レールを直結する。保守が要らないので高架では必ずこちらになる。
+ *
+ * 出典: 鉄道構造物等設計標準（軌道構造）。
+ *   軌道スラブ A 形  4,930 × 2,340 × 190mm
+ *   軌間            在来線 1,067mm / 新幹線 1,435mm
+ *   レール          頭部幅 65mm・高さ 153mm（50kgN レール）
+ */
+test('高架の床版の上に軌道が載る', () => {
+  const { deck } = build([railViaduct]);
+  const slabs = deck.filter(isExtrusion).filter((s) => s.id?.includes('#slab'));
+  const rails = deck.filter(isExtrusion).filter((s) => s.id?.includes('#rail'));
+
+  assert.ok(slabs.length > 0, '軌道スラブが無い');
+  // 幅 11m から防音壁のぶんを引いて軌道中心 4.1m で割ると 2 線
+  assert.equal(slabs.length, 2, '複線ぶんの軌道スラブ');
+  assert.equal(rails.length, 4, 'レールが線路 1 本につき 2 本でない');
+
+  // 軌道スラブは床版の上面（＝路面 9.35m）に載る
+  for (const slab of slabs) {
+    near(slab.path[0].alt!, 9.35, 0.001, '軌道スラブが路面に載っていない');
+    near(Math.max(...slab.section.map((p) => p.y)), 0.19, 0.001, '軌道スラブの厚さ');
+    // 幅 2.34m
+    const xs = slab.section.map((p) => p.x);
+    near(Math.max(...xs) - Math.min(...xs), 2.34, 0.01, '軌道スラブの幅');
+  }
+
+  // レールはスラブの上面から立つ
+  for (const rail of rails) {
+    near(rail.path[0].alt!, 9.35 + 0.19, 0.001, 'レールがスラブに載っていない');
+    near(Math.max(...rail.section.map((p) => p.y)), 0.153, 0.001, 'レールの高さ');
+  }
+});
+
+test('軌間は路線の名前で決める', () => {
+  // 新幹線かどうかは OSM の名前にしか出ていない。
+  // 推測で標準軌にすると、在来線が広がって見える
+  const gaugeOf = (name?: string) => {
+    const { deck } = build([{ ...railViaduct, name }]);
+    const rails = deck.filter(isExtrusion).filter((s) => s.id?.includes('#rail0'));
+    if (rails.length < 2) return 0;
+    const [a, b] = rails.map((r) => r.path[0]);
+    const cos = Math.cos((a.lat * Math.PI) / 180);
+    return Math.hypot((b.lat - a.lat) * 111_320, (b.lng - a.lng) * 111_320 * cos);
+  };
+  near(gaugeOf('東海道本線'), 1.067, 0.02, '在来線の軌間');
+  near(gaugeOf('東海道新幹線'), 1.435, 0.02, '新幹線の軌間');
+  // 名前が無ければ在来線として扱う（狭軌が日本の大多数）
+  near(gaugeOf(undefined), 1.067, 0.02, '名前が無いときの軌間');
+});
+
+test('道路の高架には軌道を敷かない', () => {
+  const { deck } = build([{ ...railViaduct, id: 'road', kind: 'road-bridge' }]);
+  assert.equal(deck.filter((s) => s.id?.includes('#slab')).length, 0);
+  assert.equal(deck.filter((s) => s.id?.includes('#rail')).length, 0);
+});
+
+test('上空からは軌道を落とす', () => {
+  // 軌道スラブの幅 2.34m は 1,500m 上空から 1 画素を割る
+  const shapes = buildStructureShapes([railViaduct], {
+    ground: [railViaduct.path.map(() => 0)],
+    distances: [0],
+    tracks: false,
+  });
+  assert.equal(shapes.deck.filter((s) => s.id?.includes('#slab')).length, 0);
+  // 落としても床版と防音壁は残る
+  assert.ok(shapes.deck.length > 0, '床版まで消えた');
+  assert.ok(shapes.parapet.length > 0, '防音壁まで消えた');
+});
+
+test('狭い高架でも線路が 1 本は載る', () => {
+  // 単線の高架は幅 5m 程度。防音壁のぶんを引くと 4.0m で、
+  // 軌道中心の間隔 4.1m を割る。0 本にすると線路が消える
+  const { deck } = build([{ ...railViaduct, width: 5 }]);
+  assert.equal(deck.filter((s) => s.id?.includes('#slab')).length, 1);
+});
+
+test('階段には軌道を敷かない', () => {
+  // 階段は高架へ上がる途中で、そこに線路は無い
+  const { deck } = build([{ ...railViaduct, form: 'stair', startHeight: 0 }]);
+  assert.equal(deck.filter((s) => s.id?.includes('#slab')).length, 0);
 });

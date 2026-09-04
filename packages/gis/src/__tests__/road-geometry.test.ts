@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { GroundRibbon, LatLng } from '@ijm/shared';
+import type { GroundRibbon, LatLng, SceneShape } from '@ijm/shared';
 import {
   LANE_MARKING_MAX_HEIGHT_M,
   buildRoadScene,
@@ -21,6 +21,9 @@ import {
   laneCountOf,
   nearestRoad,
   railShapes,
+  railDetailForHeight,
+  levelRailHeights,
+  type RailPiece,
   roadClassOf,
   roadShapes,
   roadWidthOf,
@@ -148,9 +151,11 @@ test('横断歩道は縞模様になる', () => {
 });
 
 test('地表の線路は道床とレールで組む', () => {
+  // 枕木は距離で出し分けるので、ここでは骨組みだけを見る
   const shapes = railShapes(
     { id: 'rail', path: line, tracks: 2, elevated: false, underground: false },
     () => 10,
+    { sleeperStep: 0, catenaryStep: 0 },
   );
   // 線路 1 本につき 道床 1 + レール 2
   assert.equal(shapes.length, 2 * 3);
@@ -167,7 +172,12 @@ test('地表の線路は道床とレールで組む', () => {
       Math.abs(bottom[1].x - bottom[0].x) > Math.abs(top[1].x - top[0].x),
       '道床は台形',
     );
-    assert.equal(bed.path[0].alt, 10, '地表の高さに載る');
+    // 道床は路盤に食い込ませてある（上面が地表に出るように）
+    assert.ok((bed.path[0].alt ?? 0) < 10, '道床の下端が路盤より上にある');
+    assert.ok(
+      Math.abs((bed.path[0].alt ?? 0) + Math.max(...bed.section.map((p) => p.y)) - 10.4) < 0.01,
+      '道床の上面が路盤 + 0.4m にない',
+    );
   }
 
   const rails = shapes.filter((s) => s.id?.includes('#rail'));
@@ -475,10 +485,14 @@ test('詳細度はカメラ高度で決まる', () => {
 });
 
 test('上空でも線路と信号は出す', () => {
-  // 線路の道床は幅 4.4m、信号の灯器は 0.95m。どちらも上空から見える
+  // 線路の道床は幅 4.4m、信号の灯器は 0.95m。どちらも上空から見える。
+  // 上空では枕木と架線柱を落とすので、残るのは道床 1 + レール 2
   assert.equal(
-    railShapes({ id: 'r', path: line, tracks: 1, elevated: false, underground: false }, () => 0)
-      .length,
+    railShapes(
+      { id: 'r', path: line, tracks: 1, elevated: false, underground: false },
+      () => 0,
+      railDetailForHeight(1000),
+    ).length,
     3,
   );
   assert.ok(
@@ -520,9 +534,10 @@ test('OSM の極端な値をそのまま使わない', () => {
   // 道路の幅は最大でも 100m 程度
   assert.ok(scene.roads[0].width <= 100, `幅 ${scene.roads[0].width}m`);
 
-  // 組み立てても現実的な個数に収まる
+  // 組み立てても現実的な個数に収まる。
+  // 枕木は way 全体で上限を掛けて線路の本数で割るので、本数が増えても膨らまない
   const shapes = railShapes(scene.rails[0], () => 0);
-  assert.ok(shapes.length <= 40 * 3, `形 ${shapes.length} 個`);
+  assert.ok(shapes.length <= 40 * 3 + 600, `形 ${shapes.length} 個`);
 });
 
 test('線路数の上限は呼び出し側が忘れても効く', () => {
@@ -531,7 +546,7 @@ test('線路数の上限は呼び出し側が忘れても効く', () => {
     { id: 'x', path: line, tracks: 1e9, elevated: false, underground: false },
     () => 0,
   );
-  assert.ok(shapes.length > 0 && shapes.length <= 40 * 3);
+  assert.ok(shapes.length > 0 && shapes.length <= 40 * 3 + 600, `形 ${shapes.length} 個`);
 });
 
 test('幅の無い道路は描かない', () => {
@@ -835,4 +850,235 @@ test('同じノードを共有する道は同じ交差点にまとまる', () =>
   const { mainRoad, side } = crossRoads();
   const found = buildIntersections([mainRoad, side]);
   assert.equal(found.size, 1, '同じ点が 2 つの交差点に分かれている');
+});
+
+/**
+ * 線路が地面に埋まる問題と、線路まわりのリアルさ。
+ *
+ * **なぜ埋まっていたか。**
+ * 道路は `GroundPrimitive`（地形にクランプ）で描くので絶対に埋まらないが、
+ * 線路は立体なので絶対高さで置く。その高さを 100m 格子の標高から
+ * 補間していたため、実際の地面とずれると沈む。
+ *
+ * 実測（2026-09-04、東京駅周辺の線路上 12 点、国土地理院の標高 API と
+ * 100m 格子の双線形補間を比較）:
+ *
+ *   差の絶対値の中央値 0.08m / 最大 0.25m
+ *   格子のほうが高い（＝線路が埋まる）点 6 / 12
+ *
+ * 道床の高さは 0.4m しかないので、0.25m 沈むと 6 割が地面に入る。
+ * 東京駅周辺は標高 3m 前後の平地でこれなので、起伏があればもっと沈む。
+ *
+ * さらに、標高をそのまま頂点に当てると線路が地面の凹凸をなぞって波打つ。
+ * 実物の線路は路盤で平されていて、勾配は連続で緩やかに変わる。
+ */
+
+/** 東西にまっすぐ n 点の線路 */
+function straightRail(points: number, tags: Partial<RailPiece> = {}): RailPiece {
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+  const path = Array.from({ length: points }, (_, i) => ({
+    lat: 34.7,
+    lng: 137.73 + (i * 40) / (111_320 * cos),
+  }));
+  return {
+    id: 'rail',
+    path,
+    tracks: 1,
+    elevated: false,
+    underground: false,
+    ...tags,
+  };
+}
+
+test('線路は地面の凹凸をなぞらない', () => {
+  // 実物の線路は路盤で平されている。標高をそのまま当てると波打つ
+  const rail = straightRail(9);
+  // 1 点おきに 1.5m の段差がある地形（測量の誤差やビルの屋根を拾ったときの形）
+  const bumpy = (p: LatLng) => {
+    const i = Math.round((p.lng - 137.73) * 111_320 * Math.cos((34.7 * Math.PI) / 180) / 40);
+    return i % 2 === 0 ? 10 : 11.5;
+  };
+  const levels = levelRailHeights(rail.path, bumpy);
+
+  // 隣り合う点の差が、元の 1.5m よりはっきり小さくなっている
+  let maxStep = 0;
+  for (let i = 1; i < levels.length; i += 1) {
+    maxStep = Math.max(maxStep, Math.abs(levels[i] - levels[i - 1]));
+  }
+  assert.ok(maxStep < 1.0, `段差が ${maxStep.toFixed(2)}m 残っている`);
+  // 平しても、全体の高さの水準は変わらない（勝手に持ち上げない）
+  const mean = levels.reduce((s, v) => s + v, 0) / levels.length;
+  assert.ok(Math.abs(mean - 10.75) < 0.4, `水準がずれた: ${mean.toFixed(2)}m`);
+});
+
+test('線路の縦断勾配は基準の上限を超えない', () => {
+  // 出典: 鉄道に関する技術上の基準を定める省令の解釈基準 第 15 条
+  // 本線の最急勾配 35‰。40m 間隔なら 1 点あたり 1.4m まで
+  const rail = straightRail(6);
+  // 崖のような地形（40m で 20m 上がる ＝ 500‰）
+  const cliff = (p: LatLng) => {
+    const i = Math.round((p.lng - 137.73) * 111_320 * Math.cos((34.7 * Math.PI) / 180) / 40);
+    return i * 20;
+  };
+  const levels = levelRailHeights(rail.path, cliff, 'rail');
+  for (let i = 1; i < levels.length; i += 1) {
+    const grade = Math.abs(levels[i] - levels[i - 1]) / 40;
+    assert.ok(grade <= 0.035 + 1e-6, `${i} 番目の勾配が ${(grade * 1000).toFixed(0)}‰`);
+  }
+});
+
+test('路面電車は急な勾配を許す', () => {
+  // 併用軌道は道路の勾配に従うので、本線と同じには平せない
+  const rail = straightRail(5);
+  const slope = (p: LatLng) => {
+    const i = Math.round((p.lng - 137.73) * 111_320 * Math.cos((34.7 * Math.PI) / 180) / 40);
+    return i * 2;
+  };
+  const asRail = levelRailHeights(rail.path, slope, 'rail');
+  const asTram = levelRailHeights(rail.path, slope, 'tram');
+  const rise = (v: number[]) => v[v.length - 1] - v[0];
+  assert.ok(rise(asTram) > rise(asRail), '路面電車のほうが緩められている');
+});
+
+test('道床は路盤に食い込ませて、上面が地表に出るようにする', () => {
+  // 地形の標高は格子から補間するので数十センチずれる（実測で最大 0.25m）。
+  // 下端を沈めておかないと、道床 0.4m がまるごと地面に入る
+  const shapes = railShapes(straightRail(4), () => 10);
+  const bed = shapes.find((s) => s.id?.includes('#bed'));
+  assert.ok(bed && bed.kind === 'extrusion');
+  if (!bed || bed.kind !== 'extrusion') return;
+
+  const bottom = bed.path[0].alt ?? 0;
+  assert.ok(bottom < 10, `道床の下端が路盤より上にある: ${bottom}`);
+  // 断面の一番上が、路盤から 0.4m 出ている
+  const top = bottom + Math.max(...bed.section.map((p) => p.y));
+  assert.ok(Math.abs(top - 10.4) < 0.01, `道床の上面が ${top.toFixed(2)}m`);
+  // 地形が 0.25m 高く出ても、上面は地表より上に残る
+  assert.ok(top > 10.25, '実測の最大のずれで埋まってしまう');
+});
+
+test('レールは道床の上面に載る', () => {
+  const shapes = railShapes(straightRail(4), () => 10);
+  const rails = shapes.filter((s) => s.id?.includes('#rail'));
+  assert.equal(rails.length, 2, 'レールが 2 本でない');
+  for (const r of rails) {
+    if (r.kind !== 'extrusion') return assert.fail('レールが押し出しでない');
+    assert.ok(Math.abs((r.path[0].alt ?? 0) - 10.4) < 0.01, 'レールが浮くか埋まっている');
+  }
+});
+
+test('軌間は種別で変わる', () => {
+  // 出典: 在来線 1,067mm（狭軌）/ 新幹線 1,435mm（標準軌）
+  const gaugeOf = (rail: RailPiece) => {
+    const rails = railShapes(rail, () => 0).filter((s) => s.id?.includes('#rail'));
+    const [a, b] = rails.map((r) => (r.kind === 'extrusion' ? r.path[0] : null));
+    if (!a || !b) return 0;
+    const cos = Math.cos((a.lat * Math.PI) / 180);
+    return Math.hypot((b.lat - a.lat) * 111_320, (b.lng - a.lng) * 111_320 * cos);
+  };
+  assert.ok(Math.abs(gaugeOf(straightRail(3)) - 1.067) < 0.02, '在来線の軌間');
+  assert.ok(
+    Math.abs(gaugeOf(straightRail(3, { highspeed: true })) - 1.435) < 0.02,
+    '新幹線の軌間',
+  );
+});
+
+test('枕木を実寸で並べる', () => {
+  // 出典: PC まくらぎ 2.0m × 0.24m × 0.2m。
+  // 在来線 1 級線は 1km あたり 1,850 本 ＝ 間隔 0.54m
+  const shapes = railShapes(straightRail(3), () => 10);
+  const ties = shapes.filter((s) => s.id?.includes('#tie'));
+  assert.ok(ties.length > 100, `枕木が ${ties.length} 本しかない`);
+
+  const tie = ties[0];
+  if (tie.kind !== 'box') return assert.fail('枕木が箱でない');
+  assert.ok(Math.abs(tie.size.x - 0.24) < 0.01, '枕木の幅');
+  assert.ok(Math.abs(tie.size.y - 2.0) < 0.01, '枕木の長さ');
+  assert.ok(Math.abs(tie.size.z - 0.2) < 0.01, '枕木の厚み');
+
+  // 間隔が 0.54m 前後
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+  const dist = (a: SceneShape, b: SceneShape) => {
+    if (a.kind !== 'box' || b.kind !== 'box') return 0;
+    return Math.hypot(
+      (b.centre.lat - a.centre.lat) * 111_320,
+      (b.centre.lng - a.centre.lng) * 111_320 * cos,
+    );
+  };
+  assert.ok(Math.abs(dist(ties[0], ties[1]) - 0.54) < 0.05, '枕木の間隔');
+});
+
+test('遠いときは枕木を描かない', () => {
+  // 幅 0.24m は 250m 離れると 1 画素を割る。描いても見えない
+  const near = railShapes(straightRail(3), () => 10, railDetailForHeight(50));
+  const mid = railShapes(straightRail(3), () => 10, railDetailForHeight(150));
+  const far = railShapes(straightRail(3), () => 10, railDetailForHeight(400));
+  const ties = (list: ReturnType<typeof railShapes>) =>
+    list.filter((s) => s.id?.includes('#tie')).length;
+
+  assert.ok(ties(near) > ties(mid), '中距離で減っていない');
+  assert.equal(ties(far), 0, '遠いのに枕木を描いている');
+  // 減っても道床とレールは残る
+  assert.ok(far.length >= 3, '線路そのものが消えた');
+});
+
+test('間引きは 2 の冪で行う', () => {
+  // 半端な比率だと、詳細度が戻ったときに枕木が横滑りして見える
+  const near = railDetailForHeight(50).sleeperStep;
+  const mid = railDetailForHeight(150).sleeperStep;
+  assert.ok(Math.abs(mid / near - 2) < 1e-6, `${near} → ${mid}`);
+});
+
+test('架線柱は電化されている線路にだけ立てる', () => {
+  // OSM に electrified が無い線路に架線柱を立てるのは、
+  // 実在しない構造物を作ることになる
+  const withoutTag = railShapes(straightRail(20), () => 10);
+  assert.equal(withoutTag.filter((s) => s.id?.includes('#pole')).length, 0);
+
+  const notElectric = railShapes(straightRail(20, { electrified: false }), () => 10);
+  assert.equal(notElectric.filter((s) => s.id?.includes('#pole')).length, 0);
+
+  const electric = railShapes(straightRail(20, { electrified: true }), () => 10);
+  const poles = electric.filter((s) => s.id?.includes('#pole'));
+  assert.ok(poles.length > 0, '電化区間なのに架線柱が無い');
+
+  // 出典: 電車線路設備の標準（架線 5.0m 以上、柱の頂部は 6.5m 前後）
+  const pole = poles[0];
+  if (pole.kind !== 'revolved') return assert.fail('架線柱が回転体でない');
+  assert.ok(Math.abs(pole.height - 6.5) < 0.01, '架線柱の高さ');
+  assert.ok(Math.abs((pole.base.alt ?? 0) - 10) < 0.01, '架線柱が浮くか埋まっている');
+});
+
+test('架線柱は線路の外に立てる', () => {
+  // 建築限界の中に柱を立てると、車両とぶつかる
+  const rail = straightRail(20, { electrified: true, tracks: 2 });
+  const shapes = railShapes(rail, () => 10);
+  const poles = shapes.filter((s) => s.id?.includes('#pole'));
+  const cos = Math.cos((34.7 * Math.PI) / 180);
+
+  for (const pole of poles.slice(0, 4)) {
+    if (pole.kind !== 'revolved') continue;
+    // 線路の中心線（緯度 34.7）からの距離
+    const offset = Math.abs(pole.base.lat - 34.7) * 111_320;
+    // 複線の外側 + 建築限界の余裕。軌道中心の間隔 4.1m の半分 + 1.9m
+    assert.ok(offset > 3.5, `柱が線路に近すぎる: ${offset.toFixed(1)}m`);
+    assert.ok(offset < 8, `柱が離れすぎている: ${offset.toFixed(1)}m`);
+    void cos;
+  }
+});
+
+test('高架と地下の線路は地表に描かない', () => {
+  assert.equal(railShapes(straightRail(4, { elevated: true }), () => 10).length, 0);
+  assert.equal(railShapes(straightRail(4, { underground: true }), () => 10).length, 0);
+});
+
+test('地形が取れなくても線路は出る', () => {
+  // 標高が NaN で返ることがある。平地として扱う
+  const shapes = railShapes(straightRail(4), () => Number.NaN);
+  assert.ok(shapes.length > 0);
+  for (const s of shapes) {
+    if (s.kind === 'extrusion') {
+      for (const p of s.path) assert.ok(Number.isFinite(p.alt ?? 0), '高さが NaN');
+    }
+  }
 });

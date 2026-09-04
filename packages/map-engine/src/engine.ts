@@ -33,6 +33,8 @@ import {
   detailForHeight,
   getImagery,
   type ImageryDefinition,
+  FULL_RAIL_DETAIL,
+  railDetailForHeight,
   railShapes,
   roadShapes,
   signalShapes,
@@ -208,6 +210,27 @@ const MAX_CAMERA_HEIGHT_M = 25_000_000;
  */
 const GROUND_ATMOSPHERE_MIN_HEIGHT_M = 30_000;
 
+/**
+ * 枕木を描く線路までの距離 (m)。
+ *
+ * 枕木の幅は 0.24m。視野角 60 度・幅 400 画素の画面では、
+ * 200m 離れるとおよそ 0.6 画素になる。
+ *
+ * さらに絞って 120m にしてある。東京駅は 20 面 20 線で線路が密集しており、
+ * 200m だと視界の外の線路まで枕木を持つ（実測で 6,227 個・頂点 167,368。
+ * 道路全体の 102,300 頂点を超えてしまう）。
+ * 高度 50m で実際に見えるのは半径 100m ほどなので、120m で足りる。
+ */
+const RAIL_SLEEPER_RADIUS_M = 120;
+
+/** その線路がカメラの近くを通っているか（経路上の最短距離で見る） */
+function nearRailToEye(rail: { path: LatLng[] }, eye: LatLng): boolean {
+  for (const p of rail.path) {
+    if (distanceMeters(p, eye) <= RAIL_SLEEPER_RADIUS_M) return true;
+  }
+  return false;
+}
+
 export class MapEngine {
   readonly viewer: Cesium.Viewer;
   readonly buildings: BuildingLayerManager;
@@ -241,6 +264,8 @@ export class MapEngine {
   private furnitureCentre: LatLng | null = null;
   /** いま区画線まで描いているか（上空では描かない） */
   private roadsDetailFull = true;
+  /** いま線路をどこまで細かく描いているか（枕木・架線柱） */
+  private railDetail = FULL_RAIL_DETAIL;
   private lastSseChangeAt = 0;
   private fps = 0;
   private fpsLastSample = 0;
@@ -627,7 +652,12 @@ export class MapEngine {
     // 上空から見ているときは区画線を組み立てない（見えないものは描かない）。
     // 詳細度を鍵に含めるので、高度が変われば組み直しが走る
     const detail = detailForHeight(this.viewer.camera.positionCartographic?.height ?? 0);
-    const fullKey = `${key}@${detail.laneMarkings ? 'full' : 'plain'}`;
+    // 線路の細部（枕木・架線柱）もカメラの高さで変わるので、鍵に含める。
+    // 含めないと、寄っても枕木が出てこない
+    const railDetail = railDetailForHeight(this.viewer.camera.positionCartographic?.height ?? 0);
+    const fullKey =
+      `${key}@${detail.laneMarkings ? 'full' : 'plain'}` +
+      `+rail${railDetail.sleeperStep}-${railDetail.catenaryStep}`;
     if (this.roads.hasLoaded(fullKey)) return;
 
     // 交差点を先に割り出す。区画線を交差点の手前で切るのに要る。
@@ -650,7 +680,24 @@ export class MapEngine {
 
     if (needsGround) {
       const ground = await TerrainHeights.sample(this.viewer.terrainProvider, bbox);
-      for (const rail of scene.rails) shapes.push(...railShapes(rail, ground.lookup));
+      /**
+       * 枕木はカメラの近くの線路にだけ描く。
+       *
+       * 実測（東京駅周辺 1km 四方、2026-09-04）では、範囲内すべての線路に
+       * 枕木を描くと 13,397 個・頂点 339,448 になった。
+       * 道路全体が 8,600 個・102,300 頂点なので、その 3 倍を線路だけで使うことになる。
+       *
+       * 高度 50m で実際に見えるのは半径 100m ほど。遠くの線路の枕木は
+       * 描いても 1 画素に満たない。**どの線路が近いかは描画側にしか分からない**
+       * ので、ここで振り分ける（寸法の決め方は GIS 側のまま）。
+       */
+      const eye = this.cameraGroundPosition();
+      for (const rail of scene.rails) {
+        const near = eye ? nearRailToEye(rail, eye) : true;
+        shapes.push(
+          ...railShapes(rail, ground.lookup, near ? railDetail : { ...railDetail, sleeperStep: 0 }),
+        );
+      }
       for (const point of scene.points) shapes.push(...signalShapes(point, ground.lookup));
     }
 
@@ -658,6 +705,7 @@ export class MapEngine {
     await this.roads.render(shapes, fullKey);
     this.roadsCentre = centre;
     this.roadsDetailFull = detail.laneMarkings;
+    this.railDetail = railDetail;
     this.requestRender();
   }
 
@@ -672,7 +720,14 @@ export class MapEngine {
     if (this.destroyed) return false;
     if (this.roadsCentre === null) return false;
     const height = this.viewer.camera.positionCartographic?.height ?? 0;
-    return detailForHeight(height).laneMarkings !== this.roadsDetailFull;
+    if (detailForHeight(height).laneMarkings !== this.roadsDetailFull) return true;
+    // 線路の細部（枕木・架線柱）も高さで変わる。
+    // 見ないと、寄っても枕木が出てこない
+    const rail = railDetailForHeight(height);
+    return (
+      rail.sleeperStep !== this.railDetail.sleeperStep ||
+      rail.catenaryStep !== this.railDetail.catenaryStep
+    );
   }
 
   clearRoadScene(): void {
@@ -680,6 +735,7 @@ export class MapEngine {
     this.roads.clear();
     this.roadsCentre = null;
     this.roadsDetailFull = true;
+    this.railDetail = FULL_RAIL_DETAIL;
     this.requestRender();
   }
 

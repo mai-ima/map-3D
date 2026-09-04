@@ -18,7 +18,7 @@
  */
 
 import type { BBox, GroundRibbon, LatLng, LatLngAlt, SceneShape } from '@ijm/shared';
-import { distanceMeters } from '@ijm/shared';
+import { bearingDegrees, distanceMeters } from '@ijm/shared';
 import { primaryDeadline } from './config';
 import { fetchOsmMap } from './osm-api';
 import { fetchRoadNetwork, type OverpassElement, deadlineIn } from './overpass';
@@ -244,6 +244,18 @@ export interface RailPiece {
   tracks: number;
   elevated: boolean;
   underground: boolean;
+  /**
+   * 線路の種別（OSM の `railway`）。
+   * 縦断勾配の上限がこれで変わる（新幹線は緩く、路面電車は急）。
+   */
+  kind?: 'rail' | 'light_rail' | 'subway' | 'tram' | 'monorail';
+  /**
+   * 電化されているか（OSM の `electrified`）。
+   * 架線柱を立てるかどうかの判断に使う。**タグが無ければ立てない。**
+   */
+  electrified?: boolean;
+  /** 新幹線か（OSM の `usage=main` かつ `highspeed=yes`、または名前から） */
+  highspeed?: boolean;
 }
 
 /** 信号・横断歩道など、点として置くもの */
@@ -361,6 +373,16 @@ export function buildRoadScene(elements: OverpassElement[]): RoadScene {
         tracks: clamp(Math.round(parseNumber(tags.tracks) ?? 1), 1, MAX_TRACKS),
         elevated: isElevated(tags, lengthM),
         underground: isUnderground(tags),
+        kind: tags.railway as RailPiece['kind'],
+        // 電化の有無は OSM に入っているときだけ見る。
+        // `electrified=no` と書かれていることもあるので、値まで確かめる
+        electrified:
+          tags.electrified !== undefined && tags.electrified !== 'no'
+            ? true
+            : tags.electrified === 'no'
+              ? false
+              : undefined,
+        highspeed: tags.highspeed === 'yes',
       });
       continue;
     }
@@ -1045,48 +1067,265 @@ export function crossingShapes(road: RoadPiece, detail: RoadDetail = FULL_DETAIL
 const TRACK_SPACING = 4.1;
 
 /**
+ * 縦断勾配の上限 (‰)。
+ *
+ * 出典: 鉄道に関する技術上の基準を定める省令の解釈基準 第 15 条。
+ * 実物の線路は路盤で平されていて、地面の細かい起伏をなぞらない。
+ * 標高をそのまま使うと線路が波打ち、見た目が地面の凹凸そのものになる。
+ */
+const MAX_RAIL_GRADE: Record<NonNullable<RailPiece['kind']>, number> = {
+  // 本線の最急勾配。新幹線は 15‰ だが、上越新幹線に 30‰ の区間がある
+  rail: 35,
+  light_rail: 40,
+  subway: 35,
+  // 併用軌道（路面電車）は道路の勾配に従うので緩められない
+  tram: 60,
+  monorail: 60,
+};
+
+/**
+ * 道床が路盤に食い込む深さ (m)。
+ *
+ * バラスト道床は路盤の上に「載っている」のではなく、
+ * 路盤を掘り下げた道床厚のぶんだけ沈んでいる。
+ * 在来線の道床厚は 25cm（省令の解釈基準）で、
+ * そのうち枕木下の有効厚が確保されていればよい。
+ *
+ * **これが「線路が埋まる」ことへの備えにもなる。**
+ * 地形の標高は格子から補間するので、実際の地面と数十センチずれる。
+ * 東京駅周辺の実測（2026-09、国土地理院の標高 API と 100m 格子の比較）
+ * では中央値 0.08m・最大 0.25m ずれ、半数の点で地形のほうが高かった。
+ * 道床の上面が地表より確実に出るよう、下端を沈めて高さを稼ぐ。
+ */
+const BALLAST_EMBED_M = 0.15;
+
+/**
+ * 架線柱の高さ (m)。
+ *
+ * 出典: 電車線路設備の標準。
+ * 架線（トロリ線）の高さは軌道面から 5.0m 以上、
+ * その上に吊架線とがいし・腕金が載るので、柱の頂部は 6.5m 前後になる。
+ */
+const CATENARY_HEIGHT_M = 6.5;
+
+/**
+ * 枕木の標準間隔 (m)。
+ *
+ * 出典: 在来線 1 級線の PC まくらぎは 1km あたり 1,850 本。
+ * 1000 / 1850 ＝ 0.54m。
+ */
+const SLEEPER_STEP_M = 0.54;
+
+/**
+ * 架線柱の標準間隔 (m)。
+ * 出典: 電車線路設備の標準（直線区間の標準径間 50m）。
+ */
+const CATENARY_STEP_M = 50;
+
+/**
+ * way 1 本あたりの上限。
+ *
+ * OSM の way は 1 本で数キロに及ぶことがあり、`tracks` も 40 まで来る。
+ * 東京駅周辺 1km 四方の地表の線路は総延長およそ 7km あり、
+ * 0.54m 間隔の枕木は 13,000 本になる。20 面 20 線の駅構内なら桁が増える。
+ *
+ * **上限は way 全体で掛け、線路の本数で割り振る。**
+ * 線路ごとに上限を掛けると、駅構内で本数ぶんだけ倍になる
+ * （実際に tracks=40 で 24,000 個まで膨らんだ）。
+ *
+ * 300 本 × 0.54m ＝ 162m ぶん。描画側は半径 120m の線路にしか
+ * 枕木を描かないので、往復ぶんとして足りる。
+ */
+const MAX_SLEEPERS_PER_WAY = 300;
+const MAX_CATENARY_PER_WAY = 80;
+
+/**
+ * 枕木を描く線路の本数の上限。
+ *
+ * 駅構内のように何本も並ぶところでは、枕木まで描いても分からない。
+ * 1 本ずつ見分けられるのは、せいぜい複線・複々線まで。
+ */
+const MAX_TRACKS_WITH_SLEEPERS = 4;
+
+/**
+ * 線路をどこまで細かく描くか。
+ *
+ * カメラからの距離で決める。刻み幅は **2 の冪で**変える。
+ * 半端な比率だと、詳細度が戻ったときに枕木が横滑りして見える。
+ */
+export interface RailDetail {
+  /** 枕木の間隔 (m)。0 なら描かない */
+  sleeperStep: number;
+  /** 架線柱の間隔 (m)。0 なら描かない */
+  catenaryStep: number;
+}
+
+export const FULL_RAIL_DETAIL: RailDetail = {
+  sleeperStep: SLEEPER_STEP_M,
+  catenaryStep: CATENARY_STEP_M,
+};
+
+/**
+ * カメラの高さから線路の詳細度を決める。
+ *
+ *   60m 未満   枕木を実寸の間隔で。架線柱も標準間隔で
+ *   160m 未満  枕木を 2 本に 1 本、架線柱は標準間隔のまま
+ *   600m 未満  枕木は描かない（0.24m の幅は 1 画素を割る）。架線柱は 2 本に 1 本
+ *   それ以上   道床とレールだけ
+ *
+ * 枕木の幅 0.24m は、視野角 60 度・幅 400 画素の画面で
+ * 160m 離れるとおよそ 0.8 画素になる。そこから先は描いても見えない。
+ *
+ * 描画側はさらに「カメラから 120m 以内の線路」に絞る。
+ * 東京駅は 20 面 20 線で密集しており、範囲内すべてに描くと
+ * 道路全体より重くなる（実測: 枕木 13,397 個・頂点 339,448）。
+ */
+export function railDetailForHeight(cameraHeightM: number): RailDetail {
+  const h = Number.isFinite(cameraHeightM) ? cameraHeightM : 0;
+  if (h < 60) return FULL_RAIL_DETAIL;
+  if (h < 160) return { sleeperStep: SLEEPER_STEP_M * 2, catenaryStep: CATENARY_STEP_M };
+  if (h < 600) return { sleeperStep: 0, catenaryStep: CATENARY_STEP_M * 2 };
+  return { sleeperStep: 0, catenaryStep: 0 };
+}
+
+/**
+ * 線路の高さを、実際の敷設に合わせて平す。
+ *
+ * 地形の標高をそのまま頂点に当てると、線路が地面の凹凸をなぞって波打つ。
+ * 実物の線路は路盤で平されていて、勾配は連続で緩やかに変わる。
+ *
+ * 2 段構えにする。
+ *   1. 移動平均で細かい凹凸を落とす（路盤で平すことに相当）
+ *   2. 隣り合う点の勾配が上限を超えないよう、下流へ向かって補正する
+ *
+ * @returns 各頂点の路盤高さ (m)
+ */
+export function levelRailHeights(
+  path: LatLng[],
+  groundHeight: (p: LatLng) => number,
+  kind: RailPiece['kind'] = 'rail',
+): number[] {
+  const raw = path.map((p) => {
+    const h = groundHeight(p);
+    return Number.isFinite(h) ? h : 0;
+  });
+  if (raw.length <= 2) return raw;
+
+  // 1. 移動平均（前後 1 点）。端は動かさない（接続先とずれるため）
+  const smoothed = raw.map((h, i) => {
+    if (i === 0 || i === raw.length - 1) return h;
+    return (raw[i - 1] + h * 2 + raw[i + 1]) / 4;
+  });
+
+  // 2. 勾配の上限を守らせる。前から 1 回、後ろから 1 回かけると
+  //    どちらの向きから見ても上限に収まる
+  const maxGrade = (MAX_RAIL_GRADE[kind ?? 'rail'] ?? 35) / 1000;
+  const limit = (from: number, to: number, step: number) => {
+    for (let i = from; i !== to; i += step) {
+      const span = distanceMeters(path[i - step], path[i]);
+      if (!(span > 0)) continue;
+      const allowed = span * maxGrade;
+      const diff = smoothed[i] - smoothed[i - step];
+      if (Math.abs(diff) > allowed) {
+        smoothed[i] = smoothed[i - step] + Math.sign(diff) * allowed;
+      }
+    }
+  };
+  limit(1, smoothed.length, 1);
+  limit(smoothed.length - 2, -1, -1);
+
+  return smoothed;
+}
+
+/**
  * 地表の線路。
  *
  * バラスト（道床）の台形と、その上の 2 本のレール。
  * 高架区間は elevated-structures が別に建てるので、ここでは扱わない。
  */
-export function railShapes(rail: RailPiece, groundHeight: (p: LatLng) => number): SceneShape[] {
+export function railShapes(
+  rail: RailPiece,
+  groundHeight: (p: LatLng) => number,
+  detail: RailDetail = FULL_RAIL_DETAIL,
+): SceneShape[] {
   if (rail.elevated || rail.underground) return [];
+  if (rail.path.length < 2) return [];
   const out: SceneShape[] = [];
-  // 地形が取れないと NaN が返ることがある。平地として扱う
-  const height = (p: LatLng) => {
-    const h = groundHeight(p);
-    return Number.isFinite(h) ? h : 0;
-  };
+
+  /**
+   * 路盤の高さ。
+   *
+   * 地形の標高をそのまま当てず、実際の敷設に合わせて平す。
+   * そのままだと線路が地面の凹凸をなぞって波打つ（`levelRailHeights` を参照）。
+   */
+  const levels = levelRailHeights(rail.path, groundHeight, rail.kind);
+  /** 元の経路上の位置から、路盤の高さを引く */
+  const bedHeight = (index: number) => levels[Math.min(levels.length - 1, Math.max(0, index))];
+
   // 呼び出し側が上限を掛け忘れても固まらないよう、ここでも収める
   const tracks = clamp(Math.round(rail.tracks), 1, MAX_TRACKS);
   const span = (tracks - 1) * TRACK_SPACING;
+  const gauge = railGaugeOf(rail);
 
   for (let i = 0; i < tracks; i += 1) {
     const offset = -span / 2 + i * TRACK_SPACING;
     const centre = offsetPath(rail.path, offset);
-    const withHeight: LatLngAlt[] = centre.map((p) => ({ ...p, alt: height(p) }));
+    // 平行に寄せても頂点の数と順序は変わらないので、添字で高さを引ける
+    const withHeight: LatLngAlt[] = centre.map((p, k) => ({ ...p, alt: bedHeight(k) }));
 
-    // 道床。上底 3.0m / 下底 4.4m / 高さ 0.4m の台形
+    /**
+     * 道床（バラスト）。上底 3.0m / 下底 4.4m / 高さ 0.55m の台形。
+     *
+     * 出典: 鉄道に関する技術上の基準を定める省令の解釈基準。
+     * 道床厚は在来線で 0.25m 以上、道床肩の勾配は 1:1.5。
+     *
+     * 下端を路盤より `BALLAST_EMBED_M` だけ沈める。
+     * バラストは路盤の上に載っているのではなく、掘り下げたところに入っている。
+     * 地形の標高が格子の補間で数十センチずれても、上面が地表に出る。
+     */
     out.push({
       kind: 'extrusion',
       id: `${rail.id}#bed${i}`,
-      path: withHeight,
+      path: withHeight.map((p) => ({ ...p, alt: (p.alt ?? 0) - BALLAST_EMBED_M })),
       section: [
         { x: -2.2, y: 0 },
         { x: 2.2, y: 0 },
-        { x: 1.5, y: 0.4 },
-        { x: -1.5, y: 0.4 },
+        { x: 1.5, y: BALLAST_EMBED_M + 0.4 },
+        { x: -1.5, y: BALLAST_EMBED_M + 0.4 },
       ],
       color: '#6e6a63',
     } as SceneShape);
 
-    // レール 2 本。軌間 1,067mm（在来線）。レール頭部は道床から 0.2m
-    for (const gauge of [-0.5335, 0.5335]) {
+    /**
+     * 枕木。
+     *
+     * 出典: 鉄道の軌道構造（PC まくらぎ 2.0m × 0.24m × 0.2m、
+     * 本数は在来線の 1 級線で 1km あたり 1,850 本 ＝ 間隔 0.54m）。
+     * 近くで見ると、これが無いだけで「レールが浮いた棒」に見える。
+     *
+     * 数が多いので、近いときだけ描く。
+     * 東京駅周辺 1km 四方の地表の線路は総延長およそ 7km あり、
+     * 0.54m 間隔だと 13,000 本になる。
+     */
+    if (detail.sleeperStep > 0 && tracks <= MAX_TRACKS_WITH_SLEEPERS) {
+      out.push(
+        ...sleeperShapes(
+          rail,
+          centre,
+          levels,
+          i,
+          detail.sleeperStep,
+          Math.floor(MAX_SLEEPERS_PER_WAY / tracks),
+        ),
+      );
+    }
+
+    // レール 2 本。レール頭部は道床の上面から 0.15m
+    for (const side of [-gauge / 2, gauge / 2]) {
       out.push({
         kind: 'extrusion',
-        id: `${rail.id}#rail${i}${gauge > 0 ? 'R' : 'L'}`,
-        path: offsetPath(centre, gauge).map((p) => ({ ...p, alt: height(p) + 0.4 })),
+        id: `${rail.id}#rail${i}${side > 0 ? 'R' : 'L'}`,
+        path: offsetPath(centre, side).map((p, k) => ({ ...p, alt: bedHeight(k) + 0.4 })),
         section: [
           { x: -0.035, y: 0 },
           { x: 0.035, y: 0 },
@@ -1097,6 +1336,152 @@ export function railShapes(rail: RailPiece, groundHeight: (p: LatLng) => number)
         castsShadow: false,
       } as SceneShape);
     }
+  }
+
+  /**
+   * 架線柱。
+   *
+   * **OSM に `electrified` が入っているときだけ立てる。**
+   * 非電化の路線に架線柱を立てるのは、実在しない構造物を作ることになる。
+   *
+   * 出典: 電車線路設備の標準（き電線を支持する柱の間隔は直線区間で
+   * 50m 前後、曲線では短くなる。高さは架線 5.0m + がいし・腕金で 6.5m 前後）。
+   */
+  if (rail.electrified && detail.catenaryStep > 0) {
+    out.push(...catenaryShapes(rail, levels, span, detail.catenaryStep));
+  }
+
+  return out;
+}
+
+/** 方位 headingDeg に対して直角へ offsetM だけ寄せた地点（正が右） */
+function railSideOffset(point: LatLng, offsetM: number, headingDeg: number): LatLng {
+  const rad = ((headingDeg + 90) * Math.PI) / 180;
+  const cos = Math.cos((point.lat * Math.PI) / 180) || 1;
+  return {
+    lat: point.lat + (Math.cos(rad) * offsetM) / 111_320,
+    lng: point.lng + (Math.sin(rad) * offsetM) / (111_320 * cos),
+  };
+}
+
+/**
+ * 軌間 (m)。
+ *
+ * 出典: 鉄道に関する技術上の基準を定める省令。
+ *   在来線・地下鉄の多く … 1,067mm（狭軌）
+ *   新幹線・一部の私鉄   … 1,435mm（標準軌）
+ *
+ * OSM に `gauge` が入っていればそちらが正だが、
+ * ここでは種別からの一般値にとどめる（`gauge` の整備率が低いため）。
+ * モノレールは軌条式ではないので、軌道桁の幅として扱う。
+ */
+function railGaugeOf(rail: RailPiece): number {
+  if (rail.highspeed) return 1.435;
+  if (rail.kind === 'monorail') return 0.85;
+  return 1.067;
+}
+
+/** 枕木。等間隔に並べる */
+function sleeperShapes(
+  rail: RailPiece,
+  centre: LatLng[],
+  levels: number[],
+  track: number,
+  stepM: number,
+  maxCount: number,
+): SceneShape[] {
+  const out: SceneShape[] = [];
+  // 累積距離を作り、等間隔で刻む
+  const cumulative = [0];
+  for (let i = 1; i < centre.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + distanceMeters(centre[i - 1], centre[i]));
+  }
+  const total = cumulative[cumulative.length - 1];
+  if (!(total > 0)) return out;
+
+  // 1 本の way が長いと枕木だけで数千個になる。上限を掛ける
+  const count = Math.min(maxCount, Math.floor(total / stepM));
+  for (let n = 0; n <= count; n += 1) {
+    const d = n * stepM;
+    if (d > total) break;
+    // その距離にある区間を探す
+    let seg = 1;
+    while (seg < cumulative.length - 1 && cumulative[seg] < d) seg += 1;
+    const span = cumulative[seg] - cumulative[seg - 1];
+    const t = span > 0 ? (d - cumulative[seg - 1]) / span : 0;
+    const a = centre[seg - 1];
+    const b = centre[seg];
+    const position = {
+      lat: a.lat + (b.lat - a.lat) * t,
+      lng: a.lng + (b.lng - a.lng) * t,
+    };
+    const alt = levels[seg - 1] + (levels[seg] - levels[seg - 1]) * t;
+
+    out.push({
+      kind: 'box',
+      id: `${rail.id}#tie${track}-${n}`,
+      centre: { ...position, alt: alt + 0.3 },
+      // PC まくらぎ 2.0m × 0.24m × 0.2m。中心は道床の上面から半分の高さ
+      size: { x: 0.24, y: 2.0, z: 0.2 },
+      headingDeg: bearingDegrees(a, b),
+      color: '#7a746c',
+      castsShadow: false,
+    } as SceneShape);
+  }
+  return out;
+}
+
+/**
+ * 架線柱。
+ *
+ * 線路の脇に、直線区間の標準間隔で立てる。
+ * 本数が多いので、遠いときは間引く（間引きは 2 の冪で行う）。
+ */
+function catenaryShapes(
+  rail: RailPiece,
+  levels: number[],
+  trackSpan: number,
+  stepM: number,
+): SceneShape[] {
+  const out: SceneShape[] = [];
+  const path = rail.path;
+  const cumulative = [0];
+  for (let i = 1; i < path.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + distanceMeters(path[i - 1], path[i]));
+  }
+  const total = cumulative[cumulative.length - 1];
+  if (!(total > 0)) return out;
+
+  // 柱は線路群の外側に立てる。軌道中心から半分 + 建築限界の余裕 1.9m
+  const sideOffset = trackSpan / 2 + 1.9;
+  const count = Math.min(MAX_CATENARY_PER_WAY, Math.floor(total / stepM));
+
+  for (let n = 0; n <= count; n += 1) {
+    const d = n * stepM;
+    if (d > total) break;
+    let seg = 1;
+    while (seg < cumulative.length - 1 && cumulative[seg] < d) seg += 1;
+    const span = cumulative[seg] - cumulative[seg - 1];
+    const t = span > 0 ? (d - cumulative[seg - 1]) / span : 0;
+    const a = path[seg - 1];
+    const b = path[seg];
+    const on = { lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t };
+    const alt = levels[seg - 1] + (levels[seg] - levels[seg - 1]) * t;
+    const heading = bearingDegrees(a, b);
+    // 進行方向に対して左右交互に立てる（実物も片側に寄せることが多い）
+    const side = n % 2 === 0 ? sideOffset : -sideOffset;
+    const base = railSideOffset(on, side, heading);
+
+    out.push({
+      kind: 'revolved',
+      id: `${rail.id}#pole${n}`,
+      base: { ...base, alt },
+      height: CATENARY_HEIGHT_M,
+      // H 鋼の柱。根元 0.13m / 頂部 0.10m の円柱として近似する
+      bottomRadius: 0.13,
+      topRadius: 0.1,
+      color: '#5e6165',
+    } as SceneShape);
   }
   return out;
 }

@@ -44,6 +44,8 @@ const railViaduct: ElevatedStructure = {
 };
 
 interface Measured {
+  /** GeometryInstance の id（床版・軌道などを見分ける） */
+  id: string;
   bottom: number;
   top: number;
   /** 南北方向の広がり (m)。東西に伸びる構造物では構造の幅 */
@@ -90,6 +92,7 @@ function measure(instance: Cesium.GeometryInstance): Measured | null {
 
   const cos = Math.cos((BASE.lat * Math.PI) / 180);
   return {
+    id: typeof instance.id === 'string' ? instance.id : '',
     bottom: minH,
     top: maxH,
     width: (maxLat - minLat) * M_PER_DEG_LAT,
@@ -140,14 +143,16 @@ test('ラーメン高架橋は床版・縦梁・横梁・柱・防音壁で組�
   const [deck, frame, rail] = await build([railViaduct]);
 
   // --- 床版と縦梁 ---
-  // 生成順は 床版 → 縦梁(左) → 縦梁(右)
-  assert.equal(deck.length, 3, '床版 1 + 縦梁 2');
-  const slab = deck[0];
+  // 生成順は 床版 → 縦梁(左) → 縦梁(右) → 軌道（スラブとレール）。
+  // 軌道は id で見分けて外す
+  const frameOnly = deck.filter((d) => !d.id.includes('#slab') && !d.id.includes('#rail'));
+  assert.equal(frameOnly.length, 3, '床版 1 + 縦梁 2');
+  const slab = frameOnly[0];
   near(slab.width, 11, 0.1, '床版の幅');
   near(slab.top, 8 + 1.0 + 0.35, 0.05, '床版の上面（梁下高 + 縦梁高 + 版厚）');
   near(slab.bottom, 8 + 1.0, 0.05, '床版の下面が縦梁の上面');
 
-  const girders = deck.slice(1);
+  const girders = frameOnly.slice(1);
   for (const g of girders) {
     near(g.bottom, 8, 0.05, '縦梁の下面が梁下高');
     near(g.top, 9, 0.05, '縦梁の上面が床版の下面');
@@ -475,4 +480,47 @@ test('破棄されたあとに clear しても落ちない', async () => {
   await layer.render([railViaduct], 'a');
   h.destroy();
   layer.clear();
+});
+
+/**
+ * 高架の上の軌道。
+ *
+ * **これが無かったので、高架の線路は床版の上に何も無く、
+ * 「線路が床版に埋まっている」ように見えていた。**
+ * 浜松では線路 55 本がすべて高架なので、線路が 1 本も見えていなかった
+ * （実測 2026-09-04: 浜松駅周辺 1km 四方の線路 55 本 = 地表 0 / 高架 55 / 地下 0）。
+ *
+ * 形の記述としての検証は structure-geometry.test.ts が持つ。
+ * ここでは Cesium の頂点まで通したときに、
+ * **床版の上に載っていて、埋まっていない**ことを実測する。
+ */
+test('高架の軌道は床版の上に載る（頂点で測る）', async () => {
+  const [deck] = await build([railViaduct]);
+
+  const slabs = deck.filter((d) => d.id.includes('#slab'));
+  const rails = deck.filter((d) => d.id.includes('#rail'));
+  const bridge = deck.find((d) => !d.id.includes('#slab') && !d.id.includes('#rail'));
+  assert.ok(bridge, '床版が無い');
+  if (!bridge) return;
+
+  assert.equal(slabs.length, 2, '複線ぶんの軌道スラブ');
+  assert.equal(rails.length, 4, 'レールが 4 本でない');
+
+  // 路面（床版の上面）は 9.35m。軌道スラブはその上から始まる
+  for (const slab of slabs) {
+    near(slab.bottom, bridge.top, 0.02, '軌道スラブが床版に埋まっている');
+    near(slab.top - slab.bottom, 0.19, 0.02, '軌道スラブの厚さ');
+    near(slab.width, 2.34, 0.05, '軌道スラブの幅');
+  }
+
+  // レールは軌道スラブの上面から
+  for (const r of rails) {
+    near(r.bottom, bridge.top + 0.19, 0.02, 'レールがスラブに埋まっている');
+    near(r.top - r.bottom, 0.153, 0.02, 'レールの高さ');
+  }
+
+  // 軌道は防音壁の内側に収まる（幅 11m の床版から外へ出ない）
+  for (const s of [...slabs, ...rails]) {
+    assert.ok(Math.abs(s.offset) < 11 / 2, `軌道が床版の外に出ている: ${s.offset.toFixed(2)}m`);
+  }
 });

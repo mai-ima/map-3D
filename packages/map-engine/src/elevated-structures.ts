@@ -22,6 +22,14 @@ import {
   valueAt,
 } from '@ijm/gis';
 import { batchShapes, buildPrimitives } from './scene-renderer';
+
+/**
+ * 高架の上に軌道を敷く上限のカメラ高度 (m)。
+ *
+ * 軌道スラブの幅は 2.34m。視野角 60 度・幅 400 画素の画面では、
+ * 1,500m 上空からおよそ 0.5 画素になる。そこから先は描いても見えない。
+ */
+const ELEVATED_TRACK_MAX_HEIGHT_M = 1500;
 import { liveScene, waitForPrimitives } from './primitive-swap';
 
 /**
@@ -89,10 +97,20 @@ export class ElevatedStructureLayer {
     const distances = this.distancesFrom(ordered);
     const ground = await this.sampleGround(ordered);
 
+    /**
+     * 高架の上の軌道は、上空から見るときだけ落とす。
+     *
+     * スラブ 1 本 + レール 2 本で、線路 1 本につき 3 形。
+     * 軌道スラブの幅 2.34m は上空 1,500m から見ると 1 画素を割る。
+     */
+    // camera が無い経路もある（破棄後・テストの疑似 Viewer）。
+    // 読めなければ地上にいるものとして軌道を敷く
+    const cameraHeight = this.viewer.camera?.positionCartographic?.height ?? 0;
     const shapes = buildStructureShapes(ordered, {
       ground,
       distances,
       frameBudget: MAX_FRAME_SHAPES,
+      tracks: cameraHeight < ELEVATED_TRACK_MAX_HEIGHT_M,
     });
 
     // 標高の取得を待っている間に画面を離れているかもしれない
