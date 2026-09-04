@@ -716,3 +716,76 @@ test('階段には軌道を敷かない', () => {
   const { deck } = build([{ ...railViaduct, form: 'stair', startHeight: 0 }]);
   assert.equal(deck.filter((s) => s.id?.includes('#slab')).length, 0);
 });
+
+/**
+ * 高架の架線柱。
+ *
+ * 電化された高架には、床版の縁に架線柱が並ぶ。
+ * 無いと、線路だけが敷かれた「屋根の無い橋」に見える。
+ *
+ * 出典: 電車線路設備の標準（直線区間の標準径間 50m、
+ * トロリ線は軌道面から 5.0m 以上、柱の頂部は 6.5m 前後）。
+ *
+ * **OSM に `electrified` が入っているときだけ立てる。**
+ * 非電化の路線に立てるのは、実在しない構造物を作ることになる
+ * （実測 2026-09-04: 浜松の線路 55 本のうち 52 本、
+ *  東京の 364 本のうち 353 本に electrified のタグがある）。
+ */
+test('電化された高架には架線柱が立つ', () => {
+  const { frame } = build([{ ...railViaduct, electrified: true }]);
+  const poles = frame.filter((s) => s.id?.includes('#pole'));
+  assert.ok(poles.length > 0, '架線柱が無い');
+
+  // 178m を 50m 間隔で ＝ 4 本（0m / 50m / 100m / 150m）
+  assert.equal(poles.length, 4, '架線柱の本数');
+
+  for (const pole of poles) {
+    assert.equal(pole.kind, 'revolved');
+    if (pole.kind !== 'revolved') continue;
+    near(pole.height, 6.5, 0.01, '架線柱の高さ');
+    // 路面（9.35m）から立つ
+    near(pole.base.alt!, 9.35, 0.01, '架線柱が路面から立っていない');
+  }
+});
+
+test('架線柱は床版の内側に立つ', () => {
+  // 床版の外に立てると、柱が宙に浮く
+  const { frame } = build([{ ...railViaduct, electrified: true }]);
+  const poles = frame.filter((s) => s.id?.includes('#pole'));
+  for (const pole of poles) {
+    if (pole.kind !== 'revolved') continue;
+    const offset = Math.abs(pole.base.lat - BASE.lat) * 111_320;
+    assert.ok(offset < 11 / 2, `柱が床版の外にある: ${offset.toFixed(2)}m`);
+    // 中心にも立てない（線路の上になる）
+    assert.ok(offset > 3, `柱が線路の上にある: ${offset.toFixed(2)}m`);
+  }
+});
+
+test('電化のタグが無ければ架線柱を立てない', () => {
+  for (const electrified of [undefined, false]) {
+    const { frame } = build([{ ...railViaduct, electrified }]);
+    assert.equal(
+      frame.filter((s) => s.id?.includes('#pole')).length,
+      0,
+      `electrified=${String(electrified)}`,
+    );
+  }
+});
+
+test('道路の高架には架線柱を立てない', () => {
+  const { frame } = build([
+    { ...railViaduct, id: 'road', kind: 'road-bridge', electrified: true },
+  ]);
+  assert.equal(frame.filter((s) => s.id?.includes('#pole')).length, 0);
+});
+
+test('上空からは架線柱も落とす', () => {
+  const shapes = buildStructureShapes([{ ...railViaduct, electrified: true }], {
+    ground: [railViaduct.path.map(() => 0)],
+    distances: [0],
+    tracks: false,
+  });
+  assert.equal(shapes.frame.filter((s) => s.id?.includes('#pole')).length, 0);
+  // 柱（橋脚）は残る
+  assert.ok(shapes.frame.length > 0, '橋脚まで消えた');
+});

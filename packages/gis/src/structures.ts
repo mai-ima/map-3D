@@ -570,6 +570,12 @@ export function toStructure(
     parapetHeight: profile.parapetHeight,
     lanes: parseIntTag(tags.lanes),
     tracks: tags.tracks ? clampValue(parseIntTag(tags.tracks) ?? 1, 1, MAX_TRACKS) : undefined,
+    // 電化の有無は OSM に入っているときだけ見る。
+    // `electrified=no` と書かれていることもあるので、値まで確かめる
+    electrified:
+      tags.electrified === undefined
+        ? undefined
+        : tags.electrified !== 'no' && tags.electrified !== 'none',
   };
 }
 

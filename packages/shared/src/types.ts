@@ -350,6 +350,14 @@ export interface ElevatedStructure {
   width: number;
   /** OSM の layer。上下関係の目安 */
   layer: number;
+  /**
+   * 電化されているか（OSM の `electrified`）。
+   *
+   * 高架の上に架線柱を立てるかどうかの判断に使う。
+   * **タグが無ければ立てない。** 非電化の路線に架線柱を立てるのは、
+   * 実在しない構造物を作ることになる。
+   */
+  electrified?: boolean;
   /** 床版の厚み (m) */
   deckThickness: number;
   /** 縦梁の高さ (m)。0 なら梁を持たない構造 */

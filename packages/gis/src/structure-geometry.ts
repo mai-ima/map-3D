@@ -516,6 +516,28 @@ const SLAB_TRACK_THICKNESS_M = 0.19;
 const MAX_ELEVATED_TRACKS = 8;
 
 /**
+ * 高架の架線柱の間隔 (m) と高さ (m)。
+ * 出典: 電車線路設備の標準（直線区間の標準径間 50m、柱の頂部は 6.5m 前後）。
+ */
+const CATENARY_SPACING_M = 50;
+const CATENARY_HEIGHT_M = 6.5;
+/** 1 つの構造物に立てる架線柱の上限 */
+const MAX_CATENARY_PER_STRUCTURE = 40;
+/**
+ * 一度に立てる架線柱の総数の上限。
+ *
+ * 実測（2026-09-04、浜松駅周辺 1km 四方、すべての構造物がカメラの
+ * すぐそばにある最悪の場合）で 461 本になった。
+ * 柱 1 本が回転体で約 96 頂点なので、これだけで 44,000 頂点を使う。
+ * 近いものから使い、足りなくなったら立てない。
+ */
+const MAX_CATENARY_TOTAL = 400;
+/** 架線柱を標準間隔で立てる距離 (m)。これより遠いと 2 本に 1 本 */
+const CATENARY_FULL_DISTANCE_M = 300;
+/** 架線柱を立てる上限の距離 (m)。柱の太さ 0.26m は 800m で 1 画素を割る */
+const CATENARY_MAX_DISTANCE_M = 800;
+
+/**
  * 高架の上の軌道。
  *
  * **これが無かったので、高架の線路は床版の上に何も無く、
@@ -590,6 +612,81 @@ function trackShapes(
         ),
       );
     }
+  }
+  return out;
+}
+
+/**
+ * 高架の架線柱。
+ *
+ * 電化された高架には、床版の縁に架線柱が並ぶ。
+ * 無いと、線路だけが敷かれた「屋根の無い橋」に見える。
+ *
+ * **OSM に `electrified` が入っているときだけ立てる。**
+ * 非電化の路線に立てるのは、実在しない構造物を作ることになる。
+ *
+ * 出典: 電車線路設備の標準。
+ *   直線区間の標準径間 50m
+ *   トロリ線の高さは軌道面から 5.0m 以上、柱の頂部は 6.5m 前後
+ *
+ * 柱は左右交互に立てる（実物も片側に寄せることが多い）。
+ * 位置は床版の縁から内側へ 0.4m（防音壁の内側）。
+ */
+function elevatedCatenaryShapes(
+  s: ElevatedStructure,
+  metrics: PathMetrics,
+  deckTop: number[],
+  budget: number,
+  distanceM: number,
+): SceneShape[] {
+  if (!s.electrified || !s.kind.startsWith('rail')) return [];
+  if (s.form === 'stair' || budget <= 0) return [];
+
+  /**
+   * カメラからの距離で間引く。**間引きは 2 の冪で。**
+   * 半端な比率だと、詳細度が戻ったときに柱が横滑りして見える。
+   *
+   * 柱の太さは 0.26m。視野角 60 度・幅 400 画素の画面では、
+   * 800m 離れるとおよそ 0.3 画素になる。そこから先は描いても見えない。
+   */
+  const spacing =
+    distanceM < CATENARY_FULL_DISTANCE_M
+      ? CATENARY_SPACING_M
+      : distanceM < CATENARY_MAX_DISTANCE_M
+        ? CATENARY_SPACING_M * 2
+        : 0;
+  if (spacing <= 0) return [];
+  if (metrics.total < spacing) return [];
+
+  const out: SceneShape[] = [];
+  const count = Math.min(budget, Math.floor(metrics.total / spacing));
+  // 床版の縁から内側へ。防音壁（厚さ 0.22m）の内側に収める
+  const offset = s.width / 2 - 0.4;
+
+  for (let n = 0; n <= count; n += 1) {
+    const d = n * spacing;
+    if (d > metrics.total) break;
+    const on = pointAt(
+      s.path.map((p) => p.lat),
+      s.path.map((p) => p.lng),
+      metrics.cumulative,
+      d,
+    );
+    // shift は heading の右方向へ寄せる（すでに +90 度している）
+    const heading = headingAtDistance(s.path, metrics.cumulative, d);
+    const alt = valueAt(deckTop, metrics.cumulative, d);
+    const side = n % 2 === 0 ? offset : -offset;
+    const base = shift(on, side, heading);
+
+    out.push({
+      kind: 'revolved',
+      id: `${s.id}#pole${n}`,
+      base: { ...base, alt },
+      height: CATENARY_HEIGHT_M,
+      bottomRadius: 0.13,
+      topRadius: 0.1,
+      color: '#5e6165',
+    } as SceneShape);
   }
   return out;
 }
@@ -943,6 +1040,9 @@ export function buildStructureShapes(
 ): StructureShapes {
   const out: StructureShapes = { deck: [], frame: [], parapet: [] };
   let budget = options.frameBudget ?? MAX_FRAME_SHAPES;
+  // 架線柱は橋脚とは別枠で数える。同じ予算にすると、
+  // 架線柱が先に使い切って橋脚が消えることがある
+  let catenaryBudget = MAX_CATENARY_TOTAL;
 
   structures.forEach((s, index) => {
     if (s.path.length < 2) return;
@@ -970,6 +1070,18 @@ export function buildStructureShapes(
     out.deck.push(...deckShapes(s, beamBottom, slabBottom, material.deck));
     // 高架の上の軌道。無いと線路が床版に埋まって見える
     out.deck.push(...trackShapes(s, deckTop, { rails: options.tracks !== false }));
+    // 電化された高架には架線柱が並ぶ。軌道と同じ距離で出し分ける
+    if (options.tracks !== false) {
+      const poles = elevatedCatenaryShapes(
+        s,
+        metrics,
+        deckTop,
+        Math.min(MAX_CATENARY_PER_STRUCTURE, catenaryBudget),
+        options.distances[index] ?? 0,
+      );
+      out.frame.push(...poles);
+      catenaryBudget -= poles.length;
+    }
     out.parapet.push(...parapetShapes(s, deckTop, material.deck));
     if (s.form === 'stair') {
       // 階段は上端で高架の床版に直接つながる。そこに橋台を立てると
