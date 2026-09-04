@@ -98,6 +98,67 @@ interface ValhallaManeuver {
   bearing_before?: number;
   bearing_after?: number;
   travel_mode?: string;
+  /**
+   * 案内標識の内容（高速道路の分岐・出口）。
+   *
+   * 実データで確認した形（2026-09, valhalla1.openstreetmap.de、
+   * 東京駅 → 御殿場。16 のマニューバのうち 3 つが中身を持っていた）:
+   *
+   *   exit_number_elements  [{ text: "7" }]                     出口番号
+   *   exit_branch_elements  [{ text: "138" }]                   分岐先の路線番号
+   *   exit_toward_elements  [{ text: "山中湖" }, { text: "箱根" }]  方面
+   *   exit_name_elements    [{ text: "御殿場ＩＣ" }, { text: "Gotemba" }] 出口名
+   *
+   * 一般道だけの経路では `sign: {}` と空で返る。
+   */
+  sign?: {
+    exit_number_elements?: { text?: string }[];
+    exit_branch_elements?: { text?: string }[];
+    exit_toward_elements?: { text?: string }[];
+    exit_name_elements?: { text?: string }[];
+  };
+  /**
+   * 車線案内。
+   *
+   * **2026-09 時点の公開デモ（valhalla1.openstreetmap.de）は返さない。**
+   * 一般道・高速道路のどちらの経路でも 0 件だった（実測）。
+   * 自前の Valhalla を新しい版で立てれば入る可能性があるので、
+   * 来ていたら読めるように型だけ置いておく。
+   * ただし **中身の形を実データで確認できるまで解釈しない**
+   * （推測で車線の矢印を作ると、運転中に誤った車線へ寄せることになる）。
+   */
+  lanes?: unknown;
+}
+
+/**
+ * 標識の要素から日本語のものを選ぶ。
+ *
+ * Valhalla は日本語と英語を並べて返すことがある
+ * （実データ: 「御殿場ＩＣ」と「Gotemba」）。
+ * 日本の案内標識に合わせて日本語を優先し、
+ * 日本語が無ければ先頭を使う（英語しか無い地域のため）。
+ */
+function pickJapanese(elements: { text?: string }[] | undefined): string | undefined {
+  // 配列で来るとは限らない。相手はネットワーク越しの JSON で、
+  // 型どおりでない値が届いても案内そのものは出す
+  const texts = signTexts(elements);
+  if (texts.length === 0) return undefined;
+  // ひらがな・カタカナ・漢字のいずれかを含むものを日本語とみなす
+  return texts.find((t) => /[ぁ-んァ-ヶ一-龠]/.test(t)) ?? texts[0];
+}
+
+/** 標識の要素を「・」で並べる（日本の案内標識の書き方） */
+function joinElements(elements: { text?: string }[] | undefined): string | undefined {
+  const texts = signTexts(elements);
+  return texts.length > 0 ? texts.join('・') : undefined;
+}
+
+/** 標識の要素から、読める文字列だけを取り出す */
+function signTexts(elements: { text?: string }[] | undefined): string[] {
+  if (!Array.isArray(elements)) return [];
+  return elements
+    .map((e) => (typeof e?.text === 'string' ? e.text.trim() : ''))
+    .filter((t) => t.length > 0);
 }
 
 interface ValhallaLeg {
@@ -236,6 +297,11 @@ export class ValhallaProvider implements RouteProvider {
           streetName,
           nextStreetName: next?.street_names?.[0],
           shapeIndex,
+          // 案内標識（高速道路の分岐・出口）。無ければ何も出さない
+          destination: joinElements(m.sign?.exit_toward_elements),
+          routeRef: joinElements(m.sign?.exit_branch_elements),
+          exitNumber: pickJapanese(m.sign?.exit_number_elements),
+          exitName: pickJapanese(m.sign?.exit_name_elements),
         });
 
         steps.push({

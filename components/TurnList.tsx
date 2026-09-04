@@ -73,11 +73,21 @@ export default function TurnList({ route, onFocus, className }: TurnListProps) {
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-mist-200">{label}</span>
                   {detail && <span className="block truncate text-mist-500">{detail}</span>}
-                  {(m.routeRef || m.destination) && (
+                  {(m.routeRef || m.destination || m.exitNumber) && (
                     <span className="mt-0.5 flex items-center gap-1.5">
+                      {m.exitNumber && (
+                        <span className="shrink-0 rounded-[3px] bg-signal-500/25 px-1 text-[10px] font-semibold tabular-nums text-signal-300">
+                          出口 {m.exitNumber}
+                        </span>
+                      )}
                       {m.routeRef && (
                         <span className="shrink-0 rounded-[3px] border border-mist-500/50 px-1 text-[10px] font-semibold tabular-nums text-mist-300">
                           {m.routeRef}
+                        </span>
+                      )}
+                      {m.exitName && (
+                        <span className="shrink-0 truncate text-[11px] text-mist-300">
+                          {m.exitName}
                         </span>
                       )}
                       {m.destination && (

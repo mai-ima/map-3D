@@ -82,6 +82,27 @@ function RouteRefBadge({ value }: { value: string }) {
   );
 }
 
+/**
+ * 出口番号のバッジ。
+ *
+ * 日本の高速道路の出口標識は、緑地に白抜きで番号を大きく出す
+ * （道路標識、区画線及び道路標示に関する命令 別表第 2 の
+ *  「出口の予告」「出口」）。それに倣って緑で描く。
+ *
+ * 出典は OSM の `junction:ref` / `exit_to` で、
+ * 経路エンジンが標識の内容として返してくる。無ければ出さない。
+ */
+function ExitBadge({ number }: { number: string }) {
+  return (
+    <span
+      className="shrink-0 rounded-[3px] bg-signal-500/25 px-1.5 py-px text-[11px] font-semibold tabular-nums text-signal-300"
+      title={`出口 ${number}`}
+    >
+      出口 {number}
+    </span>
+  );
+}
+
 const STATE_LABELS: Record<string, string> = {
   FOLLOW: '追従',
   APPROACH_TURN: '交差点接近',
@@ -157,9 +178,13 @@ export default function NextTurnPanel({
                   方面案内。案内標識に書かれている行き先と路線番号を出す。
                   出典は OSM の destination / ref で、無ければ何も出さない
                 */}
-                {(next?.routeRef || next?.destination) && (
+                {(next?.routeRef || next?.destination || next?.exitNumber) && (
                   <p className="mt-0.5 flex items-center gap-1.5 truncate text-[12px]">
+                    {next.exitNumber && <ExitBadge number={next.exitNumber} />}
                     {next.routeRef && <RouteRefBadge value={next.routeRef} />}
+                    {next.exitName && (
+                      <span className="shrink-0 font-medium text-mist-200">{next.exitName}</span>
+                    )}
                     {next.destination && (
                       <span className="truncate text-mist-400">{next.destination}方面</span>
                     )}

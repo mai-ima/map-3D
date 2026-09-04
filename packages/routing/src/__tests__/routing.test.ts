@@ -535,3 +535,137 @@ describe('OSRM の方面案内', () => {
     }
   });
 });
+
+/**
+ * Valhalla の案内標識（高速道路の分岐・出口）。
+ *
+ * 公開デモ（valhalla1.openstreetmap.de）で東京駅 → 御殿場を引いたときの
+ * 実際の応答から形を取った（2026-09）。
+ * 16 のマニューバのうち 3 つが中身のある `sign` を持っていた。
+ *
+ *   {"instruction": "C1を直進です。",
+ *    "sign": {"exit_branch_elements": [{"text": "C1"}]}}
+ *
+ *   {"instruction": "7番出口です。",
+ *    "sign": {"exit_number_elements": [{"text": "7"}],
+ *             "exit_name_elements": [{"text": "御殿場ＩＣ"}, {"text": "Gotemba"}]}}
+ *
+ *   {"instruction": "左方向です。その先138、山中湖/箱根方面です。",
+ *    "sign": {"exit_branch_elements": [{"text": "138"}],
+ *             "exit_toward_elements": [{"text": "山中湖"}, {"text": "箱根"}]}}
+ *
+ * 一般道だけの経路では `sign: {}` と空で返ることも確認済み。
+ */
+describe('Valhalla の案内標識', () => {
+  /** 実際の応答と同じ形の maneuver を 1 つ持つ経路 */
+  function signed(sign: unknown) {
+    return valhallaTrip({
+      legs: [
+        {
+          shape: encodePolyline(PATH, 6),
+          summary: { time: 120, length: 0.6 },
+          maneuvers: [
+            {
+              type: 1,
+              instruction: '進みます',
+              time: 60,
+              length: 0.3,
+              begin_shape_index: 0,
+              end_shape_index: 3,
+              sign,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  test('出口番号と出口名を読む', async () => {
+    reply(
+      signed({
+        exit_number_elements: [{ text: '7' }],
+        exit_name_elements: [{ text: '御殿場ＩＣ' }, { text: 'Gotemba' }],
+      }),
+    );
+    const route = await valhalla.route(REQUEST);
+    const m = route.maneuvers[0];
+    assert.equal(m.exitNumber, '7');
+    // 日本語と英語が並んで返るので、日本語を採る
+    assert.equal(m.exitName, '御殿場ＩＣ');
+  });
+
+  test('方面と路線番号を読む', async () => {
+    reply(
+      signed({
+        exit_branch_elements: [{ text: '138' }],
+        exit_toward_elements: [{ text: '山中湖' }, { text: '箱根' }],
+      }),
+    );
+    const route = await valhalla.route(REQUEST);
+    // 日本の案内標識の書き方に合わせて「・」で並べる
+    assert.equal(route.maneuvers[0].destination, '山中湖・箱根');
+    assert.equal(route.maneuvers[0].routeRef, '138');
+  });
+
+  test('日本語が無ければ英語を使う', async () => {
+    // 英語しか入っていない地域のため。空にはしない
+    reply(signed({ exit_name_elements: [{ text: 'Gotemba' }] }));
+    const route = await valhalla.route(REQUEST);
+    assert.equal(route.maneuvers[0].exitName, 'Gotemba');
+  });
+
+  test('空の sign では何も出さない', async () => {
+    // 一般道だけの経路では sign: {} が返る
+    for (const empty of [{}, { exit_toward_elements: [] }, undefined]) {
+      reply(signed(empty));
+      const route = await valhalla.route(REQUEST);
+      const m = route.maneuvers[0];
+      assert.equal(m.destination, undefined, JSON.stringify(empty));
+      assert.equal(m.routeRef, undefined);
+      assert.equal(m.exitNumber, undefined);
+      assert.equal(m.exitName, undefined);
+    }
+  });
+
+  test('壊れた sign でも案内は成立する', async () => {
+    for (const broken of [
+      { exit_toward_elements: 'まっすぐ' },
+      { exit_number_elements: [{}, { text: '  ' }] },
+      { exit_branch_elements: [null] },
+    ]) {
+      reply(signed(broken));
+      const route = await valhalla.route(REQUEST);
+      assert.ok(route.coordinates.length >= 2, JSON.stringify(broken));
+      assert.equal(route.maneuvers[0].destination, undefined);
+    }
+  });
+
+  test('車線案内は解釈しない', async () => {
+    // 2026-09 時点の公開デモは lanes を返さない（一般道・高速道路とも 0 件）。
+    // 中身の形を実データで確認できるまで解釈しない。
+    // 推測で車線の矢印を作ると、運転中に誤った車線へ寄せることになる
+    reply(
+      valhallaTrip({
+        legs: [
+          {
+            shape: encodePolyline(PATH, 6),
+            summary: { time: 120, length: 0.6 },
+            maneuvers: [
+              {
+                type: 1,
+                instruction: '進みます',
+                time: 60,
+                length: 0.3,
+                begin_shape_index: 0,
+                end_shape_index: 3,
+                lanes: [{ directions_mask: 8, valid: true, active: true }],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const route = await valhalla.route(REQUEST);
+    assert.equal(route.maneuvers[0].lanes, undefined);
+  });
+});

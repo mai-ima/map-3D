@@ -128,6 +128,22 @@ export interface Maneuver {
    *   「406」（都道 406 号）「1・20」（国道 1 号と 20 号の重複）「E1」（東名）
    */
   routeRef?: string;
+  /**
+   * 出口番号（高速道路のインターチェンジ・ジャンクション）。
+   *
+   * 出典は OSM の `junction:ref` / `exit_to`。
+   * 日本の高速道路の案内標識は「出口 7」のように番号を大きく出す。
+   * 実データの例（2026-09, Valhalla 経由）: 東名の御殿場 IC が「7」。
+   */
+  exitNumber?: string;
+  /**
+   * 出口の名前。
+   *
+   * 実データの例: 「御殿場ＩＣ」。
+   * 経路エンジンは日本語と英語（"Gotemba"）を両方返してくることがあるので、
+   * 日本語を優先して 1 つだけ採る。
+   */
+  exitName?: string;
 }
 
 export interface RouteStep {
